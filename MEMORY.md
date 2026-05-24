@@ -22,6 +22,7 @@ Format: `YYYY-MM-DD - decision/finding`
 2026-05-24 - golangci-lint v2 classifies gofmt/goimports as `formatters`, not `linters`; they go under `formatters.enable` not `linters.enable`.
 2026-05-24 - `HELMFILE_HELM_BINARY` env var not supported in helmfile 0.171; `--helm-binary` flag and `helmBinary` YAML key work. Used `helmBinary` in helmfile.yaml.gotmpl to hard-wire mise helm 3.16 path.
 2026-05-24 - `mise exec -- helmfile lint` picks up homebrew helm 4.x (appears before mise tools in PATH); fixed via `helmBinary` in helmfile.yaml.gotmpl expanding `$HOME`.
+2026-05-24 - RESOLUTION: dropped `helmBinary` from helmfile.yaml.gotmpl (was darwin-arm64-only, version-pinned, non-portable). Canonical pattern: Makefile computes HELM_BIN dynamically via `mise exec -- bash -c 'echo $$PATH'` and passes `--helm-binary $(HELM_BIN)` to both `helm lint` and `helmfile lint` targets. All helm invocations go through Makefile targets.
 2026-05-24 - `go mod tidy` removes all deps that aren't imported yet; baseline deps must be added without running tidy (or tidy would strip them). They land as `// indirect` until code imports them.
 2026-05-24 - GOFLAGS=-count=1 in .mise.toml breaks `go get` (invalid flag for that command); must unset GOFLAGS when running go get.
 

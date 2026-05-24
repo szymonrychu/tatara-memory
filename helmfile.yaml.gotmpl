@@ -3,11 +3,6 @@ environments:
 
 ---
 
-# Explicit binary path prevents helmfile from picking up homebrew helm 4.x
-# when it appears before the mise-managed helm 3.x in PATH.
-# The version here must match the helm pin in .mise.toml.
-helmBinary: "{{ requiredEnv "HOME" }}/.local/share/mise/installs/helm/3.16.2/darwin-arm64/helm"
-
 helmDefaults:
   wait: true
   syncArgs:
