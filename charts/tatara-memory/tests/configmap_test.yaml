@@ -1,0 +1,40 @@
+suite: configmap
+templates:
+  - configmap.yaml
+release:
+  name: tm
+  namespace: tatara
+tests:
+  - it: renders ConfigMap with kebab-case keys
+    asserts:
+      - isKind:
+          of: ConfigMap
+      - equal:
+          path: metadata.name
+          value: tm-tatara-memory
+      - isNotNullOrEmpty:
+          path: data.http-addr
+      - isNotNullOrEmpty:
+          path: data.lightrag-base-url
+      - isNotNullOrEmpty:
+          path: data.oidc-issuer
+      - isNotNullOrEmpty:
+          path: data.oidc-audience
+      - isNotNullOrEmpty:
+          path: data.worker-pool-size
+      - isNotNullOrEmpty:
+          path: data.log-level
+      - isNotNullOrEmpty:
+          path: data.pg-host
+      - isNotNullOrEmpty:
+          path: data.pg-port
+      - isNotNullOrEmpty:
+          path: data.pg-db
+      - isNotNullOrEmpty:
+          path: data.pg-user
+  - it: rejects any camelCase keys leaking through
+    asserts:
+      - isNull:
+          path: data.httpAddr
+      - isNull:
+          path: data.lightragBaseUrl
