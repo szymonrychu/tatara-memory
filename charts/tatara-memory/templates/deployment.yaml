@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ include "tatara-memory.fullname" . }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "tatara-memory.labels" . | nindent 4 }}
 spec:
@@ -12,7 +13,9 @@ spec:
   template:
     metadata:
       labels:
-        {{- include "tatara-memory.labels" . | nindent 8 }}
+        {{- include "tatara-memory.selectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include "tatara-memory.envConfig" . | sha256sum }}
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -24,7 +27,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       containers:
-        - name: {{ .Chart.Name }}
+        - name: tatara-memory
           {{- with .Values.containerSecurityContext }}
           securityContext:
             {{- toYaml . | nindent 12 }}
@@ -35,7 +38,22 @@ spec:
             - name: http
               containerPort: 8080
               protocol: TCP
-          {{- with .Values.resources }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "tatara-memory.fullname" . }}
+            - secretRef:
+                name: {{ default (include "tatara-memory.fullname" .) .Values.existingSecret }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
           resources:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
+            {{- toYaml .Values.resources | nindent 12 }}

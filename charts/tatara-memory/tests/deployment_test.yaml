@@ -1,0 +1,61 @@
+suite: deployment
+templates:
+  - deployment.yaml
+release:
+  name: tm
+  namespace: tatara
+tests:
+  - it: renders one container wired via envFrom only
+    set:
+      image.tag: "1.2.3"
+    asserts:
+      - isKind:
+          of: Deployment
+      - equal:
+          path: spec.template.spec.containers[0].name
+          value: tatara-memory
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: harbor.szymonrichert.pl/tatara/tatara-memory:1.2.3
+      - isNull:
+          path: spec.template.spec.containers[0].env
+      - equal:
+          path: spec.template.spec.containers[0].envFrom[0].configMapRef.name
+          value: tm-tatara-memory
+      - equal:
+          path: spec.template.spec.containers[0].envFrom[1].secretRef.name
+          value: tm-tatara-memory
+      - equal:
+          path: spec.template.spec.containers[0].ports[0].containerPort
+          value: 8080
+      - equal:
+          path: spec.template.spec.containers[0].ports[0].name
+          value: http
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.path
+          value: /healthz
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.path
+          value: /readyz
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: tm-tatara-memory
+  - it: uses existingSecret name when provided
+    set:
+      existingSecret: external-tm-secret
+      image.tag: "1.2.3"
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].envFrom[1].secretRef.name
+          value: external-tm-secret
+  - it: never declares inline env
+    asserts:
+      - notExists:
+          path: spec.template.spec.containers[0].env
+  - it: envFrom has exactly two entries (configMapRef and secretRef)
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - isNull:
+          path: spec.template.spec.containers[0].envFrom[2]
