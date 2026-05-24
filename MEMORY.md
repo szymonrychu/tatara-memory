@@ -26,6 +26,10 @@ Format: `YYYY-MM-DD - decision/finding`
 2026-05-24 - `go mod tidy` removes all deps that aren't imported yet; baseline deps must be added without running tidy (or tidy would strip them). They land as `// indirect` until code imports them.
 2026-05-24 - GOFLAGS=-count=1 in .mise.toml breaks `go get` (invalid flag for that command); must unset GOFLAGS when running go get.
 
+2026-05-24 - lightrag metrics pre-initialized with all op labels in newMetrics so prometheus Gather() returns families even with zero calls; without pre-init, CounterVec/HistogramVec are invisible to Gather until first observation.
+2026-05-24 - lightrag/fake implements full Client interface from the start (no staged stubs); unused linter would reject partial implementation committed without all methods in use.
+2026-05-24 - metrics_test.go sums all label combinations for calls_total and duration_seconds; pre-init zeros don't inflate the sum because the test checks for exactly 1 after 1 call.
+
 ## Open questions
 
 *(nothing yet)*
