@@ -1,0 +1,84 @@
+image:
+  repository: harbor.szymonrichert.pl/tatara-memory
+  tag: ""
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets:
+  - name: regcred
+
+replicaCount: 1
+
+httpAddr: ":8080"
+logLevel: "info"
+workerPoolSize: 4
+
+lightragBaseUrl: "http://tatara-memory-lightrag:9621"
+
+oidcIssuer: "https://auth.szymonrichert.pl/realms/master"
+oidcAudience: "tatara-memory"
+
+otlpEndpoint: ""
+
+pgHost: "tatara-memory-postgres-cluster-rw"
+pgPort: "5432"
+pgDb: "tatara_memory"
+pgUser: "tatara_memory"
+
+existingSecrets:
+  pgPasswordSecret: ""
+  pgPasswordKey: "password"
+  oidcClientSecretSecret: ""
+  oidcClientSecretKey: "client-secret"
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  enabled: true
+  className: nginx
+  host: "tatara-memory.szymonrichert.pl"
+  clusterIssuer: "letsencrypt-prod"
+  tlsSecretName: "tatara-memory-tls"
+
+serviceMonitor:
+  enabled: false  # enabled in Wave 4B once template lands
+  interval: "30s"
+
+networkPolicy:
+  enabled: false  # enabled in Wave 4B once template lands
+
+postgres:
+  enabled: true
+
+neo4j:
+  enabled: true
+
+lightrag:
+  enabled: true
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
+  readOnlyRootFilesystem: true
+
+resources:
+  requests:
+    cpu: "50m"
+    memory: "128Mi"
+  limits:
+    cpu: "1"
+    memory: "512Mi"

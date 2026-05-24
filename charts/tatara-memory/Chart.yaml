@@ -1,0 +1,22 @@
+apiVersion: v2
+name: tatara-memory
+description: Tatara memory service (REST over LightRAG, OIDC-gated)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+
+dependencies:
+  - name: cluster
+    version: 0.6.1
+    repository: https://cloudnative-pg.github.io/charts
+    alias: postgres
+    condition: postgres.enabled
+  - name: neo4j
+    version: 2026.4.0
+    repository: https://helm.neo4j.com/neo4j
+    condition: neo4j.enabled
+  # lightrag subchart added in Wave 5
+  # - name: lightrag
+  #   version: 0.1.0
+  #   repository: file://charts/lightrag
+  #   condition: lightrag.enabled
