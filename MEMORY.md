@@ -28,6 +28,9 @@ Format: `YYYY-MM-DD - decision/finding`
 
 2026-05-24 - disabled revive `exported` rule in .golangci.yml; CLAUDE.md hard rule prohibits docstrings on new code, rule is incompatible with that constraint.
 2026-05-24 - otlptracegrpc not pre-seeded in Wave 1 go.mod (only otlptracehttp was); added via `go get` in Wave 2A; semconv/v1.26.0 is a subpackage of go.opentelemetry.io/otel, no separate module needed.
+2026-05-24 - lightrag metrics pre-initialized with all op labels in newMetrics so prometheus Gather() returns families even with zero calls; without pre-init, CounterVec/HistogramVec are invisible to Gather until first observation.
+2026-05-24 - lightrag/fake implements full Client interface from the start (no staged stubs); unused linter would reject partial implementation committed without all methods in use.
+2026-05-24 - metrics_test.go sums all label combinations for calls_total and duration_seconds; pre-init zeros don't inflate the sum because the test checks for exactly 1 after 1 call.
 
 ## Open questions
 
