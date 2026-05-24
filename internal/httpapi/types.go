@@ -1,10 +1,12 @@
-// TODO(wave-6-merge): Local types in this file must be reconciled with Wave 3A's
-// internal/memory package types. At merge time, either:
-//   - replace httpapi.* local types with imports from internal/memory, OR
+// TODO(wave-6-merge): Local types in this file mirror Wave 3A's internal/memory package types
+// exactly so the merge subagent can do a clean drop-in replacement:
+//   - replace httpapi.IngestJob / httpapi.IngestItemError / httpapi.JobStatus with imports from internal/memory, OR
 //   - keep httpapi.* local types and have memory.Service re-export them.
 //
-// Search for "httpapi.Memory", "httpapi.Query", etc. across httpapi package to find all usages.
+// Search for "httpapi.Memory", "httpapi.Query", "httpapi.IngestJob", etc. across httpapi package to find all usages.
 package httpapi
+
+import "time"
 
 // QueryMode identifies the retrieval strategy for a query.
 type QueryMode string
@@ -85,20 +87,32 @@ type IngestItem struct {
 // JobStatus describes the lifecycle state of an ingest job.
 type JobStatus string
 
-// Ingest job status values.
+// Ingest job status values. Mirror memory.JobStatus exactly for clean wave-6-merge drop-in.
 const (
-	JobStatusQueued  JobStatus = "queued"
-	JobStatusRunning JobStatus = "running"
-	JobStatusDone    JobStatus = "done"
-	JobStatusFailed  JobStatus = "failed"
+	JobStatusQueued    JobStatus = "queued"
+	JobStatusRunning   JobStatus = "running"
+	JobStatusSucceeded JobStatus = "succeeded"
+	JobStatusFailed    JobStatus = "failed"
+	JobStatusPartial   JobStatus = "partial"
 )
 
+// IngestItemError records the failure of a single item within a job.
+type IngestItemError struct {
+	IdempotencyKey string `json:"idempotency_key"`
+	Error          string `json:"error"`
+}
+
 // IngestJob tracks the progress of a bulk ingest operation.
+// Fields mirror memory.IngestJob exactly for clean wave-6-merge drop-in.
 type IngestJob struct {
-	ID     string    `json:"id"`
-	Status JobStatus `json:"status"`
-	Total  int       `json:"total"`
-	Done   int       `json:"done"`
+	ID        string            `json:"id"`
+	Status    JobStatus         `json:"status"`
+	Total     int               `json:"total"`
+	Done      int               `json:"done"`
+	Failed    int               `json:"failed"`
+	Errors    []IngestItemError `json:"errors,omitempty"`
+	CreatedAt time.Time         `json:"created_at"`
+	UpdatedAt time.Time         `json:"updated_at"`
 }
 
 // ErrNotFound is returned when a requested resource does not exist.
