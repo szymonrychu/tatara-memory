@@ -1,0 +1,12 @@
+suite: chart metadata
+templates:
+  - templates/serviceaccount.yaml
+tests:
+  - it: chart version label starts with 0.
+    asserts:
+      - matchRegex:
+          path: metadata.labels["helm.sh/chart"]
+          pattern: "^lightrag-0\\."
+      - equal:
+          path: metadata.labels["app.kubernetes.io/name"]
+          value: lightrag

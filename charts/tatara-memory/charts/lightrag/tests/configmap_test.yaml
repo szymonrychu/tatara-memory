@@ -1,0 +1,54 @@
+suite: configmap
+templates:
+  - templates/configmap.yaml
+tests:
+  - it: renders all kebab-case lightrag config keys
+    asserts:
+      - isKind:
+          of: ConfigMap
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-lightrag
+      - isNotNullOrEmpty:
+          path: data.llm-binding
+      - isNotNullOrEmpty:
+          path: data.llm-model
+      - isNotNullOrEmpty:
+          path: data.embedding-binding
+      - isNotNullOrEmpty:
+          path: data.embedding-model
+      - isNotNullOrEmpty:
+          path: data.embedding-dim
+      - isNotNullOrEmpty:
+          path: data.kv-storage
+      - isNotNullOrEmpty:
+          path: data.vector-storage
+      - isNotNullOrEmpty:
+          path: data.graph-storage
+      - isNotNullOrEmpty:
+          path: data.doc-status-storage
+      - isNotNullOrEmpty:
+          path: data.neo4j-uri
+      - isNotNullOrEmpty:
+          path: data.max-async
+      - isNotNullOrEmpty:
+          path: data.max-parallel-insert
+      - isNotNullOrEmpty:
+          path: data.embedding-func-max-async
+      - isNotNullOrEmpty:
+          path: data.postgres-host
+      - isNotNullOrEmpty:
+          path: data.postgres-port
+      - isNotNullOrEmpty:
+          path: data.postgres-database
+      - isNotNullOrEmpty:
+          path: data.postgres-user
+      - equal:
+          path: data.kv-storage
+          value: PGKVStorage
+  - it: rejects unexpected camelCase keys (sanity guard)
+    asserts:
+      - isNull:
+          path: data.llmBinding
+      - isNull:
+          path: data.kvStorage

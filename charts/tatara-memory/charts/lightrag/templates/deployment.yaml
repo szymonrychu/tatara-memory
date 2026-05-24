@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "lightrag.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lightrag.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  # PVC is RWO with replicaCount=1; Recreate avoids the
+  # "new pod cannot attach because old still holds the volume" deadlock.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "lightrag.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "lightrag.selectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include "lightrag.configKeys" . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "lightrag.serviceAccountName" . }}
+      {{- if .Values.image.pullSecretName }}
+      imagePullSecrets:
+      - name: {{ .Values.image.pullSecretName }}
+      {{- end }}
+      containers:
+      - name: lightrag
+        image: {{ include "lightrag.image" . | quote }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        ports:
+        - name: http
+          containerPort: 9621
+          protocol: TCP
+        envFrom:
+        - configMapRef:
+            name: {{ include "lightrag.fullname" . }}
+        - secretRef:
+            name: {{ include "lightrag.openaiSecretName" . }}
+        {{- $pg := include "lightrag.postgresSecretName" . }}
+        {{- if ne $pg (include "lightrag.openaiSecretName" .) }}
+        - secretRef:
+            name: {{ $pg }}
+        {{- end }}
+        {{- $n4 := include "lightrag.neo4jSecretName" . }}
+        {{- if and (ne $n4 (include "lightrag.openaiSecretName" .)) (ne $n4 $pg) }}
+        - secretRef:
+            name: {{ $n4 }}
+        {{- end }}
+        startupProbe:
+          tcpSocket:
+            port: http
+          periodSeconds: 5
+          failureThreshold: 60
+        livenessProbe:
+          tcpSocket:
+            port: http
+          periodSeconds: 30
+          failureThreshold: 3
+        readinessProbe:
+          tcpSocket:
+            port: http
+          periodSeconds: 10
+          failureThreshold: 3
+        resources:
+          requests:
+            cpu: {{ .Values.resources.requestsCpu }}
+            memory: {{ .Values.resources.requestsMemory }}
+          limits:
+            memory: {{ .Values.resources.limitsMemory }}
+        volumeMounts:
+        - name: data
+          mountPath: /app/data
+      volumes:
+      - name: data
+        {{- if .Values.persistence.enabled }}
+        persistentVolumeClaim:
+          claimName: {{ .Values.persistence.existingClaim | default (printf "%s-data" (include "lightrag.fullname" .)) }}
+        {{- else }}
+        emptyDir: {}
+        {{- end }}

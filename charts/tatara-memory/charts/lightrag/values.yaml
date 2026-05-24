@@ -1,0 +1,88 @@
+nameOverride: ""
+fullnameOverride: ""
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/hkuds/lightrag
+  tag: v1.4.16
+  digest: sha256:67ccf8d9f74eb29da872bf8b3e6513605f5ac601fb0509c5b0ca16d98d2d307d
+  pullPolicy: IfNotPresent
+  pullSecretName: regcred
+
+# LightRAG runtime configuration. Each scalar becomes a kebab-case
+# key in the rendered ConfigMap and is exported into the pod via
+# envFrom (UPPER_SNAKE upstream env name derived from the kebab key).
+llmBinding: openai
+llmModel: gpt-4.1-mini
+embeddingBinding: openai
+embeddingModel: text-embedding-3-small
+embeddingDim: "1536"
+kvStorage: PGKVStorage
+vectorStorage: PGVectorStorage
+graphStorage: Neo4JStorage
+docStatusStorage: PGDocStatusStorage
+neo4jUri: neo4j://tatara-neo4j:7687
+maxAsync: "8"
+maxParallelInsert: "8"
+embeddingFuncMaxAsync: "8"
+postgresHost: tatara-lightrag-database-cluster-rw
+postgresPort: "5432"
+postgresDatabase: lightrag
+postgresUser: lightrag
+
+# Secret references. When existingSecret is set the chart references it
+# directly; when empty, the chart renders its own Secret using value.
+secrets:
+  openai:
+    existingSecret: ""
+    existingSecretKey: api-key
+    value: ""
+  postgres:
+    existingSecret: tatara-lightrag-database-cluster-app
+    existingSecretKey: password
+    value: ""
+  neo4j:
+    existingSecret: tatara-neo4j-password
+    existingSecretKey: password
+    value: ""
+
+service:
+  type: ClusterIP
+  port: 9621
+
+ingress:
+  enabled: false
+  className: nginx
+  host: ""
+  pathPrefix: /lightrag
+  tlsSecretName: ""
+  certManagerClusterIssuer: letsencrypt-prod
+  whitelistSourceRange: ""
+
+persistence:
+  enabled: true
+  storageClass: rook-ceph
+  accessMode: ReadWriteOnce
+  size: 10Gi
+  existingClaim: ""
+
+resources:
+  requestsCpu: 200m
+  requestsMemory: 512Mi
+  limitsMemory: 1Gi
+
+serviceAccount:
+  create: true
+  name: ""
+
+networkPolicy:
+  enabled: true
+  postgresPort: 5432
+  neo4jPort: 7687
+
+serviceMonitor:
+  enabled: false
+  path: /metrics
+  interval: 30s
+  scrapeTimeout: 10s

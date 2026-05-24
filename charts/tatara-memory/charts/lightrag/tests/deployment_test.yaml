@@ -1,0 +1,92 @@
+suite: deployment
+templates:
+  - templates/deployment.yaml
+tests:
+  - it: uses pinned digest image string
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: "ghcr.io/hkuds/lightrag:v1.4.16@sha256:67ccf8d9f74eb29da872bf8b3e6513605f5ac601fb0509c5b0ca16d98d2d307d"
+      - matchRegex:
+          path: spec.template.spec.containers[0].image
+          pattern: "@sha256:[0-9a-f]{64}$"
+
+  - it: uses envFrom with configmap ref and no inline env array
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].envFrom[0].configMapRef.name
+          value: RELEASE-NAME-lightrag
+      - isNull:
+          path: spec.template.spec.containers[0].env
+
+  - it: uses Recreate strategy because PVC is RWO
+    asserts:
+      - equal:
+          path: spec.strategy.type
+          value: Recreate
+
+  - it: container port 9621 named http
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].ports[0].containerPort
+          value: 9621
+      - equal:
+          path: spec.template.spec.containers[0].ports[0].name
+          value: http
+
+  - it: probes target the http port
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].startupProbe.tcpSocket.port
+          value: http
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.tcpSocket.port
+          value: http
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.tcpSocket.port
+          value: http
+
+  - it: external existingSecrets are referenced in envFrom when all are set
+    set:
+      secrets:
+        openai:
+          existingSecret: my-openai-secret
+          existingSecretKey: api-key
+        postgres:
+          existingSecret: my-pg-secret
+          existingSecretKey: password
+        neo4j:
+          existingSecret: my-neo4j-secret
+          existingSecretKey: password
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].envFrom
+          content:
+            secretRef:
+              name: my-openai-secret
+      - contains:
+          path: spec.template.spec.containers[0].envFrom
+          content:
+            secretRef:
+              name: my-pg-secret
+      - contains:
+          path: spec.template.spec.containers[0].envFrom
+          content:
+            secretRef:
+              name: my-neo4j-secret
+
+  - it: imagePullSecrets honoured when pullSecretName set
+    asserts:
+      - equal:
+          path: spec.template.spec.imagePullSecrets[0].name
+          value: regcred
+
+  - it: does not leak plaintext secret values
+    set:
+      secrets:
+        openai:
+          value: sk-leak-canary
+    asserts:
+      - notMatchRegex:
+          path: spec.template.spec.containers[0].image
+          pattern: "sk-leak-canary"

@@ -1,0 +1,51 @@
+{{- if .Values.networkPolicy.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "lightrag.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lightrag.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "lightrag.selectorLabels" . | nindent 6 }}
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: tatara-memory
+    ports:
+    - port: 9621
+      protocol: TCP
+  egress:
+  # PostgreSQL (cnpg-cluster in-namespace).
+  - to:
+    - podSelector:
+        matchLabels:
+          cnpg.io/cluster: tatara-lightrag-database-cluster
+    ports:
+    - port: {{ .Values.networkPolicy.postgresPort }}
+      protocol: TCP
+  # Neo4j in-namespace.
+  - to:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: neo4j
+    ports:
+    - port: {{ .Values.networkPolicy.neo4jPort }}
+      protocol: TCP
+  # DNS (cluster).
+  - ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+  # Outbound HTTPS for OpenAI / Anthropic API.
+  - ports:
+    - port: 443
+      protocol: TCP
+{{- end }}
