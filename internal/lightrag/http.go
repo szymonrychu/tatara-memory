@@ -89,6 +89,7 @@ func (c *HTTPClient) roundTrip(ctx context.Context, method, path string, body io
 	if err != nil {
 		return fmt.Errorf("lightrag: build request: %w", err)
 	}
+	req.Header.Set("Accept", "application/json")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -126,7 +127,7 @@ func (c *HTTPClient) InsertDocument(ctx context.Context, req InsertRequest) (*In
 		return nil, err
 	}
 	var out InsertResponse
-	if err := c.do(ctx, "insert_document", http.MethodPost, "/documents", body, &out); err != nil {
+	if err := c.do(ctx, OpInsertDocument, http.MethodPost, "/documents", body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -135,7 +136,7 @@ func (c *HTTPClient) InsertDocument(ctx context.Context, req InsertRequest) (*In
 // GetDocument retrieves a document by ID.
 func (c *HTTPClient) GetDocument(ctx context.Context, id string) (*Document, error) {
 	var out Document
-	if err := c.do(ctx, "get_document", http.MethodGet, "/documents/"+id, nil, &out); err != nil {
+	if err := c.do(ctx, OpGetDocument, http.MethodGet, "/documents/"+url.PathEscape(id), nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -143,12 +144,13 @@ func (c *HTTPClient) GetDocument(ctx context.Context, id string) (*Document, err
 
 // DeleteDocument removes a document by ID.
 func (c *HTTPClient) DeleteDocument(ctx context.Context, id string) error {
-	return c.do(ctx, "delete_document", http.MethodDelete, "/documents/"+id, nil, nil)
+	return c.do(ctx, OpDeleteDocument, http.MethodDelete, "/documents/"+url.PathEscape(id), nil, nil)
 }
 
 // Query executes a retrieval query against LightRAG.
 func (c *HTTPClient) Query(ctx context.Context, req QueryRequest) (*QueryResponse, error) {
 	if !req.Mode.Valid() {
+		c.metrics.incError(OpQuery)
 		return nil, fmt.Errorf("lightrag: invalid query mode %q", req.Mode)
 	}
 	body, err := encodeJSON(req)
@@ -156,7 +158,7 @@ func (c *HTTPClient) Query(ctx context.Context, req QueryRequest) (*QueryRespons
 		return nil, err
 	}
 	var out QueryResponse
-	if err := c.do(ctx, "query", http.MethodPost, "/query", body, &out); err != nil {
+	if err := c.do(ctx, OpQuery, http.MethodPost, "/query", body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -165,6 +167,7 @@ func (c *HTTPClient) Query(ctx context.Context, req QueryRequest) (*QueryRespons
 // QueryDescribe executes a generative describe query against LightRAG.
 func (c *HTTPClient) QueryDescribe(ctx context.Context, req QueryRequest) (*DescribeResponse, error) {
 	if !req.Mode.Valid() {
+		c.metrics.incError(OpQueryDescribe)
 		return nil, fmt.Errorf("lightrag: invalid query mode %q", req.Mode)
 	}
 	body, err := encodeJSON(req)
@@ -172,7 +175,7 @@ func (c *HTTPClient) QueryDescribe(ctx context.Context, req QueryRequest) (*Desc
 		return nil, err
 	}
 	var out DescribeResponse
-	if err := c.do(ctx, "query_describe", http.MethodPost, "/query/describe", body, &out); err != nil {
+	if err := c.do(ctx, OpQueryDescribe, http.MethodPost, "/query/describe", body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -185,7 +188,7 @@ func (c *HTTPClient) ListEntities(ctx context.Context, q string) ([]Entity, erro
 		path += "?q=" + url.QueryEscape(q)
 	}
 	var out []Entity
-	if err := c.do(ctx, "list_entities", http.MethodGet, path, nil, &out); err != nil {
+	if err := c.do(ctx, OpListEntities, http.MethodGet, path, nil, &out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -194,7 +197,7 @@ func (c *HTTPClient) ListEntities(ctx context.Context, q string) ([]Entity, erro
 // GetEntity retrieves an entity by ID.
 func (c *HTTPClient) GetEntity(ctx context.Context, id string) (*Entity, error) {
 	var out Entity
-	if err := c.do(ctx, "get_entity", http.MethodGet, "/entities/"+id, nil, &out); err != nil {
+	if err := c.do(ctx, OpGetEntity, http.MethodGet, "/entities/"+url.PathEscape(id), nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -207,7 +210,7 @@ func (c *HTTPClient) UpdateEntity(ctx context.Context, id string, upd EntityUpda
 		return nil, err
 	}
 	var out Entity
-	if err := c.do(ctx, "update_entity", http.MethodPatch, "/entities/"+id, body, &out); err != nil {
+	if err := c.do(ctx, OpUpdateEntity, http.MethodPatch, "/entities/"+url.PathEscape(id), body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -216,7 +219,7 @@ func (c *HTTPClient) UpdateEntity(ctx context.Context, id string, upd EntityUpda
 // ListEdges returns all edges in the knowledge graph.
 func (c *HTTPClient) ListEdges(ctx context.Context) ([]Edge, error) {
 	var out []Edge
-	if err := c.do(ctx, "list_edges", http.MethodGet, "/edges", nil, &out); err != nil {
+	if err := c.do(ctx, OpListEdges, http.MethodGet, "/edges", nil, &out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -229,7 +232,7 @@ func (c *HTTPClient) CreateEdge(ctx context.Context, e Edge) (*Edge, error) {
 		return nil, err
 	}
 	var out Edge
-	if err := c.do(ctx, "create_edge", http.MethodPost, "/edges", body, &out); err != nil {
+	if err := c.do(ctx, OpCreateEdge, http.MethodPost, "/edges", body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -237,10 +240,10 @@ func (c *HTTPClient) CreateEdge(ctx context.Context, e Edge) (*Edge, error) {
 
 // DeleteEdge removes an edge by ID.
 func (c *HTTPClient) DeleteEdge(ctx context.Context, id string) error {
-	return c.do(ctx, "delete_edge", http.MethodDelete, "/edges/"+id, nil, nil)
+	return c.do(ctx, OpDeleteEdge, http.MethodDelete, "/edges/"+url.PathEscape(id), nil, nil)
 }
 
 // Health checks the LightRAG service health endpoint.
 func (c *HTTPClient) Health(ctx context.Context) error {
-	return c.do(ctx, "health", http.MethodGet, "/health", nil, nil)
+	return c.do(ctx, OpHealth, http.MethodGet, "/health", nil, nil)
 }

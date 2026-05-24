@@ -2,6 +2,37 @@ package lightrag
 
 import "github.com/prometheus/client_golang/prometheus"
 
+// Op name constants used by HTTPClient call sites and metrics pre-init.
+const (
+	OpInsertDocument = "insert_document"
+	OpGetDocument    = "get_document"
+	OpDeleteDocument = "delete_document"
+	OpQuery          = "query"
+	OpQueryDescribe  = "query_describe"
+	OpListEntities   = "list_entities"
+	OpGetEntity      = "get_entity"
+	OpUpdateEntity   = "update_entity"
+	OpListEdges      = "list_edges"
+	OpCreateEdge     = "create_edge"
+	OpDeleteEdge     = "delete_edge"
+	OpHealth         = "health"
+)
+
+var allOps = []string{
+	OpInsertDocument,
+	OpGetDocument,
+	OpDeleteDocument,
+	OpQuery,
+	OpQueryDescribe,
+	OpListEntities,
+	OpGetEntity,
+	OpUpdateEntity,
+	OpListEdges,
+	OpCreateEdge,
+	OpDeleteEdge,
+	OpHealth,
+}
+
 type metrics struct {
 	calls    *prometheus.CounterVec
 	duration *prometheus.HistogramVec
@@ -23,7 +54,7 @@ func newMetrics(reg prometheus.Registerer) *metrics {
 		reg.MustRegister(m.calls, m.duration)
 	}
 	// Pre-initialize label combinations so Gather() returns families even with zero calls.
-	for _, op := range []string{"insert_document", "get_document", "delete_document", "query", "query_describe", "list_entities", "get_entity", "update_entity", "list_edges", "create_edge", "delete_edge", "health"} {
+	for _, op := range allOps {
 		for _, result := range []string{"success", "error"} {
 			m.calls.WithLabelValues(op, result)
 		}
@@ -39,4 +70,8 @@ func (m *metrics) observe(op string, dur float64, err error) {
 	}
 	m.calls.WithLabelValues(op, result).Inc()
 	m.duration.WithLabelValues(op).Observe(dur)
+}
+
+func (m *metrics) incError(op string) {
+	m.calls.WithLabelValues(op, "error").Inc()
 }
