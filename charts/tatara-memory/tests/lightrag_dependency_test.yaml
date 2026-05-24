@@ -1,0 +1,15 @@
+suite: parent chart wires lightrag
+tests:
+  - it: lightrag subchart configmap renders via parent when enabled
+    template: charts/lightrag/templates/configmap.yaml
+    set:
+      lightrag.enabled: true
+      neo4j.neo4j.name: test
+      neo4j.volumes.data.mode: defaultStorageClass
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: ConfigMap
+      - isNotNullOrEmpty:
+          path: data.kv-storage
