@@ -165,3 +165,51 @@ func TestHTTPClient_UpdateEntity(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "renamed", e.Name)
 }
+
+func TestHTTPClient_ListEdges(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/edges", r.URL.Path)
+		_ = json.NewEncoder(w).Encode([]lightrag.Edge{
+			{ID: "edge-1", FromEntity: "e1", ToEntity: "e2", Relation: "knows"},
+		})
+	})
+	edges, err := c.ListEdges(context.Background())
+	require.NoError(t, err)
+	require.Len(t, edges, 1)
+}
+
+func TestHTTPClient_CreateEdge(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, "/edges", r.URL.Path)
+		var in lightrag.Edge
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&in))
+		require.Equal(t, "knows", in.Relation)
+		in.ID = "edge-1"
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(in)
+	})
+
+	e, err := c.CreateEdge(context.Background(), lightrag.Edge{
+		FromEntity: "e1", ToEntity: "e2", Relation: "knows",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "edge-1", e.ID)
+}
+
+func TestHTTPClient_DeleteEdge(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodDelete, r.Method)
+		require.Equal(t, "/edges/edge-1", r.URL.Path)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	require.NoError(t, c.DeleteEdge(context.Background(), "edge-1"))
+}
+
+func TestHTTPClient_Health(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/health", r.URL.Path)
+		w.WriteHeader(http.StatusOK)
+	})
+	require.NoError(t, c.Health(context.Background()))
+}
