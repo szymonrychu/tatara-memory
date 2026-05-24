@@ -1,0 +1,81 @@
+suite: networkpolicy ingress
+templates:
+  - networkpolicy.yaml
+release:
+  name: tm
+  namespace: tatara
+tests:
+  - it: skipped when disabled
+    set:
+      networkPolicy.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+  - it: allows ingress from ingress-nginx and monitoring namespaces
+    set:
+      networkPolicy.enabled: true
+    asserts:
+      - isKind:
+          of: NetworkPolicy
+      - equal:
+          path: spec.policyTypes[0]
+          value: Ingress
+      - equal:
+          path: spec.policyTypes[1]
+          value: Egress
+      - equal:
+          path: spec.ingress[0].from[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+          value: ingress-nginx
+      - equal:
+          path: spec.ingress[0].from[1].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+          value: monitoring
+      - equal:
+          path: spec.ingress[0].ports[0].port
+          value: 8080
+  - it: allows egress to postgres on 5432
+    set:
+      networkPolicy.enabled: true
+    asserts:
+      - equal:
+          path: spec.egress[0].to[0].podSelector.matchLabels["cnpg.io/cluster"]
+          value: tm-tatara-memory-database-cluster
+      - equal:
+          path: spec.egress[0].ports[0].port
+          value: 5432
+  - it: allows egress to neo4j on 7687
+    set:
+      networkPolicy.enabled: true
+    asserts:
+      - equal:
+          path: spec.egress[1].to[0].podSelector.matchLabels["app.kubernetes.io/name"]
+          value: neo4j
+      - equal:
+          path: spec.egress[1].ports[0].port
+          value: 7687
+  - it: allows egress to lightrag on 9621
+    set:
+      networkPolicy.enabled: true
+    asserts:
+      - equal:
+          path: spec.egress[2].to[0].podSelector.matchLabels["app.kubernetes.io/name"]
+          value: lightrag
+      - equal:
+          path: spec.egress[2].ports[0].port
+          value: 9621
+  - it: allows DNS egress
+    set:
+      networkPolicy.enabled: true
+    asserts:
+      - equal:
+          path: spec.egress[3].ports[0].port
+          value: 53
+      - equal:
+          path: spec.egress[3].ports[0].protocol
+          value: UDP
+  - it: allows https egress for OIDC issuer
+    set:
+      networkPolicy.enabled: true
+    asserts:
+      - equal:
+          path: spec.egress[4].ports[0].port
+          value: 443
