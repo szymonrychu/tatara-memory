@@ -1,0 +1,27 @@
+# Binaries
+bin/
+dist/
+
+# Coverage
+*.out
+coverage.html
+
+# Local config / secrets
+.env
+.env.local
+*.local.yaml
+*.dec.yaml
+
+# Helm working files
+charts/*/charts/*.tgz
+charts/*/charts/cnpg-*
+charts/*/charts/neo4j-*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Mise local override
+.mise.local.toml
