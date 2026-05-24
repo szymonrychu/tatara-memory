@@ -2,10 +2,13 @@ package obs_test
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/szymonrychu/tatara-memory/internal/obs"
@@ -22,16 +25,26 @@ func TestTracerProvider_NoopWhenEmpty(t *testing.T) {
 }
 
 func TestTracerProvider_OTLPWhenEndpointSet(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	// otlptracehttp expects host:port without scheme
+	endpoint := srv.Listener.Addr().String()
+
 	ctx := context.Background()
-	tp, shutdown, err := obs.TracerProvider(ctx, "localhost:4317", "tatara-memory")
+	tp, shutdown, err := obs.TracerProvider(ctx, endpoint, "tatara-memory")
 	require.NoError(t, err)
 	require.NotNil(t, tp)
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_ = shutdown(ctx)
-	})
+
+	_, isSdk := tp.(*sdktrace.TracerProvider)
+	require.True(t, isSdk, "expected *sdktrace.TracerProvider when endpoint is set")
 
 	_, isNoop := tp.(noop.TracerProvider)
 	require.False(t, isNoop, "expected real provider when endpoint is set")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	require.NoError(t, shutdown(shutdownCtx))
 }
