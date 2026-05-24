@@ -1,0 +1,51 @@
+suite: helpers envConfig
+templates:
+  - configmap.yaml
+release:
+  name: tm
+  namespace: tatara
+tests:
+  - it: renders kebab-case keys from camelCase scalars
+    set:
+      httpAddr: ":8080"
+      lightragBaseUrl: "http://tm-lightrag:9621"
+      oidcIssuer: "https://auth.szymonrichert.pl/realms/master"
+      oidcAudience: "tatara-memory"
+      workerPoolSize: 4
+      logLevel: "info"
+      otlpEndpoint: ""
+      pgHost: "tm-database-cluster-rw"
+      pgPort: 5432
+      pgDb: "tatara_memory"
+      pgUser: "tatara_memory"
+    asserts:
+      - equal:
+          path: data.http-addr
+          value: ":8080"
+      - equal:
+          path: data.lightrag-base-url
+          value: "http://tm-lightrag:9621"
+      - equal:
+          path: data.oidc-issuer
+          value: "https://auth.szymonrichert.pl/realms/master"
+      - equal:
+          path: data.oidc-audience
+          value: "tatara-memory"
+      - equal:
+          path: data.worker-pool-size
+          value: "4"
+      - equal:
+          path: data.log-level
+          value: "info"
+      - equal:
+          path: data.pg-host
+          value: "tm-database-cluster-rw"
+      - equal:
+          path: data.pg-port
+          value: "5432"
+      - equal:
+          path: data.pg-db
+          value: "tatara_memory"
+      - equal:
+          path: data.pg-user
+          value: "tatara_memory"

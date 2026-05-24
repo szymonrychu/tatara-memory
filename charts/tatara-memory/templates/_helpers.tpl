@@ -60,3 +60,21 @@ Create the name of the service account to use
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
 {{- end }}
+
+{{/*
+Map camelCase values.* scalars to kebab-case ConfigMap keys.
+Strict: values.yaml carries only scalars; this macro is the single mapping point.
+*/}}
+{{- define "tatara-memory.envConfig" -}}
+http-addr: {{ .Values.httpAddr | quote }}
+lightrag-base-url: {{ .Values.lightragBaseUrl | quote }}
+oidc-issuer: {{ .Values.oidcIssuer | quote }}
+oidc-audience: {{ .Values.oidcAudience | quote }}
+worker-pool-size: {{ .Values.workerPoolSize | quote }}
+log-level: {{ .Values.logLevel | quote }}
+otlp-endpoint: {{ .Values.otlpEndpoint | quote }}
+pg-host: {{ .Values.pgHost | quote }}
+pg-port: {{ .Values.pgPort | quote }}
+pg-db: {{ .Values.pgDb | quote }}
+pg-user: {{ .Values.pgUser | quote }}
+{{- end -}}
