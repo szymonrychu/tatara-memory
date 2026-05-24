@@ -123,3 +123,45 @@ func TestHTTPClient_Query_RejectsInvalidMode(t *testing.T) {
 	_, err := c.Query(context.Background(), lightrag.QueryRequest{Query: "x", Mode: "bogus"})
 	require.Error(t, err)
 }
+
+func TestHTTPClient_ListEntities(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodGet, r.Method)
+		require.Equal(t, "/entities", r.URL.Path)
+		require.Equal(t, "foo", r.URL.Query().Get("q"))
+		_ = json.NewEncoder(w).Encode([]lightrag.Entity{
+			{ID: "e1", Name: "foo", Type: "concept"},
+		})
+	})
+	ents, err := c.ListEntities(context.Background(), "foo")
+	require.NoError(t, err)
+	require.Len(t, ents, 1)
+	require.Equal(t, "foo", ents[0].Name)
+}
+
+func TestHTTPClient_GetEntity(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/entities/e1", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(lightrag.Entity{ID: "e1", Name: "foo"})
+	})
+	e, err := c.GetEntity(context.Background(), "e1")
+	require.NoError(t, err)
+	require.Equal(t, "e1", e.ID)
+}
+
+func TestHTTPClient_UpdateEntity(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPatch, r.Method)
+		require.Equal(t, "/entities/e1", r.URL.Path)
+		var upd lightrag.EntityUpdate
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&upd))
+		require.NotNil(t, upd.Name)
+		require.Equal(t, "renamed", *upd.Name)
+		_ = json.NewEncoder(w).Encode(lightrag.Entity{ID: "e1", Name: "renamed"})
+	})
+
+	name := "renamed"
+	e, err := c.UpdateEntity(context.Background(), "e1", lightrag.EntityUpdate{Name: &name})
+	require.NoError(t, err)
+	require.Equal(t, "renamed", e.Name)
+}
