@@ -22,6 +22,8 @@ docs/superpowers/        specs and plans
 ```
 mise install
 make all
+make chart-lint      # helm lint via mise (avoids homebrew helm shadow)
+make helmfile-lint   # helmfile lint via mise
 ```
 
 ## Deploy

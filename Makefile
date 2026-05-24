@@ -9,7 +9,7 @@ DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
 IMAGE_REF := $(REGISTRY)/$(IMAGE_NAME):$(VERSION)
 
-.PHONY: all lint test build image push chart-lint chart-test chart-push tidy fmt clean
+.PHONY: all lint test build image push chart-lint helmfile-lint chart-test chart-push tidy fmt clean
 
 all: lint test build
 
@@ -48,7 +48,10 @@ push: image
 	docker push $(IMAGE_REF)
 
 chart-lint:
-	helm lint charts/tatara-memory
+	mise exec -- helm lint charts/tatara-memory
+
+helmfile-lint:
+	mise exec -- helmfile lint
 
 chart-test:
 	helm unittest charts/tatara-memory
