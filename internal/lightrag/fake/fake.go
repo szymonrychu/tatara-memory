@@ -51,6 +51,14 @@ func (c *Client) SeedMatches(m []lightrag.Match) {
 	c.matches = m
 }
 
+// SeedDescribe pre-loads the canned describe response and sources for QueryDescribe.
+func (c *Client) SeedDescribe(response string, sources []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.describeResponse = response
+	c.describeSources = append([]string(nil), sources...)
+}
+
 // InsertDocument stores documents and returns their assigned IDs.
 func (c *Client) InsertDocument(_ context.Context, req lightrag.InsertRequest) (*lightrag.InsertResponse, error) {
 	c.mu.Lock()

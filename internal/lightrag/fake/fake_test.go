@@ -82,3 +82,29 @@ func TestFake_Query_ReturnsSeededMatches(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, resp.Matches, 1)
 }
+
+func TestFake_SeedDescribe_RoundTrip(t *testing.T) {
+	f := fake.New()
+	f.SeedDescribe("the answer", []string{"doc-1", "doc-2"})
+
+	resp, err := f.QueryDescribe(context.Background(), lightrag.QueryRequest{
+		Query: "explain", Mode: lightrag.QueryModeGlobal,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "the answer", resp.Response)
+	require.Equal(t, []string{"doc-1", "doc-2"}, resp.Sources)
+}
+
+func TestFake_SeedDescribe_IsolatesSlice(t *testing.T) {
+	f := fake.New()
+	sources := []string{"s1", "s2"}
+	f.SeedDescribe("x", sources)
+	// Mutating the original slice must not affect the stored state.
+	sources[0] = "mutated"
+
+	resp, err := f.QueryDescribe(context.Background(), lightrag.QueryRequest{
+		Query: "q", Mode: lightrag.QueryModeLocal,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "s1", resp.Sources[0])
+}
