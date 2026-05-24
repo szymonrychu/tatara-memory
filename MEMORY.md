@@ -9,6 +9,7 @@ Format: `YYYY-MM-DD - decision/finding`
 
 ## Decisions
 
+2026-05-25 - Phase 1 v1.0 code complete (all 4 waves merged). Wave 7 deploy is the remaining step.
 2026-05-24 - golangci-lint pinned to v2.11 (not v1.62 as in plan); v1.62 built with go1.23 cannot process go1.25 modules.
 2026-05-24 - removed `go-imports` pre-commit hook (dnephin/pre-commit-golang); mise shim for goimports fails in pre-commit subprocess. golangci-lint covers import ordering.
 2026-05-24 - helmfile secrets block commented out until Wave 7; helm-secrets plugin API (getter/v1) incompatible with helmfile 1.5.2 CLI call pattern; sops age key is placeholder anyway.

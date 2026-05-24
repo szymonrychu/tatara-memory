@@ -9,7 +9,7 @@ Statuses: `planned`, `in progress`, `shipped`.
 
 ## v1.0 - Phase 1 ship
 
-**Status:** in progress
+**Status:** code complete, awaiting Wave 7 deploy
 
 See `docs/superpowers/specs/2026-05-24-tatara-memory-phase1-impl.md`
 and `docs/superpowers/plans/2026-05-24-tatara-memory-phase1.md`.
