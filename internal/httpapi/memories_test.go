@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/szymonrychu/tatara-memory/internal/httpapi"
+	"github.com/szymonrychu/tatara-memory/internal/memory"
 )
 
 func newSrv(t *testing.T, svc httpapi.MemoryService) *httptest.Server {
@@ -28,7 +29,7 @@ func TestPostMemory201(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusCreated, resp.StatusCode)
 
-	var m httpapi.Memory
+	var m memory.Memory
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&m))
 	require.NotEmpty(t, m.ID)
 }
@@ -44,7 +45,7 @@ func TestPostMemoryBadJSON400(t *testing.T) {
 }
 
 func TestGetMemoryNotFound(t *testing.T) {
-	srv := newSrv(t, &stubService{getErr: httpapi.ErrNotFound})
+	srv := newSrv(t, &stubService{getErr: memory.ErrNotFound})
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/v1/memories/missing")
@@ -54,7 +55,7 @@ func TestGetMemoryNotFound(t *testing.T) {
 }
 
 func TestGetMemoryUpstream502(t *testing.T) {
-	srv := newSrv(t, &stubService{getErr: errors.Join(httpapi.ErrUpstream, errors.New("lr down"))})
+	srv := newSrv(t, &stubService{getErr: errors.Join(memory.ErrUpstream, errors.New("lr down"))})
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/v1/memories/x")
@@ -64,7 +65,7 @@ func TestGetMemoryUpstream502(t *testing.T) {
 }
 
 func TestGetMemoryTransient503(t *testing.T) {
-	srv := newSrv(t, &stubService{getErr: errors.Join(httpapi.ErrTransient, errors.New("timeout"))})
+	srv := newSrv(t, &stubService{getErr: errors.Join(memory.ErrTransient, errors.New("timeout"))})
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/v1/memories/x")

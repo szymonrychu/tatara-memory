@@ -5,6 +5,8 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/szymonrychu/tatara-memory/internal/memory"
 )
 
 func handleListEdges(cfg Config) http.HandlerFunc {
@@ -20,7 +22,7 @@ func handleListEdges(cfg Config) http.HandlerFunc {
 
 func handleCreateEdge(cfg Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var e Edge
+		var e memory.Edge
 		if err := json.NewDecoder(r.Body).Decode(&e); err != nil {
 			WriteError(w, http.StatusBadRequest, "invalid json", RequestIDFromContext(r.Context()))
 			return

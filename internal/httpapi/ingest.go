@@ -5,10 +5,12 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/szymonrychu/tatara-memory/internal/memory"
 )
 
 type bulkRequest struct {
-	Items []IngestItem `json:"items"`
+	Items []memory.IngestItem `json:"items"`
 }
 
 func handleBulkIngest(cfg Config) http.HandlerFunc {

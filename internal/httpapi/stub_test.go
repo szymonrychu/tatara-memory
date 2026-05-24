@@ -3,53 +3,53 @@ package httpapi_test
 import (
 	"context"
 
-	"github.com/szymonrychu/tatara-memory/internal/httpapi"
+	"github.com/szymonrychu/tatara-memory/internal/memory"
 )
 
 // stubService is a zero-value MemoryService stub for use in tests.
 type stubService struct {
 	createErr error
-	getMem    httpapi.Memory
+	getMem    memory.Memory
 	getErr    error
 }
 
-func (s *stubService) CreateMemory(_ context.Context, m httpapi.Memory) (httpapi.Memory, error) {
+func (s *stubService) CreateMemory(_ context.Context, m memory.Memory) (memory.Memory, error) {
 	if s.createErr != nil {
-		return httpapi.Memory{}, s.createErr
+		return memory.Memory{}, s.createErr
 	}
 	m.ID = "mem_stub"
 	return m, nil
 }
 
-func (s *stubService) GetMemory(_ context.Context, _ string) (httpapi.Memory, error) {
+func (s *stubService) GetMemory(_ context.Context, _ string) (memory.Memory, error) {
 	return s.getMem, s.getErr
 }
 
 func (s *stubService) DeleteMemory(_ context.Context, _ string) error { return nil }
 
-func (s *stubService) Query(_ context.Context, _ httpapi.Query) (httpapi.QueryResult, error) {
-	return httpapi.QueryResult{}, nil
+func (s *stubService) Query(_ context.Context, _ memory.Query) (memory.QueryResult, error) {
+	return memory.QueryResult{}, nil
 }
 
-func (s *stubService) Describe(_ context.Context, _ httpapi.Query) (httpapi.DescribeResult, error) {
-	return httpapi.DescribeResult{}, nil
+func (s *stubService) Describe(_ context.Context, _ memory.Query) (memory.DescribeResult, error) {
+	return memory.DescribeResult{}, nil
 }
 
-func (s *stubService) GetEntity(_ context.Context, _ string) (httpapi.Entity, error) {
-	return httpapi.Entity{}, nil
+func (s *stubService) GetEntity(_ context.Context, _ string) (memory.Entity, error) {
+	return memory.Entity{}, nil
 }
 
-func (s *stubService) SearchEntities(_ context.Context, _ string) ([]httpapi.Entity, error) {
+func (s *stubService) SearchEntities(_ context.Context, _ string) ([]memory.Entity, error) {
 	return nil, nil
 }
 
-func (s *stubService) PatchEntity(_ context.Context, _ string, _ httpapi.Entity) (httpapi.Entity, error) {
-	return httpapi.Entity{}, nil
+func (s *stubService) PatchEntity(_ context.Context, _ string, _ memory.Entity) (memory.Entity, error) {
+	return memory.Entity{}, nil
 }
 
-func (s *stubService) ListEdges(_ context.Context) ([]httpapi.Edge, error) { return nil, nil }
+func (s *stubService) ListEdges(_ context.Context) ([]memory.Edge, error) { return nil, nil }
 
-func (s *stubService) CreateEdge(_ context.Context, e httpapi.Edge) (httpapi.Edge, error) {
+func (s *stubService) CreateEdge(_ context.Context, e memory.Edge) (memory.Edge, error) {
 	e.ID = "edge_stub"
 	return e, nil
 }

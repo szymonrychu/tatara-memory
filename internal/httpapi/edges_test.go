@@ -9,23 +9,23 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/szymonrychu/tatara-memory/internal/httpapi"
+	"github.com/szymonrychu/tatara-memory/internal/memory"
 )
 
 type edgeStub struct {
 	stubService
-	list []httpapi.Edge
+	list []memory.Edge
 }
 
-func (s *edgeStub) ListEdges(_ context.Context) ([]httpapi.Edge, error) { return s.list, nil }
-func (s *edgeStub) CreateEdge(_ context.Context, e httpapi.Edge) (httpapi.Edge, error) {
+func (s *edgeStub) ListEdges(_ context.Context) ([]memory.Edge, error) { return s.list, nil }
+func (s *edgeStub) CreateEdge(_ context.Context, e memory.Edge) (memory.Edge, error) {
 	e.ID = "edge_new"
 	return e, nil
 }
 func (s *edgeStub) DeleteEdge(_ context.Context, _ string) error { return nil }
 
 func TestListEdges200(t *testing.T) {
-	srv := newSrv(t, &edgeStub{list: []httpapi.Edge{{ID: "e1"}}})
+	srv := newSrv(t, &edgeStub{list: []memory.Edge{{ID: "e1"}}})
 	defer srv.Close()
 	resp, err := http.Get(srv.URL + "/v1/edges")
 	require.NoError(t, err)
@@ -36,7 +36,7 @@ func TestListEdges200(t *testing.T) {
 func TestCreateEdge201(t *testing.T) {
 	srv := newSrv(t, &edgeStub{})
 	defer srv.Close()
-	body, _ := json.Marshal(httpapi.Edge{From: "a", To: "b", Relation: "rel"})
+	body, _ := json.Marshal(memory.Edge{From: "a", To: "b", Relation: "rel"})
 	resp, err := http.Post(srv.URL+"/v1/edges", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -46,7 +46,7 @@ func TestCreateEdge201(t *testing.T) {
 func TestCreateEdgeMissingFields400(t *testing.T) {
 	srv := newSrv(t, &edgeStub{})
 	defer srv.Close()
-	body, _ := json.Marshal(httpapi.Edge{From: "a"})
+	body, _ := json.Marshal(memory.Edge{From: "a"})
 	resp, err := http.Post(srv.URL+"/v1/edges", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()

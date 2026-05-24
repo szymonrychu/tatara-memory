@@ -9,26 +9,26 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/szymonrychu/tatara-memory/internal/httpapi"
+	"github.com/szymonrychu/tatara-memory/internal/memory"
 )
 
 type queryStub struct {
 	stubService
-	qres httpapi.QueryResult
-	dres httpapi.DescribeResult
+	qres memory.QueryResult
+	dres memory.DescribeResult
 	qerr error
 }
 
-func (q *queryStub) Query(_ context.Context, _ httpapi.Query) (httpapi.QueryResult, error) {
+func (q *queryStub) Query(_ context.Context, _ memory.Query) (memory.QueryResult, error) {
 	return q.qres, q.qerr
 }
 
-func (q *queryStub) Describe(_ context.Context, _ httpapi.Query) (httpapi.DescribeResult, error) {
+func (q *queryStub) Describe(_ context.Context, _ memory.Query) (memory.DescribeResult, error) {
 	return q.dres, q.qerr
 }
 
 func TestPostQuery200(t *testing.T) {
-	svc := &queryStub{qres: httpapi.QueryResult{Matches: []httpapi.QueryMatch{{ID: "m1", Score: 0.9}}}}
+	svc := &queryStub{qres: memory.QueryResult{Matches: []memory.QueryMatch{{ID: "m1", Score: 0.9}}}}
 	srv := newSrv(t, svc)
 	defer srv.Close()
 
@@ -38,7 +38,7 @@ func TestPostQuery200(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, 200, resp.StatusCode)
 
-	var got httpapi.QueryResult
+	var got memory.QueryResult
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
 	require.Len(t, got.Matches, 1)
 }
@@ -55,7 +55,7 @@ func TestPostQueryInvalidMode400(t *testing.T) {
 }
 
 func TestPostQueriesDescribe200(t *testing.T) {
-	svc := &queryStub{dres: httpapi.DescribeResult{Response: "answer"}}
+	svc := &queryStub{dres: memory.DescribeResult{Response: "answer"}}
 	srv := newSrv(t, svc)
 	defer srv.Close()
 

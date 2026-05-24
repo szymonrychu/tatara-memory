@@ -9,6 +9,7 @@ import (
 
 	"github.com/szymonrychu/tatara-memory/internal/auth/testjwks"
 	"github.com/szymonrychu/tatara-memory/internal/httpapi"
+	"github.com/szymonrychu/tatara-memory/internal/memory"
 )
 
 func TestProtectedRouteRejectsMissingToken(t *testing.T) {
@@ -33,7 +34,7 @@ func TestProtectedRouteAcceptsValidToken(t *testing.T) {
 	defer tj.Close()
 
 	r := httpapi.NewRouter(httpapi.Config{
-		Service: &stubService{getMem: httpapi.Memory{ID: "m1", Text: "hi"}},
+		Service: &stubService{getMem: memory.Memory{ID: "m1", Text: "hi"}},
 		Verify:  tj.Middleware("tatara-memory"),
 	})
 	srv := httptest.NewServer(r)

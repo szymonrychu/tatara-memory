@@ -12,18 +12,19 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/szymonrychu/tatara-memory/internal/httpapi"
+	"github.com/szymonrychu/tatara-memory/internal/memory"
 )
 
 type ingestStub struct {
-	enq httpapi.IngestJob
-	job httpapi.IngestJob
+	enq memory.IngestJob
+	job memory.IngestJob
 	err error
 }
 
-func (s *ingestStub) Enqueue(_ context.Context, _ []httpapi.IngestItem) (httpapi.IngestJob, error) {
+func (s *ingestStub) Enqueue(_ context.Context, _ []memory.IngestItem) (memory.IngestJob, error) {
 	return s.enq, s.err
 }
-func (s *ingestStub) GetJob(_ context.Context, _ string) (httpapi.IngestJob, error) {
+func (s *ingestStub) GetJob(_ context.Context, _ string) (memory.IngestJob, error) {
 	return s.job, s.err
 }
 
@@ -33,7 +34,7 @@ func newSrvIngest(t *testing.T, svc httpapi.MemoryService, ing httpapi.IngestSer
 }
 
 func TestBulkIngest202(t *testing.T) {
-	ing := &ingestStub{enq: httpapi.IngestJob{ID: "job1", Status: httpapi.JobStatusQueued}}
+	ing := &ingestStub{enq: memory.IngestJob{ID: "job1", Status: memory.JobStatusQueued}}
 	srv := newSrvIngest(t, &stubService{}, ing)
 	defer srv.Close()
 
@@ -45,7 +46,7 @@ func TestBulkIngest202(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusAccepted, resp.StatusCode)
 
-	var got httpapi.IngestJob
+	var got memory.IngestJob
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
 	require.Equal(t, "job1", got.ID)
 }
@@ -62,7 +63,7 @@ func TestBulkIngestEmpty400(t *testing.T) {
 }
 
 func TestGetJob200(t *testing.T) {
-	ing := &ingestStub{job: httpapi.IngestJob{ID: "j1", Status: httpapi.JobStatusRunning, Total: 5, Done: 2}}
+	ing := &ingestStub{job: memory.IngestJob{ID: "j1", Status: memory.JobStatusRunning, Total: 5, Done: 2}}
 	srv := newSrvIngest(t, &stubService{}, ing)
 	defer srv.Close()
 

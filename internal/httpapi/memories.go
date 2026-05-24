@@ -5,11 +5,13 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/szymonrychu/tatara-memory/internal/memory"
 )
 
 func handlePostMemory(cfg Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var m Memory
+		var m memory.Memory
 		if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
 			WriteError(w, http.StatusBadRequest, "invalid json", RequestIDFromContext(r.Context()))
 			return

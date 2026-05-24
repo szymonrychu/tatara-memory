@@ -5,6 +5,8 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/szymonrychu/tatara-memory/internal/memory"
 )
 
 func handleGetEntity(cfg Config) http.HandlerFunc {
@@ -36,7 +38,7 @@ func handleSearchEntities(cfg Config) http.HandlerFunc {
 
 func handlePatchEntity(cfg Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var patch Entity
+		var patch memory.Entity
 		if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
 			WriteError(w, http.StatusBadRequest, "invalid json", RequestIDFromContext(r.Context()))
 			return
