@@ -40,6 +40,16 @@ Format: `YYYY-MM-DD - decision/finding`
 2026-05-24 - httpapi developed locally during wave 3B with duplicate types (Memory, Query, etc.) and sentinels (ErrNotFound, ErrUpstream, ErrTransient); reconciled at wave-3-merge to import memory.* directly (TODO(wave-6-merge) resolved).
 2026-05-24 - e2e smoke test does not assert JSON envelope on 401 because internal/auth middleware writes plain text; only the status code is checked.
 
+2026-05-25 - wave 4A plan shows obs.Logger/obs.PromRegistry helpers that don't exist; actual API is obs.NewLogger(w, level) + obs.PromRegistry(). Adapted buildObs accordingly.
+2026-05-25 - wave 4A plan calls lightrag.NewClient(url, reg, logger) but actual constructor is lightrag.NewHTTPClient(HTTPConfig{...}). Used HTTPConfig struct.
+2026-05-25 - wave 4A plan calls auth.NewVerifier(ctx, issuer, audience) but actual is auth.NewVerifier(ctx, auth.Config{...}). Used Config struct.
+2026-05-25 - wave 4A plan calls ingest.NewPool(size, store, memSvc, logger) but actual is ingest.NewPool(store, runner, size). Reordered.
+2026-05-25 - wave 4A plan references httpapi.Deps struct; actual is httpapi.Config. Used Config. ReadyCheck field in httpapi.Config wires readyz instead of re-registering the route (router already owns /healthz and /readyz).
+2026-05-25 - wave 4A plan uses lib/pq driver; project already has pgx/v5/stdlib. Used pgx with sql.Open("pgx", dsn). No new go.mod dep needed.
+2026-05-25 - golangci-lint v2 exclude-rules path: _test.go does not suppress gosec in test files (confirmed broken with isolated config). Used //nolint:gosec inline on the 5 affected lines.
+2026-05-25 - integration test SIGTERM in plan kills the test process (no signal handler running during test). Removed SIGTERM send; shutdown is exercised directly via a.shutdown(). waitForSignal is tested separately in main_test.go.
+2026-05-25 - OIDC discovery stub must return issuer with scheme: `"issuer":"http://"+r.Host` not `"issuer":r.Host`; go-oidc/v3 validates issuer URL equality including scheme.
+
 ## Open questions
 
 *(nothing yet)*
