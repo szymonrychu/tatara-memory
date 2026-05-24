@@ -6,6 +6,7 @@ repos:
       - id: trailing-whitespace
       - id: check-yaml
         args: [--allow-multiple-documents]
+        exclude: ^charts/
       - id: check-merge-conflict
       - id: check-added-large-files
 
