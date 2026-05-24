@@ -1,0 +1,9 @@
+dependencies:
+- name: cluster
+  repository: https://cloudnative-pg.github.io/charts
+  version: 0.6.1
+- name: neo4j
+  repository: https://helm.neo4j.com/neo4j
+  version: 2026.4.0
+digest: sha256:a32d0576c224368732dbaa2da8eb476669d6afc4cf4a6b9ae509fc14377027b8
+generated: "2026-05-24T22:08:31.859969+02:00"

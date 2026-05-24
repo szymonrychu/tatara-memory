@@ -1,0 +1,37 @@
+environments:
+  default: {}
+
+---
+
+helmDefaults:
+  wait: true
+  syncArgs:
+    - --rollback-on-failure
+
+templates:
+  default: &default
+    missingFileHandler: Warn
+    values:
+      - values/common.yaml
+      - values/{{`{{ .Environment.Name }}`}}.yaml
+      - values/{{`{{ .Release.Name }}`}}/common.yaml
+      - values/{{`{{ .Release.Name }}`}}/{{`{{ .Environment.Name }}`}}.yaml
+      # secrets block enabled in Wave 7 once sops age key is configured:
+      # secrets:
+      #   - values/{{`{{ .Release.Name }}`}}/{{`{{ .Environment.Name }}`}}.secrets.yaml
+
+repositories:
+  - name: cnpg
+    url: https://cloudnative-pg.github.io/charts
+  - name: neo4j
+    url: https://helm.neo4j.com/neo4j
+
+releases:
+  - name: tatara-memory
+    chart: ./charts/tatara-memory
+    namespace: tatara-memory
+    createNamespace: true
+    labels:
+      purpose: tatara
+      application: tatara-memory
+    <<: *default
