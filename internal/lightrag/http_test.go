@@ -1,6 +1,7 @@
 package lightrag_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -212,4 +213,47 @@ func TestHTTPClient_Health(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 	require.NoError(t, c.Health(context.Background()))
+}
+
+func TestHTTPClient_InsertDocument_NoCreatedAt(t *testing.T) {
+	// A Document with no CreatedAt set must NOT include "created_at" in the JSON body.
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		var buf bytes.Buffer
+		_, _ = buf.ReadFrom(r.Body)
+		body := buf.String()
+		require.NotContains(t, body, "created_at",
+			"created_at must be absent when CreatedAt is nil")
+		_ = json.NewEncoder(w).Encode(lightrag.InsertResponse{IDs: []string{"doc-1"}})
+	})
+
+	_, err := c.InsertDocument(context.Background(), lightrag.InsertRequest{
+		Documents: []lightrag.Document{{Content: "no timestamp"}},
+	})
+	require.NoError(t, err)
+}
+
+func TestHTTPClient_PathEscape_SlashInID(t *testing.T) {
+	// An ID containing "/" must be percent-encoded in the URL path.
+	// net/http decodes r.URL.Path, so we check r.URL.RawPath for the wire encoding.
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		raw := r.URL.RawPath
+		if raw == "" {
+			raw = r.URL.Path // no encoding was needed; fallback
+		}
+		require.Equal(t, "/documents/a%2Fb", raw,
+			"slash in ID must be path-escaped to %%2F")
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	_ = c.DeleteDocument(context.Background(), "a/b")
+}
+
+func TestHTTPClient_AcceptHeader(t *testing.T) {
+	// Every request must carry Accept: application/json.
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "application/json", r.Header.Get("Accept"))
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	_ = c.DeleteDocument(context.Background(), "doc-1")
 }
