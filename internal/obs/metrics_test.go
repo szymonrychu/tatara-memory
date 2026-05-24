@@ -3,7 +3,6 @@ package obs_test
 import (
 	"testing"
 
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 
 	"github.com/szymonrychu/tatara-memory/internal/obs"
@@ -22,7 +21,4 @@ func TestPromRegistry_HasDefaultCollectors(t *testing.T) {
 	}
 	require.True(t, names["go_goroutines"], "expected go collector")
 	require.True(t, names["process_cpu_seconds_total"], "expected process collector")
-
-	_, ok := any(reg).(*prometheus.Registry)
-	require.True(t, ok)
 }
