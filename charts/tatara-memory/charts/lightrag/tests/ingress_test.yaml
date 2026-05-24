@@ -1,0 +1,32 @@
+suite: ingress
+templates:
+  - templates/ingress.yaml
+tests:
+  - it: disabled by default
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders when enabled with host and tls
+    set:
+      ingress:
+        enabled: true
+        className: nginx
+        host: lightrag.example.com
+        pathPrefix: /lightrag
+        tlsSecretName: lightrag-tls
+    asserts:
+      - isKind:
+          of: Ingress
+      - equal:
+          path: spec.ingressClassName
+          value: nginx
+      - equal:
+          path: spec.rules[0].host
+          value: lightrag.example.com
+      - equal:
+          path: spec.tls[0].secretName
+          value: lightrag-tls
+      - matchRegex:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/configuration-snippet"]
+          pattern: "sub_filter '\"/webui'"

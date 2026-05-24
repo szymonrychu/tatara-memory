@@ -1,0 +1,53 @@
+{{- if .Values.ingress.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "lightrag.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lightrag.labels" . | nindent 4 }}
+  annotations:
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.certManagerClusterIssuer | quote }}
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    {{- with .Values.ingress.whitelistSourceRange }}
+    nginx.ingress.kubernetes.io/whitelist-source-range: {{ . | quote }}
+    {{- end }}
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      sub_filter_once off;
+      sub_filter_types text/html application/javascript;
+      sub_filter '"/webui' '"{{ .Values.ingress.pathPrefix }}/webui';
+      sub_filter '"/auth-status' '"{{ .Values.ingress.pathPrefix }}/auth-status';
+      sub_filter '"/login' '"{{ .Values.ingress.pathPrefix }}/login';
+      sub_filter '"/query' '"{{ .Values.ingress.pathPrefix }}/query';
+      sub_filter '"/documents' '"{{ .Values.ingress.pathPrefix }}/documents';
+      sub_filter '"/graph' '"{{ .Values.ingress.pathPrefix }}/graph';
+      sub_filter '"/health' '"{{ .Values.ingress.pathPrefix }}/health';
+      sub_filter '"/docs' '"{{ .Values.ingress.pathPrefix }}/docs';
+      sub_filter '`/auth-status' '`{{ .Values.ingress.pathPrefix }}/auth-status';
+      sub_filter '`/login' '`{{ .Values.ingress.pathPrefix }}/login';
+      sub_filter '`/query' '`{{ .Values.ingress.pathPrefix }}/query';
+      sub_filter '`/documents' '`{{ .Values.ingress.pathPrefix }}/documents';
+      sub_filter '`/graph' '`{{ .Values.ingress.pathPrefix }}/graph';
+      sub_filter '`/graphs' '`{{ .Values.ingress.pathPrefix }}/graphs';
+      sub_filter '`/health' '`{{ .Values.ingress.pathPrefix }}/health';
+      sub_filter '`/docs' '`{{ .Values.ingress.pathPrefix }}/docs';
+spec:
+  ingressClassName: {{ .Values.ingress.className | quote }}
+  rules:
+  - host: {{ .Values.ingress.host | quote }}
+    http:
+      paths:
+      - path: {{ .Values.ingress.pathPrefix }}(/|$)(.*)
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: {{ include "lightrag.fullname" . }}
+            port:
+              name: http
+  tls:
+  - hosts:
+    - {{ .Values.ingress.host | quote }}
+    secretName: {{ .Values.ingress.tlsSecretName | quote }}
+{{- end }}

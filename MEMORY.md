@@ -53,6 +53,11 @@ Format: `YYYY-MM-DD - decision/finding`
 2026-05-25 - deployment.yaml checksum/config annotation uses envConfig helper (not include of configmap.yaml file) to stay compatible with helm-unittest per-template test isolation.
 2026-05-25 - secret stub: pg-password b64enc of empty string renders as "" not null; test uses exists: not isNotNullOrEmpty:.
 2026-05-25 - serviceMonitor.enabled and networkPolicy.enabled flipped to true in values.yaml as part of wave 4B (was false with comment "enabled in Wave 4B").
+2026-05-25 - lightrag subchart: checksum/config annotation uses `include "lightrag.configKeys"` not `include (print $.Template.BasePath "/configmap.yaml")`; the cross-template include pattern fails in helm-unittest when only deployment.yaml is selected.
+2026-05-25 - helm-unittest v1.1.0 does not support Chart.yaml as a template target; chart metadata tests use rendered labels from serviceaccount.yaml instead.
+2026-05-25 - helm-unittest v1.1.0 does not support `documentSelector`; tests that need to disambiguate multiple documents use per-test `template:` override or single-template suites.
+2026-05-25 - parent chart lightrag dependency test requires neo4j.neo4j.name and neo4j.volumes.data.mode set; neo4j subchart evaluates all templates (including required-value guards) even when only a lightrag template is targeted.
+2026-05-25 - `helm dep update` creates both `lightrag/` dir (in-place symlink) and `lightrag-0.1.0.tgz` (vendored tarball) in charts/; both are correct for file:// local deps.
 
 ## Open questions
 

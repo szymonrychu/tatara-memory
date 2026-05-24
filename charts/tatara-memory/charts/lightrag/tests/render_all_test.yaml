@@ -1,0 +1,60 @@
+suite: render-all-smoke
+tests:
+  - it: deployment renders and uses pinned digest
+    template: templates/deployment.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+      - matchRegex:
+          path: spec.template.spec.containers[0].image
+          pattern: "@sha256:[0-9a-f]{64}$"
+
+  - it: service renders
+    template: templates/service.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+
+  - it: configmap renders with kebab-case keys only
+    template: templates/configmap.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isNotNullOrEmpty:
+          path: data.kv-storage
+
+  - it: pvc renders by default
+    template: templates/pvc.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+
+  - it: serviceaccount renders by default
+    template: templates/serviceaccount.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+
+  - it: networkpolicy renders by default
+    template: templates/networkpolicy.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+
+  - it: ingress not rendered by default
+    template: templates/ingress.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: servicemonitor not rendered by default
+    template: templates/servicemonitor.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: secret not rendered when all existingSecret are set (defaults)
+    template: templates/secret.yaml
+    asserts:
+      - hasDocuments:
+          count: 0

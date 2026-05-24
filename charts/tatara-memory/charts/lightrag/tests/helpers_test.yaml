@@ -1,0 +1,25 @@
+suite: helpers
+templates:
+  - templates/serviceaccount.yaml
+  - templates/deployment.yaml
+tests:
+  - it: fullname is release-name-lightrag by default
+    template: templates/serviceaccount.yaml
+    asserts:
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-lightrag
+  - it: fullname respects fullnameOverride
+    template: templates/serviceaccount.yaml
+    set:
+      fullnameOverride: my-custom-name
+    asserts:
+      - equal:
+          path: metadata.name
+          value: my-custom-name
+  - it: image helper produces pinned digest string
+    template: templates/deployment.yaml
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].image
+          pattern: "^ghcr\\.io/hkuds/lightrag:v1\\.4\\.16@sha256:[0-9a-f]{64}$"

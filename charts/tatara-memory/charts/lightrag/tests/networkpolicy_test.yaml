@@ -1,0 +1,60 @@
+suite: networkpolicy
+templates:
+  - templates/networkpolicy.yaml
+tests:
+  - it: renders by default
+    asserts:
+      - isKind:
+          of: NetworkPolicy
+      - equal:
+          path: spec.podSelector.matchLabels["app.kubernetes.io/name"]
+          value: lightrag
+      - contains:
+          path: spec.policyTypes
+          content: Ingress
+      - contains:
+          path: spec.policyTypes
+          content: Egress
+
+  - it: ingress allows tatara-memory pod within same namespace
+    asserts:
+      - equal:
+          path: spec.ingress[0].from[0].podSelector.matchLabels["app.kubernetes.io/name"]
+          value: tatara-memory
+      - equal:
+          path: spec.ingress[0].ports[0].port
+          value: 9621
+
+  - it: egress permits postgres 5432 and neo4j 7687 in-cluster
+    asserts:
+      - contains:
+          path: spec.egress[0].ports
+          content:
+            port: 5432
+            protocol: TCP
+      - contains:
+          path: spec.egress[1].ports
+          content:
+            port: 7687
+            protocol: TCP
+
+  - it: egress permits DNS and external https
+    asserts:
+      - contains:
+          path: spec.egress[2].ports
+          content:
+            port: 53
+            protocol: UDP
+      - contains:
+          path: spec.egress[3].ports
+          content:
+            port: 443
+            protocol: TCP
+
+  - it: skipped when networkPolicy.enabled=false
+    set:
+      networkPolicy:
+        enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0

@@ -1,0 +1,23 @@
+suite: service
+templates:
+  - templates/service.yaml
+tests:
+  - it: renders a ClusterIP service on port 9621 named http
+    asserts:
+      - isKind:
+          of: Service
+      - equal:
+          path: spec.type
+          value: ClusterIP
+      - equal:
+          path: spec.ports[0].port
+          value: 9621
+      - equal:
+          path: spec.ports[0].name
+          value: http
+      - equal:
+          path: spec.ports[0].targetPort
+          value: http
+      - equal:
+          path: spec.selector["app.kubernetes.io/name"]
+          value: lightrag

@@ -15,8 +15,7 @@ dependencies:
     version: 2026.4.0
     repository: https://helm.neo4j.com/neo4j
     condition: neo4j.enabled
-  # lightrag subchart added in Wave 5
-  # - name: lightrag
-  #   version: 0.1.0
-  #   repository: file://charts/lightrag
-  #   condition: lightrag.enabled
+  - name: lightrag
+    version: 0.1.0
+    repository: file://charts/lightrag
+    condition: lightrag.enabled
