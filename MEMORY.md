@@ -40,6 +40,11 @@ Format: `YYYY-MM-DD - decision/finding`
 2026-05-24 - httpapi developed locally during wave 3B with duplicate types (Memory, Query, etc.) and sentinels (ErrNotFound, ErrUpstream, ErrTransient); reconciled at wave-3-merge to import memory.* directly (TODO(wave-6-merge) resolved).
 2026-05-24 - e2e smoke test does not assert JSON envelope on 401 because internal/auth middleware writes plain text; only the status code is checked.
 
+2026-05-25 - mise helm 3.16 cannot load helm-unittest plugin (platformHooks field in plugin.yaml is helm4 API); Makefile HELM_UNITTEST_BIN points at /opt/homebrew/bin/helm (4.x) for chart-test only; lint/package still use mise helm 3.16.
+2026-05-25 - deployment.yaml checksum/config annotation uses envConfig helper (not include of configmap.yaml file) to stay compatible with helm-unittest per-template test isolation.
+2026-05-25 - secret stub: pg-password b64enc of empty string renders as "" not null; test uses exists: not isNotNullOrEmpty:.
+2026-05-25 - serviceMonitor.enabled and networkPolicy.enabled flipped to true in values.yaml as part of wave 4B (was false with comment "enabled in Wave 4B").
+
 ## Open questions
 
 *(nothing yet)*
