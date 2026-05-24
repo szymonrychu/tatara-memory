@@ -38,7 +38,7 @@ func NewVerifier(ctx context.Context, cfg Config) (*Verifier, error) {
 func (v *Verifier) Verify(ctx context.Context, raw string) (*Claims, error) {
 	tok, err := v.verifier.Verify(ctx, raw)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("auth: verify token: %w", err)
 	}
 	var c Claims
 	if err := tok.Claims(&c); err != nil {
