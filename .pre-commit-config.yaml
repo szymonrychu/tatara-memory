@@ -24,7 +24,6 @@ repos:
     rev: v0.5.1
     hooks:
       - id: go-fmt
-      - id: go-imports
       - id: golangci-lint
 
   - repo: https://github.com/gruntwork-io/pre-commit
