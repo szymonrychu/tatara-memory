@@ -43,11 +43,11 @@ ingress:
   tlsSecretName: "tatara-memory-tls"
 
 serviceMonitor:
-  enabled: true
+  enabled: false  # enabled in Wave 4B once template lands
   interval: "30s"
 
 networkPolicy:
-  enabled: true
+  enabled: false  # enabled in Wave 4B once template lands
 
 postgres:
   enabled: true

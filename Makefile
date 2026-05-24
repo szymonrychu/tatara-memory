@@ -63,11 +63,11 @@ helmfile-lint:
 	mise exec -- helmfile --helm-binary $(HELM_BIN) lint
 
 chart-test:
-	helm unittest charts/tatara-memory
+	$(HELM_BIN) unittest charts/tatara-memory
 
 chart-push:
-	helm package charts/tatara-memory -d dist/
-	helm push dist/tatara-memory-*.tgz oci://$(REGISTRY)/charts
+	$(HELM_BIN) package charts/tatara-memory -d dist/
+	$(HELM_BIN) push dist/tatara-memory-*.tgz oci://$(REGISTRY)/charts
 
 clean:
 	rm -rf bin dist

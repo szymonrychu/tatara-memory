@@ -11,6 +11,8 @@ RUN go mod download
 
 COPY . .
 
+RUN mkdir -p /out
+
 ARG VERSION=dev
 ARG COMMIT=unknown
 ARG DATE=unknown
