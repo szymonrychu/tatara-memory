@@ -3,7 +3,7 @@ go = "1.25"
 helm = "3.16"
 helmfile = "0.171"
 sops = "3.9"
-golangci-lint = "1.62"
+golangci-lint = "2.11"
 pre-commit = "4.0"
 
 [env]
