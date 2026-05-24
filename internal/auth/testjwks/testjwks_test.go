@@ -11,6 +11,25 @@ import (
 	"github.com/szymonrychu/tatara-memory/internal/auth/testjwks"
 )
 
+func TestServer_SignsValidToken(t *testing.T) {
+	srv := testjwks.NewServer(t)
+	token := srv.SignToken(t, testjwks.Claims{
+		Issuer:   srv.Issuer(),
+		Audience: []string{"tatara-memory"},
+		Subject:  "user-1",
+		Extra:    map[string]any{"preferred_username": "szymon"},
+	})
+	require.NotEmpty(t, token)
+	// JWT has 3 dot-separated parts
+	parts := 0
+	for _, c := range token {
+		if c == '.' {
+			parts++
+		}
+	}
+	require.Equal(t, 2, parts)
+}
+
 func TestServer_ServesJWKS(t *testing.T) {
 	srv := testjwks.NewServer(t)
 	resp, err := http.Get(srv.JWKSURL())
