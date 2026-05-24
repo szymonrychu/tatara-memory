@@ -32,6 +32,12 @@ Format: `YYYY-MM-DD - decision/finding`
 2026-05-24 - lightrag/fake implements full Client interface from the start (no staged stubs); unused linter would reject partial implementation committed without all methods in use.
 2026-05-24 - metrics_test.go sums all label combinations for calls_total and duration_seconds; pre-init zeros don't inflate the sum because the test checks for exactly 1 after 1 call.
 
+2026-05-24 - wave 3A plan was written against a hypothetical lightrag API (DocID/Content fields, Insert/GetDoc method names, EntityPatch/EdgeCreate types); actual wave 2C API uses InsertDocument/GetDocument/DeleteDocument, InsertRequest.Documents slice, EntityUpdate with pointer fields, and CreateEdge taking Edge directly. Adapted translation layer accordingly.
+2026-05-24 - memory.Memory.Metadata is map[string]string (matches lightrag.Document.Metadata); plan showed map[string]interface{} which would not compile. Used string-valued maps throughout.
+2026-05-24 - wrapUpstream detects "not found" from fake client via strings.Contains(err.Error(), "not found"); HTTPError{Status:404} path is for production HTTP client. Both map to ErrNotFound.
+2026-05-24 - ingest newID helper duplicated in memory and ingest packages (no shared util); three similar lines beats premature abstraction per CLAUDE.md.
+2026-05-24 - PGStore.ListRunningJobs: defer rows.Close() needed wrapping as func(){}() to satisfy errcheck linter (golangci-lint v2).
+
 ## Open questions
 
 *(nothing yet)*
