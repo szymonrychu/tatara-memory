@@ -21,4 +21,8 @@ func TestClient_InterfaceMethods(t *testing.T) {
 	var _ lightrag.Client = (*stubClient)(nil)
 }
 
+func TestHTTPClient_ImplementsClient(t *testing.T) {
+	var _ lightrag.Client = (*lightrag.HTTPClient)(nil)
+}
+
 type stubClient struct{ lightrag.Client }
