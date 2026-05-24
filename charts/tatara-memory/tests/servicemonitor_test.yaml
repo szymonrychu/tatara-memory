@@ -1,0 +1,42 @@
+suite: servicemonitor
+templates:
+  - servicemonitor.yaml
+release:
+  name: tm
+  namespace: tatara
+tests:
+  - it: skipped when disabled
+    set:
+      serviceMonitor.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+  - it: renders a ServiceMonitor selecting deployment labels
+    set:
+      serviceMonitor.enabled: true
+      serviceMonitor.interval: "15s"
+      serviceMonitor.scrapeTimeout: "10s"
+    asserts:
+      - isKind:
+          of: ServiceMonitor
+      - equal:
+          path: spec.endpoints[0].port
+          value: http
+      - equal:
+          path: spec.endpoints[0].path
+          value: /metrics
+      - equal:
+          path: spec.endpoints[0].interval
+          value: 15s
+      - equal:
+          path: spec.endpoints[0].scrapeTimeout
+          value: 10s
+      - equal:
+          path: spec.selector.matchLabels["app.kubernetes.io/name"]
+          value: tatara-memory
+      - equal:
+          path: spec.selector.matchLabels["app.kubernetes.io/instance"]
+          value: tm
+      - equal:
+          path: spec.namespaceSelector.matchNames[0]
+          value: tatara
