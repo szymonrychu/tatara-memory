@@ -50,3 +50,29 @@ func TestHTTPClient_DeleteDocument(t *testing.T) {
 
 	require.NoError(t, c.DeleteDocument(context.Background(), "doc-1"))
 }
+
+func TestHTTPClient_GetDocument(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodGet, r.Method)
+		require.Equal(t, "/documents/doc-1", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(lightrag.Document{ID: "doc-1", Content: "hi"})
+	})
+
+	doc, err := c.GetDocument(context.Background(), "doc-1")
+	require.NoError(t, err)
+	require.Equal(t, "doc-1", doc.ID)
+	require.Equal(t, "hi", doc.Content)
+}
+
+func TestHTTPClient_GetDocument_404(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"not found"}`))
+	})
+
+	_, err := c.GetDocument(context.Background(), "missing")
+	require.Error(t, err)
+	var he *lightrag.HTTPError
+	require.ErrorAs(t, err, &he)
+	require.Equal(t, 404, he.Status)
+}
