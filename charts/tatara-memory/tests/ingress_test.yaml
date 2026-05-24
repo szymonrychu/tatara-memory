@@ -1,0 +1,39 @@
+suite: ingress
+templates:
+  - ingress.yaml
+release:
+  name: tm
+  namespace: tatara
+tests:
+  - it: skipped when ingress.enabled is false
+    set:
+      ingress.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+  - it: renders an Ingress with cert-manager and nginx annotations
+    set:
+      ingress.enabled: true
+      ingress.host: tm.example.test
+      ingress.clusterIssuer: letsencrypt-prod
+    asserts:
+      - isKind:
+          of: Ingress
+      - equal:
+          path: spec.ingressClassName
+          value: nginx
+      - equal:
+          path: metadata.annotations["cert-manager.io/cluster-issuer"]
+          value: letsencrypt-prod
+      - equal:
+          path: spec.rules[0].host
+          value: tm.example.test
+      - equal:
+          path: spec.rules[0].http.paths[0].backend.service.name
+          value: tm-tatara-memory
+      - equal:
+          path: spec.rules[0].http.paths[0].backend.service.port.name
+          value: http
+      - equal:
+          path: spec.tls[0].hosts[0]
+          value: tm.example.test

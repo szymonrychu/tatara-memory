@@ -1,0 +1,29 @@
+suite: service
+templates:
+  - service.yaml
+release:
+  name: tm
+  namespace: tatara
+tests:
+  - it: renders a Service exposing http on the app port
+    asserts:
+      - isKind:
+          of: Service
+      - equal:
+          path: spec.type
+          value: ClusterIP
+      - equal:
+          path: spec.ports[0].port
+          value: 8080
+      - equal:
+          path: spec.ports[0].targetPort
+          value: http
+      - equal:
+          path: spec.ports[0].name
+          value: http
+      - equal:
+          path: spec.selector["app.kubernetes.io/name"]
+          value: tatara-memory
+      - equal:
+          path: spec.selector["app.kubernetes.io/instance"]
+          value: tm

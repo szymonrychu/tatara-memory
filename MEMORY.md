@@ -49,6 +49,10 @@ Format: `YYYY-MM-DD - decision/finding`
 2026-05-25 - golangci-lint v2 exclude-rules path: _test.go does not suppress gosec in test files (confirmed broken with isolated config). Used //nolint:gosec inline on the 5 affected lines.
 2026-05-25 - integration test SIGTERM in plan kills the test process (no signal handler running during test). Removed SIGTERM send; shutdown is exercised directly via a.shutdown(). waitForSignal is tested separately in main_test.go.
 2026-05-25 - OIDC discovery stub must return issuer with scheme: `"issuer":"http://"+r.Host` not `"issuer":r.Host`; go-oidc/v3 validates issuer URL equality including scheme.
+2026-05-25 - mise helm 3.16 cannot load helm-unittest plugin (platformHooks field in plugin.yaml is helm4 API); Makefile HELM_UNITTEST_BIN points at /opt/homebrew/bin/helm (4.x) for chart-test only; lint/package still use mise helm 3.16.
+2026-05-25 - deployment.yaml checksum/config annotation uses envConfig helper (not include of configmap.yaml file) to stay compatible with helm-unittest per-template test isolation.
+2026-05-25 - secret stub: pg-password b64enc of empty string renders as "" not null; test uses exists: not isNotNullOrEmpty:.
+2026-05-25 - serviceMonitor.enabled and networkPolicy.enabled flipped to true in values.yaml as part of wave 4B (was false with comment "enabled in Wave 4B").
 
 ## Open questions
 

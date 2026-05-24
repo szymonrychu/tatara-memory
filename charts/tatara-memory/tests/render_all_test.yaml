@@ -1,0 +1,24 @@
+suite: render all templates
+templates:
+  - configmap.yaml
+  - secret.yaml
+  - serviceaccount.yaml
+  - service.yaml
+  - deployment.yaml
+  - ingress.yaml
+  - servicemonitor.yaml
+  - networkpolicy.yaml
+release:
+  name: tm
+  namespace: tatara
+tests:
+  - it: every template renders without error with ingress and monitor enabled
+    set:
+      ingress.enabled: true
+      ingress.host: tm.example.test
+      serviceMonitor.enabled: true
+      networkPolicy.enabled: true
+      image.tag: "1.0.0"
+    asserts:
+      - hasDocuments:
+          count: 1
