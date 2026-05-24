@@ -27,7 +27,7 @@ type Document struct {
 	ID        string            `json:"id"`
 	Content   string            `json:"content"`
 	Metadata  map[string]string `json:"metadata,omitempty"`
-	CreatedAt time.Time         `json:"created_at,omitempty"`
+	CreatedAt *time.Time        `json:"created_at,omitempty"`
 }
 
 // InsertRequest carries one or more documents to be inserted.
