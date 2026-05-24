@@ -37,6 +37,8 @@ Format: `YYYY-MM-DD - decision/finding`
 2026-05-24 - wrapUpstream detects "not found" from fake client via strings.Contains(err.Error(), "not found"); HTTPError{Status:404} path is for production HTTP client. Both map to ErrNotFound.
 2026-05-24 - ingest newID helper duplicated in memory and ingest packages (no shared util); three similar lines beats premature abstraction per CLAUDE.md.
 2026-05-24 - PGStore.ListRunningJobs: defer rows.Close() needed wrapping as func(){}() to satisfy errcheck linter (golangci-lint v2).
+2026-05-24 - httpapi developed locally during wave 3B with duplicate types (Memory, Query, etc.) and sentinels (ErrNotFound, ErrUpstream, ErrTransient); reconciled at wave-3-merge to import memory.* directly (TODO(wave-6-merge) resolved).
+2026-05-24 - e2e smoke test does not assert JSON envelope on 401 because internal/auth middleware writes plain text; only the status code is checked.
 
 ## Open questions
 
