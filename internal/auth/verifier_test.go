@@ -23,7 +23,7 @@ func TestVerifier_ValidToken(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	tok := srv.SignToken(t, testjwks.Claims{
+	tok := srv.SignTypedToken(t, testjwks.Claims{
 		Issuer:   srv.Issuer(),
 		Audience: []string{"tatara-memory"},
 		Subject:  "user-1",
@@ -46,7 +46,7 @@ func TestVerifier_ExpiredToken(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	tok := srv.SignToken(t, testjwks.Claims{
+	tok := srv.SignTypedToken(t, testjwks.Claims{
 		Issuer:    srv.Issuer(),
 		Audience:  []string{"tatara-memory"},
 		Subject:   "user-1",
@@ -70,7 +70,7 @@ func TestVerifier_WrongIssuer(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	tok := srv.SignToken(t, testjwks.Claims{
+	tok := srv.SignTypedToken(t, testjwks.Claims{
 		Issuer:   "https://evil.example/realms/master",
 		Audience: []string{"tatara-memory"},
 		Subject:  "user-1",
@@ -90,7 +90,7 @@ func TestVerifier_WrongAudience(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	tok := srv.SignToken(t, testjwks.Claims{
+	tok := srv.SignTypedToken(t, testjwks.Claims{
 		Issuer:   srv.Issuer(),
 		Audience: []string{"some-other-app"},
 		Subject:  "user-1",
@@ -133,7 +133,7 @@ func TestVerifier_MissingSubClaim(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	tok := srv.SignToken(t, testjwks.Claims{
+	tok := srv.SignTypedToken(t, testjwks.Claims{
 		Issuer:   srv.Issuer(),
 		Audience: []string{"tatara-memory"},
 		// Subject deliberately empty

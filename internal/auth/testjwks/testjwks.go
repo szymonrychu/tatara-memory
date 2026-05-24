@@ -1,17 +1,22 @@
 package testjwks
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/require"
+
+	"github.com/szymonrychu/tatara-memory/internal/auth"
 )
 
 // Server is an in-process OIDC-compatible test server backed by an RSA key pair.
@@ -21,10 +26,13 @@ type Server struct {
 	key    *rsa.PrivateKey
 	kid    string
 	issuer string
+
+	closeOnce sync.Once
 }
 
-// NewServer creates a new test JWKS server and registers cleanup on t.
-func NewServer(t *testing.T) *Server {
+// Start creates a new test JWKS server and registers cleanup on t.
+// This is the canonical Wave 3B entry point.
+func Start(t *testing.T) *Server {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
@@ -55,8 +63,21 @@ func NewServer(t *testing.T) *Server {
 
 	s.srv = httptest.NewServer(mux)
 	s.issuer = s.srv.URL
-	t.Cleanup(s.srv.Close)
+	t.Cleanup(s.Close)
 	return s
+}
+
+// NewServer is an alias for Start kept for backward compatibility.
+func NewServer(t *testing.T) *Server {
+	t.Helper()
+	return Start(t)
+}
+
+// Close shuts down the test server. Idempotent: safe to call alongside t.Cleanup.
+func (s *Server) Close() {
+	s.closeOnce.Do(func() {
+		s.srv.Close()
+	})
 }
 
 // Issuer returns the base URL of the test server (acts as OIDC issuer).
@@ -76,8 +97,40 @@ type Claims struct {
 	Extra     map[string]any
 }
 
-// SignToken signs a JWT with the server's RSA key.
-func (s *Server) SignToken(t *testing.T, c Claims) string {
+// SignToken signs a JWT using a map of claim name -> value.
+// This is the Wave 3B canonical form: tj.SignToken(map[string]interface{}{"sub": "alice", ...}).
+// Standard claims default when absent: iss=server issuer, iat/nbf=now, exp=now+1h.
+func (s *Server) SignToken(claims map[string]interface{}) string {
+	s.t.Helper()
+	now := time.Now()
+
+	mc := jwt.MapClaims{}
+	for k, v := range claims {
+		mc[k] = v
+	}
+	if _, ok := mc["iss"]; !ok {
+		mc["iss"] = s.issuer
+	}
+	if _, ok := mc["iat"]; !ok {
+		mc["iat"] = now.Unix()
+	}
+	if _, ok := mc["nbf"]; !ok {
+		mc["nbf"] = now.Unix()
+	}
+	if _, ok := mc["exp"]; !ok {
+		mc["exp"] = now.Add(time.Hour).Unix()
+	}
+
+	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, mc)
+	tok.Header["kid"] = s.kid
+	signed, err := tok.SignedString(s.key)
+	require.NoError(s.t, err)
+	return signed
+}
+
+// SignTypedToken signs a JWT from a strongly-typed Claims struct.
+// Used by existing 2B internal tests; Wave 3B callers use SignToken (map form).
+func (s *Server) SignTypedToken(t *testing.T, c Claims) string {
 	t.Helper()
 	now := time.Now()
 	if c.IssuedAt.IsZero() {
@@ -90,7 +143,7 @@ func (s *Server) SignToken(t *testing.T, c Claims) string {
 		c.ExpiresAt = now.Add(time.Hour)
 	}
 
-	claims := jwt.MapClaims{
+	mc := jwt.MapClaims{
 		"iss": c.Issuer,
 		"aud": c.Audience,
 		"sub": c.Subject,
@@ -99,10 +152,10 @@ func (s *Server) SignToken(t *testing.T, c Claims) string {
 		"exp": c.ExpiresAt.Unix(),
 	}
 	for k, v := range c.Extra {
-		claims[k] = v
+		mc[k] = v
 	}
 
-	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, mc)
 	tok.Header["kid"] = s.kid
 	signed, err := tok.SignedString(s.key)
 	require.NoError(t, err)
@@ -112,7 +165,46 @@ func (s *Server) SignToken(t *testing.T, c Claims) string {
 // SignTokenWithKey signs a JWT with a foreign RSA key (for bad-signature tests).
 func (s *Server) SignTokenWithKey(t *testing.T, key *rsa.PrivateKey, c Claims) string {
 	t.Helper()
-	tmp := *s
-	tmp.key = key
-	return tmp.SignToken(t, c)
+	now := time.Now()
+	if c.IssuedAt.IsZero() {
+		c.IssuedAt = now
+	}
+	if c.NotBefore.IsZero() {
+		c.NotBefore = now
+	}
+	if c.ExpiresAt.IsZero() {
+		c.ExpiresAt = now.Add(time.Hour)
+	}
+
+	mc := jwt.MapClaims{
+		"iss": c.Issuer,
+		"aud": c.Audience,
+		"sub": c.Subject,
+		"iat": c.IssuedAt.Unix(),
+		"nbf": c.NotBefore.Unix(),
+		"exp": c.ExpiresAt.Unix(),
+	}
+	for k, v := range c.Extra {
+		mc[k] = v
+	}
+
+	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, mc)
+	tok.Header["kid"] = s.kid
+	signed, err := tok.SignedString(key)
+	require.NoError(t, err)
+	return signed
+}
+
+// Middleware returns a chi-compatible middleware that verifies bearer tokens
+// against this test server's keys for the given audience.
+func (s *Server) Middleware(audience string) func(http.Handler) http.Handler {
+	s.t.Helper()
+	v, err := auth.NewVerifier(context.Background(), auth.Config{
+		Issuer:   s.issuer,
+		Audience: audience,
+	})
+	if err != nil {
+		panic(fmt.Sprintf("testjwks: NewVerifier: %v", err))
+	}
+	return auth.Middleware(v)
 }

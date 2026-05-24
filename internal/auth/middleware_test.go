@@ -31,7 +31,7 @@ func TestMiddleware_ValidTokenInjectsClaims(t *testing.T) {
 		_, _ = w.Write([]byte(c.Subject))
 	})
 
-	tok := srv.SignToken(t, testjwks.Claims{
+	tok := srv.SignTypedToken(t, testjwks.Claims{
 		Issuer:   srv.Issuer(),
 		Audience: []string{"tatara-memory"},
 		Subject:  "user-1",
@@ -61,6 +61,7 @@ func TestMiddleware_MissingTokenReturns401(t *testing.T) {
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	require.Equal(t, `Bearer realm="tatara-memory"`, rec.Header().Get("WWW-Authenticate"))
 }
 
 func TestMiddleware_InvalidTokenReturns401(t *testing.T) {
@@ -79,4 +80,5 @@ func TestMiddleware_InvalidTokenReturns401(t *testing.T) {
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	require.Equal(t, `Bearer realm="tatara-memory"`, rec.Header().Get("WWW-Authenticate"))
 }
