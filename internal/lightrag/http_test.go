@@ -76,3 +76,50 @@ func TestHTTPClient_GetDocument_404(t *testing.T) {
 	require.ErrorAs(t, err, &he)
 	require.Equal(t, 404, he.Status)
 }
+
+func TestHTTPClient_Query(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, "/query", r.URL.Path)
+		var in lightrag.QueryRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&in))
+		require.Equal(t, lightrag.QueryModeHybrid, in.Mode)
+		require.Equal(t, "what is X", in.Query)
+
+		_ = json.NewEncoder(w).Encode(lightrag.QueryResponse{
+			Matches: []lightrag.Match{{ID: "m1", Score: 0.9, Text: "X is Y"}},
+		})
+	})
+
+	resp, err := c.Query(context.Background(), lightrag.QueryRequest{
+		Query: "what is X", Mode: lightrag.QueryModeHybrid,
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Matches, 1)
+	require.Equal(t, "m1", resp.Matches[0].ID)
+}
+
+func TestHTTPClient_QueryDescribe(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/query/describe", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(lightrag.DescribeResponse{
+			Response: "X is Y because Z",
+			Sources:  []string{"doc-1", "doc-2"},
+		})
+	})
+
+	resp, err := c.QueryDescribe(context.Background(), lightrag.QueryRequest{
+		Query: "explain X", Mode: lightrag.QueryModeGlobal,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "X is Y because Z", resp.Response)
+	require.Len(t, resp.Sources, 2)
+}
+
+func TestHTTPClient_Query_RejectsInvalidMode(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("server should not be called")
+	})
+	_, err := c.Query(context.Background(), lightrag.QueryRequest{Query: "x", Mode: "bogus"})
+	require.Error(t, err)
+}
