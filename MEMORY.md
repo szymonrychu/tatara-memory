@@ -32,6 +32,10 @@ Format: `YYYY-MM-DD - decision/finding`
 2026-05-24 - lightrag/fake implements full Client interface from the start (no staged stubs); unused linter would reject partial implementation committed without all methods in use.
 2026-05-24 - metrics_test.go sums all label combinations for calls_total and duration_seconds; pre-init zeros don't inflate the sum because the test checks for exactly 1 after 1 call.
 
+2026-05-24 - httpapi defines local types (Memory, Query, QueryResult, DescribeResult, Entity, Edge, IngestItem, IngestJob) instead of importing internal/memory (Wave 3A parallel); reconciliation marked TODO(wave-6-merge) in types.go.
+2026-05-24 - httpapi error sentinels (ErrNotFound, ErrUpstream, ErrTransient) defined locally in types.go; at merge, errmap.go must switch to errors.Is against memory.ErrNotFound etc.
+2026-05-24 - e2e smoke test does not assert JSON envelope on 401 because internal/auth middleware writes plain text; only the status code is checked.
+
 ## Open questions
 
 *(nothing yet)*
