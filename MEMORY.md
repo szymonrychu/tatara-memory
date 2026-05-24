@@ -40,6 +40,12 @@ Format: `YYYY-MM-DD - decision/finding`
 2026-05-24 - httpapi developed locally during wave 3B with duplicate types (Memory, Query, etc.) and sentinels (ErrNotFound, ErrUpstream, ErrTransient); reconciled at wave-3-merge to import memory.* directly (TODO(wave-6-merge) resolved).
 2026-05-24 - e2e smoke test does not assert JSON envelope on 401 because internal/auth middleware writes plain text; only the status code is checked.
 
+2026-05-25 - lightrag subchart: checksum/config annotation uses `include "lightrag.configKeys"` not `include (print $.Template.BasePath "/configmap.yaml")`; the cross-template include pattern fails in helm-unittest when only deployment.yaml is selected.
+2026-05-25 - helm-unittest v1.1.0 does not support Chart.yaml as a template target; chart metadata tests use rendered labels from serviceaccount.yaml instead.
+2026-05-25 - helm-unittest v1.1.0 does not support `documentSelector`; tests that need to disambiguate multiple documents use per-test `template:` override or single-template suites.
+2026-05-25 - parent chart lightrag dependency test requires neo4j.neo4j.name and neo4j.volumes.data.mode set; neo4j subchart evaluates all templates (including required-value guards) even when only a lightrag template is targeted.
+2026-05-25 - `helm dep update` creates both `lightrag/` dir (in-place symlink) and `lightrag-0.1.0.tgz` (vendored tarball) in charts/; both are correct for file:// local deps.
+
 ## Open questions
 
 *(nothing yet)*
