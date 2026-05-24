@@ -3,6 +3,7 @@ package memory_test
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -11,6 +12,38 @@ import (
 	"github.com/szymonrychu/tatara-memory/internal/lightrag/fake"
 	"github.com/szymonrychu/tatara-memory/internal/memory"
 )
+
+// errClient is a minimal lightrag.Client stub that returns a fixed error for every method.
+type errClient struct{ err error }
+
+func (e *errClient) InsertDocument(_ context.Context, _ lightrag.InsertRequest) (*lightrag.InsertResponse, error) {
+	return nil, e.err
+}
+func (e *errClient) GetDocument(_ context.Context, _ string) (*lightrag.Document, error) {
+	return nil, e.err
+}
+func (e *errClient) DeleteDocument(_ context.Context, _ string) error { return e.err }
+func (e *errClient) Query(_ context.Context, _ lightrag.QueryRequest) (*lightrag.QueryResponse, error) {
+	return nil, e.err
+}
+func (e *errClient) QueryDescribe(_ context.Context, _ lightrag.QueryRequest) (*lightrag.DescribeResponse, error) {
+	return nil, e.err
+}
+func (e *errClient) ListEntities(_ context.Context, _ string) ([]lightrag.Entity, error) {
+	return nil, e.err
+}
+func (e *errClient) GetEntity(_ context.Context, _ string) (*lightrag.Entity, error) {
+	return nil, e.err
+}
+func (e *errClient) UpdateEntity(_ context.Context, _ string, _ lightrag.EntityUpdate) (*lightrag.Entity, error) {
+	return nil, e.err
+}
+func (e *errClient) ListEdges(_ context.Context) ([]lightrag.Edge, error) { return nil, e.err }
+func (e *errClient) CreateEdge(_ context.Context, _ lightrag.Edge) (*lightrag.Edge, error) {
+	return nil, e.err
+}
+func (e *errClient) DeleteEdge(_ context.Context, _ string) error { return e.err }
+func (e *errClient) Health(_ context.Context) error               { return e.err }
 
 func TestServiceCreateGetDelete(t *testing.T) {
 	ctx := context.Background()
@@ -99,4 +132,44 @@ func TestServiceNotFoundWrapped(t *testing.T) {
 	svc := memory.NewService(fake.New())
 	_, err := svc.GetMemory(ctx, "nonexistent")
 	require.True(t, errors.Is(err, memory.ErrNotFound), "expected ErrNotFound, got: %v", err)
+}
+
+func TestServiceErrTransient(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("http 500 yields ErrTransient", func(t *testing.T) {
+		svc := memory.NewService(&errClient{err: &lightrag.HTTPError{Status: http.StatusInternalServerError, Path: "/documents/x"}})
+		_, err := svc.GetMemory(ctx, "x")
+		require.ErrorIs(t, err, memory.ErrTransient, "expected ErrTransient, got: %v", err)
+	})
+
+	t.Run("http 503 yields ErrTransient", func(t *testing.T) {
+		svc := memory.NewService(&errClient{err: &lightrag.HTTPError{Status: http.StatusServiceUnavailable, Path: "/documents/x"}})
+		_, err := svc.GetMemory(ctx, "x")
+		require.ErrorIs(t, err, memory.ErrTransient, "expected ErrTransient, got: %v", err)
+	})
+
+	t.Run("context.DeadlineExceeded yields ErrTransient", func(t *testing.T) {
+		svc := memory.NewService(&errClient{err: context.DeadlineExceeded})
+		_, err := svc.GetMemory(ctx, "x")
+		require.ErrorIs(t, err, memory.ErrTransient, "expected ErrTransient, got: %v", err)
+	})
+
+	t.Run("context.Canceled yields ErrTransient", func(t *testing.T) {
+		svc := memory.NewService(&errClient{err: context.Canceled})
+		_, err := svc.GetMemory(ctx, "x")
+		require.ErrorIs(t, err, memory.ErrTransient, "expected ErrTransient, got: %v", err)
+	})
+
+	t.Run("http 404 still yields ErrNotFound", func(t *testing.T) {
+		svc := memory.NewService(&errClient{err: &lightrag.HTTPError{Status: http.StatusNotFound, Path: "/documents/x"}})
+		_, err := svc.GetMemory(ctx, "x")
+		require.ErrorIs(t, err, memory.ErrNotFound, "expected ErrNotFound, got: %v", err)
+	})
+
+	t.Run("http 400 yields ErrUpstream", func(t *testing.T) {
+		svc := memory.NewService(&errClient{err: &lightrag.HTTPError{Status: http.StatusBadRequest, Path: "/documents/x"}})
+		_, err := svc.GetMemory(ctx, "x")
+		require.ErrorIs(t, err, memory.ErrUpstream, "expected ErrUpstream, got: %v", err)
+	})
 }

@@ -3,7 +3,6 @@ package fake
 
 import (
 	"context"
-	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -80,7 +79,7 @@ func (c *Client) GetDocument(_ context.Context, id string) (*lightrag.Document, 
 	defer c.mu.Unlock()
 	d, ok := c.docs[id]
 	if !ok {
-		return nil, fmt.Errorf("fake: document %q not found", id)
+		return nil, &lightrag.HTTPError{Status: 404, Path: "/documents/" + id, Body: "not found"}
 	}
 	return &d, nil
 }
@@ -90,7 +89,7 @@ func (c *Client) DeleteDocument(_ context.Context, id string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if _, ok := c.docs[id]; !ok {
-		return fmt.Errorf("fake: document %q not found", id)
+		return &lightrag.HTTPError{Status: 404, Path: "/documents/" + id, Body: "not found"}
 	}
 	delete(c.docs, id)
 	return nil
@@ -129,7 +128,7 @@ func (c *Client) GetEntity(_ context.Context, id string) (*lightrag.Entity, erro
 	defer c.mu.Unlock()
 	e, ok := c.entities[id]
 	if !ok {
-		return nil, fmt.Errorf("fake: entity %q not found", id)
+		return nil, &lightrag.HTTPError{Status: 404, Path: "/entities/" + id, Body: "not found"}
 	}
 	return &e, nil
 }
@@ -140,7 +139,7 @@ func (c *Client) UpdateEntity(_ context.Context, id string, upd lightrag.EntityU
 	defer c.mu.Unlock()
 	e, ok := c.entities[id]
 	if !ok {
-		return nil, fmt.Errorf("fake: entity %q not found", id)
+		return nil, &lightrag.HTTPError{Status: 404, Path: "/entities/" + id, Body: "not found"}
 	}
 	if upd.Name != nil {
 		e.Name = *upd.Name
@@ -185,7 +184,7 @@ func (c *Client) DeleteEdge(_ context.Context, id string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if _, ok := c.edges[id]; !ok {
-		return fmt.Errorf("fake: edge %q not found", id)
+		return &lightrag.HTTPError{Status: 404, Path: "/edges/" + id, Body: "not found"}
 	}
 	delete(c.edges, id)
 	return nil

@@ -6,7 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"strings"
+	"net/http"
 	"time"
 
 	"github.com/szymonrychu/tatara-memory/internal/lightrag"
@@ -17,6 +17,9 @@ var ErrNotFound = errors.New("memory: not found")
 
 // ErrUpstream is returned when the LightRAG backend returns an unexpected error.
 var ErrUpstream = errors.New("memory: upstream error")
+
+// ErrTransient is returned when the LightRAG backend is temporarily unavailable (5xx, timeout, cancellation).
+var ErrTransient = errors.New("memory: transient upstream error")
 
 // Service provides memory CRUD and retrieval operations backed by LightRAG.
 type Service struct {
@@ -40,11 +43,18 @@ func wrapUpstream(err error) error {
 		return nil
 	}
 	var he *lightrag.HTTPError
-	if errors.As(err, &he) && he.Status == 404 {
-		return ErrNotFound
+	if errors.As(err, &he) {
+		switch {
+		case he.Status == http.StatusNotFound:
+			return fmt.Errorf("%w: %v", ErrNotFound, err)
+		case he.Status >= 500:
+			return fmt.Errorf("%w: %v", ErrTransient, err)
+		default:
+			return fmt.Errorf("%w: %v", ErrUpstream, err)
+		}
 	}
-	if strings.Contains(err.Error(), "not found") {
-		return ErrNotFound
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return fmt.Errorf("%w: %v", ErrTransient, err)
 	}
 	return fmt.Errorf("%w: %v", ErrUpstream, err)
 }
