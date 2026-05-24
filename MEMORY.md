@@ -26,6 +26,9 @@ Format: `YYYY-MM-DD - decision/finding`
 2026-05-24 - `go mod tidy` removes all deps that aren't imported yet; baseline deps must be added without running tidy (or tidy would strip them). They land as `// indirect` until code imports them.
 2026-05-24 - GOFLAGS=-count=1 in .mise.toml breaks `go get` (invalid flag for that command); must unset GOFLAGS when running go get.
 
+2026-05-24 - disabled revive `exported` rule in .golangci.yml; CLAUDE.md hard rule prohibits docstrings on new code, rule is incompatible with that constraint.
+2026-05-24 - otlptracegrpc not pre-seeded in Wave 1 go.mod (only otlptracehttp was); added via `go get` in Wave 2A; semconv/v1.26.0 is a subpackage of go.opentelemetry.io/otel, no separate module needed.
+
 ## Open questions
 
 *(nothing yet)*
