@@ -9,6 +9,15 @@ DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
 IMAGE_REF := $(REGISTRY)/$(IMAGE_NAME):$(VERSION)
 
+# Resolve helm binary via mise to avoid homebrew helm 4.x shadow.
+# mise exec sets a PATH that includes the versioned helm dir before homebrew.
+HELM_BIN := $(shell mise exec -- bash -c 'echo $$PATH' | tr ':' '\n' | grep -m1 'mise/installs/helm')
+ifdef HELM_BIN
+HELM_BIN := $(HELM_BIN)/helm
+else
+HELM_BIN := helm
+endif
+
 .PHONY: all lint test build image push chart-lint helmfile-lint chart-test chart-push tidy fmt clean
 
 all: lint test build
@@ -48,10 +57,10 @@ push: image
 	docker push $(IMAGE_REF)
 
 chart-lint:
-	mise exec -- helm lint charts/tatara-memory
+	$(HELM_BIN) lint charts/tatara-memory
 
 helmfile-lint:
-	mise exec -- helmfile lint
+	mise exec -- helmfile --helm-binary $(HELM_BIN) lint
 
 chart-test:
 	helm unittest charts/tatara-memory
