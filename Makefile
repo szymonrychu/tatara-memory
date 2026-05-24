@@ -18,6 +18,11 @@ else
 HELM_BIN := helm
 endif
 
+# helm-unittest plugin requires helm 4.x plugin API (platformHooks). The mise-managed
+# helm 3.16 cannot load the plugin. Use brew-installed helm 4.x (direct path) for
+# chart-test so the unittest plugin resolves correctly.
+HELM_UNITTEST_BIN := $(shell ls /opt/homebrew/bin/helm 2>/dev/null || echo $(HELM_BIN))
+
 .PHONY: all lint test build image push chart-lint helmfile-lint chart-test chart-push tidy fmt clean
 
 all: lint test build
@@ -63,7 +68,7 @@ helmfile-lint:
 	mise exec -- helmfile --helm-binary $(HELM_BIN) lint
 
 chart-test:
-	$(HELM_BIN) unittest charts/tatara-memory
+	$(HELM_UNITTEST_BIN) unittest charts/tatara-memory
 
 chart-push:
 	$(HELM_BIN) package charts/tatara-memory -d dist/
