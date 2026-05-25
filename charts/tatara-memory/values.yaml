@@ -1,5 +1,5 @@
 image:
-  repository: harbor.szymonrichert.pl/tatara/tatara-memory
+  repository: harbor.szymonrichert.pl/containers/tatara-memory
   tag: ""
   pullPolicy: IfNotPresent
 
