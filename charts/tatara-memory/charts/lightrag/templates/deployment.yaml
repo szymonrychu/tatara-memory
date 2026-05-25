@@ -37,18 +37,26 @@ spec:
         envFrom:
         - configMapRef:
             name: {{ include "lightrag.fullname" . }}
-        - secretRef:
-            name: {{ include "lightrag.openaiSecretName" . }}
-        {{- $pg := include "lightrag.postgresSecretName" . }}
-        {{- if ne $pg (include "lightrag.openaiSecretName" .) }}
-        - secretRef:
-            name: {{ $pg }}
-        {{- end }}
-        {{- $n4 := include "lightrag.neo4jSecretName" . }}
-        {{- if and (ne $n4 (include "lightrag.openaiSecretName" .)) (ne $n4 $pg) }}
-        - secretRef:
-            name: {{ $n4 }}
-        {{- end }}
+        env:
+        # Project per-key from the referenced secrets under the upstream
+        # env names that LightRAG expects. Inline env is the cleanest
+        # way to map source key names (cnpg's `password`) to upstream's
+        # expected names (POSTGRES_PASSWORD) without an extra operator.
+        - name: LLM_BINDING_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "lightrag.openaiSecretName" . }}
+              key: {{ include "lightrag.openaiSecretKey" . }}
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "lightrag.postgresSecretName" . }}
+              key: {{ include "lightrag.postgresSecretKey" . }}
+        - name: NEO4J_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "lightrag.neo4jSecretName" . }}
+              key: {{ include "lightrag.neo4jSecretKey" . }}
         startupProbe:
           tcpSocket:
             port: http

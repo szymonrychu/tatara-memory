@@ -43,6 +43,17 @@ spec:
                 name: {{ include "tatara-memory.fullname" . }}
             - secretRef:
                 name: {{ default (include "tatara-memory.fullname" .) .Values.existingSecret }}
+          env:
+            # PG_DSN comes straight from the cnpg cluster's app secret;
+            # cnpg packages user, password, host, port, db into a ready-to-use
+            # URI key. Inline env here is the only practical way to project
+            # one key (uri) under a custom env name (PG_DSN) without an extra
+            # ExternalSecret operator. See MEMORY.md for the rationale.
+            - name: PG_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.pgPasswordSecret }}
+                  key: uri
           livenessProbe:
             httpGet:
               path: /healthz

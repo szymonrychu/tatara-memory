@@ -12,3 +12,4 @@ rules:
 ignore: |
   charts/*/templates/
   charts/*/charts/*/templates/
+  **/*.secrets.yaml

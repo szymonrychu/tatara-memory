@@ -57,23 +57,24 @@ and replacing "-" with "_" downstream. We render kebab-case here
 because that is the project-wide convention.
 */}}
 {{- define "lightrag.configKeys" -}}
-llm-binding: {{ .Values.llmBinding | quote }}
-llm-model: {{ .Values.llmModel | quote }}
-embedding-binding: {{ .Values.embeddingBinding | quote }}
-embedding-model: {{ .Values.embeddingModel | quote }}
-embedding-dim: {{ .Values.embeddingDim | quote }}
-kv-storage: {{ .Values.kvStorage | quote }}
-vector-storage: {{ .Values.vectorStorage | quote }}
-graph-storage: {{ .Values.graphStorage | quote }}
-doc-status-storage: {{ .Values.docStatusStorage | quote }}
-neo4j-uri: {{ .Values.neo4jUri | quote }}
-max-async: {{ .Values.maxAsync | quote }}
-max-parallel-insert: {{ .Values.maxParallelInsert | quote }}
-embedding-func-max-async: {{ .Values.embeddingFuncMaxAsync | quote }}
-postgres-host: {{ .Values.postgresHost | quote }}
-postgres-port: {{ .Values.postgresPort | quote }}
-postgres-database: {{ .Values.postgresDatabase | quote }}
-postgres-user: {{ .Values.postgresUser | quote }}
+LLM_BINDING: {{ .Values.llmBinding | quote }}
+LLM_MODEL: {{ .Values.llmModel | quote }}
+EMBEDDING_BINDING: {{ .Values.embeddingBinding | quote }}
+EMBEDDING_MODEL: {{ .Values.embeddingModel | quote }}
+EMBEDDING_DIM: {{ .Values.embeddingDim | quote }}
+LIGHTRAG_KV_STORAGE: {{ .Values.kvStorage | quote }}
+LIGHTRAG_VECTOR_STORAGE: {{ .Values.vectorStorage | quote }}
+LIGHTRAG_GRAPH_STORAGE: {{ .Values.graphStorage | quote }}
+LIGHTRAG_DOC_STATUS_STORAGE: {{ .Values.docStatusStorage | quote }}
+NEO4J_URI: {{ .Values.neo4jUri | quote }}
+NEO4J_USERNAME: "neo4j"
+MAX_ASYNC: {{ .Values.maxAsync | quote }}
+MAX_PARALLEL_INSERT: {{ .Values.maxParallelInsert | quote }}
+EMBEDDING_FUNC_MAX_ASYNC: {{ .Values.embeddingFuncMaxAsync | quote }}
+POSTGRES_HOST: {{ .Values.postgresHost | quote }}
+POSTGRES_PORT: {{ .Values.postgresPort | quote }}
+POSTGRES_DATABASE: {{ .Values.postgresDatabase | quote }}
+POSTGRES_USER: {{ .Values.postgresUser | quote }}
 {{- end }}
 
 {{/*
@@ -88,19 +89,19 @@ it; otherwise point at our own rendered Secret with the canonical key.
 {{- default (include "lightrag.secretName" .) .Values.secrets.openai.existingSecret -}}
 {{- end }}
 {{- define "lightrag.openaiSecretKey" -}}
-{{- default "lightrag-openai-api-key" .Values.secrets.openai.existingSecretKey -}}
+{{- default "LLM_BINDING_API_KEY" .Values.secrets.openai.existingSecretKey -}}
 {{- end }}
 
 {{- define "lightrag.postgresSecretName" -}}
 {{- default (include "lightrag.secretName" .) .Values.secrets.postgres.existingSecret -}}
 {{- end }}
 {{- define "lightrag.postgresSecretKey" -}}
-{{- default "postgres-password" .Values.secrets.postgres.existingSecretKey -}}
+{{- default "password" .Values.secrets.postgres.existingSecretKey -}}
 {{- end }}
 
 {{- define "lightrag.neo4jSecretName" -}}
 {{- default (include "lightrag.secretName" .) .Values.secrets.neo4j.existingSecret -}}
 {{- end }}
 {{- define "lightrag.neo4jSecretKey" -}}
-{{- default "neo4j-password" .Values.secrets.neo4j.existingSecretKey -}}
+{{- default "NEO4J_PASSWORD" .Values.secrets.neo4j.existingSecretKey -}}
 {{- end }}

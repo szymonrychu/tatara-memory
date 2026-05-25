@@ -16,9 +16,8 @@ templates:
       - values/{{`{{ .Environment.Name }}`}}.yaml
       - values/{{`{{ .Release.Name }}`}}/common.yaml
       - values/{{`{{ .Release.Name }}`}}/{{`{{ .Environment.Name }}`}}.yaml
-      # secrets block enabled in Wave 7 once sops age key is configured:
-      # secrets:
-      #   - values/{{`{{ .Release.Name }}`}}/{{`{{ .Environment.Name }}`}}.secrets.yaml
+    secrets:
+      - values/{{`{{ .Release.Name }}`}}/{{`{{ .Environment.Name }}`}}.secrets.yaml
 
 repositories:
   - name: cnpg

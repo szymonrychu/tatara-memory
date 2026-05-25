@@ -50,12 +50,58 @@ networkPolicy:
 
 postgres:
   enabled: true
+  # cnpg/cluster subchart values pass through to the postgres cluster.
+  # Both tatara_memory (for ingest jobs) and lightrag (PGKVStorage,
+  # PGVectorStorage, PGDocStatusStorage) share this cluster as separate
+  # databases owned by the same app user, with the pgvector extension
+  # pre-installed for lightrag's vector store.
+  cluster:
+    initdb:
+      database: tatara_memory
+      owner: tatara_memory
+      postInitSQL:
+        - CREATE EXTENSION IF NOT EXISTS vector;
+        - CREATE DATABASE lightrag OWNER tatara_memory;
+        - GRANT ALL ON DATABASE lightrag TO tatara_memory;
 
 neo4j:
   enabled: true
+  # neo4j chart requires `neo4j.name` and `volumes.data.mode` at top level.
+  neo4j:
+    name: tatara-neo4j
+    edition: community
+    acceptLicenseAgreement: "yes"
+    passwordFromSecret: tatara-neo4j-password
+    passwordFromSecretLookup: true
+  volumes:
+    data:
+      mode: defaultStorageClass
+  services:
+    neo4j:
+      enabled: true
 
 lightrag:
   enabled: true
+  # Share the parent cluster's postgres - lightrag's own database is
+  # created by the cnpg cluster's postInitSQL above.
+  postgresHost: tatara-memory-postgres-cluster-rw
+  postgresPort: "5432"
+  postgresDatabase: lightrag
+  postgresUser: tatara_memory
+  neo4jUri: neo4j://tatara-neo4j:7687
+  secrets:
+    openai:
+      existingSecret: ""
+      existingSecretKey: api-key
+      value: ""
+    postgres:
+      existingSecret: tatara-memory-postgres-cluster-app
+      existingSecretKey: password
+      value: ""
+    neo4j:
+      existingSecret: tatara-neo4j-password
+      existingSecretKey: password
+      value: ""
 
 serviceAccount:
   create: true
