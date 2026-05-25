@@ -66,15 +66,11 @@ Map camelCase values.* scalars to kebab-case ConfigMap keys.
 Strict: values.yaml carries only scalars; this macro is the single mapping point.
 */}}
 {{- define "tatara-memory.envConfig" -}}
-http-addr: {{ .Values.httpAddr | quote }}
-lightrag-base-url: {{ .Values.lightragBaseUrl | quote }}
-oidc-issuer: {{ .Values.oidcIssuer | quote }}
-oidc-audience: {{ .Values.oidcAudience | quote }}
-worker-pool-size: {{ .Values.workerPoolSize | quote }}
-log-level: {{ .Values.logLevel | quote }}
-otlp-endpoint: {{ .Values.otlpEndpoint | quote }}
-pg-host: {{ .Values.pgHost | quote }}
-pg-port: {{ .Values.pgPort | quote }}
-pg-db: {{ .Values.pgDb | quote }}
-pg-user: {{ .Values.pgUser | quote }}
+HTTP_ADDR: {{ .Values.httpAddr | quote }}
+LIGHTRAG_BASE_URL: {{ .Values.lightragBaseUrl | quote }}
+OIDC_ISSUER: {{ .Values.oidcIssuer | quote }}
+OIDC_AUDIENCE: {{ .Values.oidcAudience | quote }}
+WORKER_POOL_SIZE: {{ .Values.workerPoolSize | quote }}
+LOG_LEVEL: {{ .Values.logLevel | quote }}
+OTLP_ENDPOINT: {{ .Values.otlpEndpoint | quote }}
 {{- end -}}

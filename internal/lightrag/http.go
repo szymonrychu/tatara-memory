@@ -127,7 +127,7 @@ func (c *HTTPClient) InsertDocument(ctx context.Context, req InsertRequest) (*In
 		return nil, err
 	}
 	var out InsertResponse
-	if err := c.do(ctx, OpInsertDocument, http.MethodPost, "/documents", body, &out); err != nil {
+	if err := c.do(ctx, OpInsertDocument, http.MethodPost, "/documents/text", body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

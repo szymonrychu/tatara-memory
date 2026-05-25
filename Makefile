@@ -51,11 +51,13 @@ build:
 		./cmd/tatara-memory
 
 image:
-	docker build \
+	docker buildx build \
+		--platform=linux/amd64 \
 		--build-arg VERSION=$(VERSION) \
 		--build-arg COMMIT=$(COMMIT) \
 		--build-arg DATE=$(DATE) \
 		-t $(IMAGE_REF) \
+		--load \
 		.
 
 push: image
