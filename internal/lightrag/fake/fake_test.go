@@ -14,97 +14,107 @@ func TestFake_ImplementsClient(t *testing.T) {
 	var _ lightrag.Client = fake.New()
 }
 
-func TestFake_InsertAndGetDocument(t *testing.T) {
+func TestFake_InsertAndTrackStatus(t *testing.T) {
 	f := fake.New()
-	resp, err := f.InsertDocument(context.Background(), lightrag.InsertRequest{
-		Documents: []lightrag.Document{{Content: "hello"}},
-	})
+	resp, err := f.InsertText(context.Background(), lightrag.InsertTextRequest{Text: "hello"})
 	require.NoError(t, err)
-	require.Len(t, resp.IDs, 1)
+	require.NotEmpty(t, resp.TrackID)
 
-	doc, err := f.GetDocument(context.Background(), resp.IDs[0])
+	ts, err := f.TrackStatus(context.Background(), resp.TrackID)
 	require.NoError(t, err)
-	require.Equal(t, "hello", doc.Content)
+	require.Equal(t, 1, ts.TotalCount)
+	require.Equal(t, "hello", ts.Documents[0].ContentSummary)
+	require.Equal(t, lightrag.DocStatusProcessed, ts.Documents[0].Status)
 }
 
-func TestFake_DeleteDocument(t *testing.T) {
+func TestFake_DeleteDocs(t *testing.T) {
 	f := fake.New()
-	resp, _ := f.InsertDocument(context.Background(), lightrag.InsertRequest{
-		Documents: []lightrag.Document{{Content: "x"}},
-	})
-	require.NoError(t, f.DeleteDocument(context.Background(), resp.IDs[0]))
-	_, err := f.GetDocument(context.Background(), resp.IDs[0])
+	resp, _ := f.InsertText(context.Background(), lightrag.InsertTextRequest{Text: "x"})
+	ts, _ := f.TrackStatus(context.Background(), resp.TrackID)
+	docID := ts.Documents[0].ID
+
+	_, err := f.DeleteDocs(context.Background(), lightrag.DeleteDocRequest{DocIDs: []string{docID}})
+	require.NoError(t, err)
+
+	_, err = f.TrackStatus(context.Background(), resp.TrackID)
 	require.Error(t, err)
 }
 
 func TestFake_EntityRoundTrip(t *testing.T) {
 	f := fake.New()
-	f.SeedEntity(lightrag.Entity{ID: "e1", Name: "foo", Type: "concept"})
-
-	got, err := f.GetEntity(context.Background(), "e1")
-	require.NoError(t, err)
-	require.Equal(t, "foo", got.Name)
-
-	rename := "renamed"
-	upd, err := f.UpdateEntity(context.Background(), "e1", lightrag.EntityUpdate{Name: &rename})
-	require.NoError(t, err)
-	require.Equal(t, "renamed", upd.Name)
-
-	list, err := f.ListEntities(context.Background(), "")
-	require.NoError(t, err)
-	require.Len(t, list, 1)
-}
-
-func TestFake_EdgeRoundTrip(t *testing.T) {
-	f := fake.New()
-	e, err := f.CreateEdge(context.Background(), lightrag.Edge{
-		FromEntity: "e1", ToEntity: "e2", Relation: "knows",
+	_, err := f.CreateEntity(context.Background(), lightrag.EntityCreateRequest{
+		EntityName: "Tesla",
+		EntityData: map[string]any{"description": "EV maker"},
 	})
 	require.NoError(t, err)
-	require.NotEmpty(t, e.ID)
 
-	list, err := f.ListEdges(context.Background())
+	exists, err := f.EntityExists(context.Background(), "Tesla")
 	require.NoError(t, err)
-	require.Len(t, list, 1)
+	require.True(t, exists)
 
-	require.NoError(t, f.DeleteEdge(context.Background(), e.ID))
-	list, _ = f.ListEdges(context.Background())
-	require.Empty(t, list)
-}
-
-func TestFake_Query_ReturnsSeededMatches(t *testing.T) {
-	f := fake.New()
-	f.SeedMatches([]lightrag.Match{{ID: "m1", Score: 0.5, Text: "hi"}})
-
-	resp, err := f.Query(context.Background(), lightrag.QueryRequest{
-		Query: "x", Mode: lightrag.QueryModeHybrid,
+	_, err = f.UpdateEntity(context.Background(), lightrag.EntityUpdateRequest{
+		EntityName:  "Tesla",
+		UpdatedData: map[string]any{"description": "Updated"},
 	})
 	require.NoError(t, err)
-	require.Len(t, resp.Matches, 1)
+
+	g, err := f.Graph(context.Background(), "Tesla", 1, 0)
+	require.NoError(t, err)
+	require.Equal(t, "Updated", g.Nodes[0].Properties["description"])
+
+	require.NoError(t, f.DeleteEntity(context.Background(), lightrag.DeleteEntityRequest{EntityName: "Tesla"}))
+	exists, _ = f.EntityExists(context.Background(), "Tesla")
+	require.False(t, exists)
 }
 
-func TestFake_SeedDescribe_RoundTrip(t *testing.T) {
+func TestFake_RelationRoundTrip(t *testing.T) {
 	f := fake.New()
-	f.SeedDescribe("the answer", []string{"doc-1", "doc-2"})
+	_, _ = f.CreateEntity(context.Background(), lightrag.EntityCreateRequest{EntityName: "Musk", EntityData: nil})
+	_, _ = f.CreateEntity(context.Background(), lightrag.EntityCreateRequest{EntityName: "Tesla", EntityData: nil})
 
-	resp, err := f.QueryDescribe(context.Background(), lightrag.QueryRequest{
-		Query: "explain", Mode: lightrag.QueryModeGlobal,
+	_, err := f.CreateRelation(context.Background(), lightrag.RelationCreateRequest{
+		SourceEntity: "Musk", TargetEntity: "Tesla",
+		RelationData: map[string]any{"keywords": "CEO"},
 	})
 	require.NoError(t, err)
-	require.Equal(t, "the answer", resp.Response)
-	require.Equal(t, []string{"doc-1", "doc-2"}, resp.Sources)
+
+	g, err := f.Graph(context.Background(), "Musk", 1, 0)
+	require.NoError(t, err)
+	require.Len(t, g.Edges, 1)
+	require.Equal(t, "Tesla", g.Edges[0].Target)
+
+	require.NoError(t, f.DeleteRelation(context.Background(), lightrag.DeleteRelationRequest{
+		SourceEntity: "Musk", TargetEntity: "Tesla",
+	}))
 }
 
-func TestFake_SeedDescribe_IsolatesSlice(t *testing.T) {
+func TestFake_LabelSearch(t *testing.T) {
 	f := fake.New()
-	sources := []string{"s1", "s2"}
-	f.SeedDescribe("x", sources)
-	// Mutating the original slice must not affect the stored state.
-	sources[0] = "mutated"
-
-	resp, err := f.QueryDescribe(context.Background(), lightrag.QueryRequest{
-		Query: "q", Mode: lightrag.QueryModeLocal,
-	})
+	f.SeedLabels([]string{"Tesla", "Telecom", "Ford"})
+	out, err := f.LabelSearch(context.Background(), "te")
 	require.NoError(t, err)
-	require.Equal(t, "s1", resp.Sources[0])
+	require.ElementsMatch(t, []string{"Tesla", "Telecom"}, out)
+}
+
+func TestFake_SeedQueryResponse_Roundtrip(t *testing.T) {
+	f := fake.New()
+	f.SeedQueryResponse(lightrag.QueryResponse{
+		Response: "answer",
+		References: []lightrag.ReferenceItem{
+			{ReferenceID: "r1", FilePath: "/a.md"},
+		},
+	})
+	resp, err := f.Query(context.Background(), lightrag.QueryRequest{Query: "x", Mode: lightrag.QueryModeHybrid})
+	require.NoError(t, err)
+	require.Equal(t, "answer", resp.Response)
+	require.Len(t, resp.References, 1)
+}
+
+func TestFake_SeedQueryData_Roundtrip(t *testing.T) {
+	f := fake.New()
+	f.SeedQueryDataResponse(lightrag.QueryDataResponse{Status: "success", Data: map[string]any{"k": "v"}})
+	resp, err := f.QueryData(context.Background(), lightrag.QueryRequest{Query: "x"})
+	require.NoError(t, err)
+	require.Equal(t, "success", resp.Status)
+	require.Equal(t, "v", resp.Data["k"])
 }

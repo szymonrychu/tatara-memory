@@ -16,34 +16,42 @@ import (
 // errClient is a minimal lightrag.Client stub that returns a fixed error for every method.
 type errClient struct{ err error }
 
-func (e *errClient) InsertDocument(_ context.Context, _ lightrag.InsertRequest) (*lightrag.InsertResponse, error) {
+func (e *errClient) InsertText(_ context.Context, _ lightrag.InsertTextRequest) (*lightrag.InsertResponse, error) {
 	return nil, e.err
 }
-func (e *errClient) GetDocument(_ context.Context, _ string) (*lightrag.Document, error) {
+func (e *errClient) TrackStatus(_ context.Context, _ string) (*lightrag.TrackStatusResponse, error) {
 	return nil, e.err
 }
-func (e *errClient) DeleteDocument(_ context.Context, _ string) error { return e.err }
+func (e *errClient) DeleteDocs(_ context.Context, _ lightrag.DeleteDocRequest) (*lightrag.DeleteDocByIdResponse, error) {
+	return nil, e.err
+}
 func (e *errClient) Query(_ context.Context, _ lightrag.QueryRequest) (*lightrag.QueryResponse, error) {
 	return nil, e.err
 }
-func (e *errClient) QueryDescribe(_ context.Context, _ lightrag.QueryRequest) (*lightrag.DescribeResponse, error) {
+func (e *errClient) QueryData(_ context.Context, _ lightrag.QueryRequest) (*lightrag.QueryDataResponse, error) {
 	return nil, e.err
 }
-func (e *errClient) ListEntities(_ context.Context, _ string) ([]lightrag.Entity, error) {
+func (e *errClient) EntityExists(_ context.Context, _ string) (bool, error) { return false, e.err }
+func (e *errClient) CreateEntity(_ context.Context, _ lightrag.EntityCreateRequest) (*lightrag.EntityResponse, error) {
 	return nil, e.err
 }
-func (e *errClient) GetEntity(_ context.Context, _ string) (*lightrag.Entity, error) {
+func (e *errClient) UpdateEntity(_ context.Context, _ lightrag.EntityUpdateRequest) (*lightrag.EntityResponse, error) {
 	return nil, e.err
 }
-func (e *errClient) UpdateEntity(_ context.Context, _ string, _ lightrag.EntityUpdate) (*lightrag.Entity, error) {
+func (e *errClient) DeleteEntity(_ context.Context, _ lightrag.DeleteEntityRequest) error {
+	return e.err
+}
+func (e *errClient) LabelSearch(_ context.Context, _ string) ([]string, error) { return nil, e.err }
+func (e *errClient) Graph(_ context.Context, _ string, _, _ int) (*lightrag.KnowledgeGraph, error) {
 	return nil, e.err
 }
-func (e *errClient) ListEdges(_ context.Context) ([]lightrag.Edge, error) { return nil, e.err }
-func (e *errClient) CreateEdge(_ context.Context, _ lightrag.Edge) (*lightrag.Edge, error) {
+func (e *errClient) CreateRelation(_ context.Context, _ lightrag.RelationCreateRequest) (*lightrag.RelationResponse, error) {
 	return nil, e.err
 }
-func (e *errClient) DeleteEdge(_ context.Context, _ string) error { return e.err }
-func (e *errClient) Health(_ context.Context) error               { return e.err }
+func (e *errClient) DeleteRelation(_ context.Context, _ lightrag.DeleteRelationRequest) error {
+	return e.err
+}
+func (e *errClient) Health(_ context.Context) error { return e.err }
 
 func TestServiceCreateGetDelete(t *testing.T) {
 	ctx := context.Background()
@@ -51,7 +59,7 @@ func TestServiceCreateGetDelete(t *testing.T) {
 
 	m, err := svc.CreateMemory(ctx, memory.Memory{Text: "hello"})
 	require.NoError(t, err)
-	require.NotEmpty(t, m.ID)
+	require.NotEmpty(t, m.ID, "track_id should populate Memory.ID")
 
 	got, err := svc.GetMemory(ctx, m.ID)
 	require.NoError(t, err)
@@ -66,15 +74,18 @@ func TestServiceCreateGetDelete(t *testing.T) {
 func TestServiceQuery(t *testing.T) {
 	ctx := context.Background()
 	f := fake.New()
-	f.SeedMatches([]lightrag.Match{{ID: "m1", Score: 0.9, Text: "alpha bravo"}})
+	f.SeedQueryResponse(lightrag.QueryResponse{
+		Response: "ignored",
+		References: []lightrag.ReferenceItem{
+			{ReferenceID: "r1", FilePath: "/a.md", Content: []string{"alpha bravo"}},
+		},
+	})
 	svc := memory.NewService(f)
-
-	_, err := svc.CreateMemory(ctx, memory.Memory{Text: "alpha bravo"})
-	require.NoError(t, err)
 
 	res, err := svc.Query(ctx, memory.Query{Mode: memory.QueryModeHybrid, Text: "alpha"})
 	require.NoError(t, err)
-	require.NotEmpty(t, res.Matches)
+	require.Len(t, res.Matches, 1)
+	require.Equal(t, "r1", res.Matches[0].ID)
 
 	_, err = svc.Query(ctx, memory.Query{Mode: memory.QueryMode("nope"), Text: "x"})
 	require.Error(t, err)
@@ -83,48 +94,64 @@ func TestServiceQuery(t *testing.T) {
 func TestServiceDescribe(t *testing.T) {
 	ctx := context.Background()
 	f := fake.New()
-	f.SeedDescribe("tatara is a smelting furnace", nil)
+	f.SeedQueryResponse(lightrag.QueryResponse{
+		Response: "tatara is a smelting furnace",
+		References: []lightrag.ReferenceItem{
+			{ReferenceID: "r1", FilePath: "/wiki/tatara.md"},
+		},
+	})
 	svc := memory.NewService(f)
-	_, err := svc.CreateMemory(ctx, memory.Memory{Text: "tatara is a smelting furnace"})
-	require.NoError(t, err)
 
 	r, err := svc.Describe(ctx, memory.Query{Mode: memory.QueryModeHybrid, Text: "what is tatara"})
 	require.NoError(t, err)
-	require.NotEmpty(t, r.Response)
+	require.Equal(t, "tatara is a smelting furnace", r.Response)
+	require.Equal(t, []string{"/wiki/tatara.md"}, r.Sources)
 }
 
 func TestServiceEntities(t *testing.T) {
 	ctx := context.Background()
 	f := fake.New()
-	f.SeedEntity(lightrag.Entity{ID: "e1", Name: "tatara", Type: "concept"})
+	f.SeedEntity("tatara", map[string]any{"entity_type": "concept", "description": "furnace"})
 	svc := memory.NewService(f)
 
-	e, err := svc.GetEntity(ctx, "e1")
+	e, err := svc.GetEntity(ctx, "tatara")
 	require.NoError(t, err)
 	require.Equal(t, "tatara", e.Name)
+	require.Equal(t, "concept", e.Type)
 
 	got, err := svc.SearchEntities(ctx, "tatara")
 	require.NoError(t, err)
 	require.Len(t, got, 1)
+	require.Equal(t, "tatara", got[0].Name)
 
-	updated, err := svc.PatchEntity(ctx, "e1", memory.Entity{Description: "smelter"})
+	updated, err := svc.PatchEntity(ctx, "tatara", memory.Entity{Description: "smelter"})
 	require.NoError(t, err)
 	require.Equal(t, "smelter", updated.Description)
 }
 
 func TestServiceEdges(t *testing.T) {
 	ctx := context.Background()
-	svc := memory.NewService(fake.New())
+	f := fake.New()
+	f.SeedEntity("a", nil)
+	f.SeedEntity("b", nil)
+	svc := memory.NewService(f)
 
 	edge, err := svc.CreateEdge(ctx, memory.Edge{From: "a", To: "b", Relation: "rel"})
 	require.NoError(t, err)
-	require.NotEmpty(t, edge.ID)
+	require.Equal(t, "a||b", edge.ID)
 
 	list, err := svc.ListEdges(ctx)
 	require.NoError(t, err)
 	require.Len(t, list, 1)
 
 	require.NoError(t, svc.DeleteEdge(ctx, edge.ID))
+}
+
+func TestServiceDeleteEdgeRejectsMalformedID(t *testing.T) {
+	ctx := context.Background()
+	svc := memory.NewService(fake.New())
+	err := svc.DeleteEdge(ctx, "no-separator")
+	require.ErrorIs(t, err, memory.ErrNotFound)
 }
 
 func TestServiceNotFoundWrapped(t *testing.T) {
@@ -138,38 +165,38 @@ func TestServiceErrTransient(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("http 500 yields ErrTransient", func(t *testing.T) {
-		svc := memory.NewService(&errClient{err: &lightrag.HTTPError{Status: http.StatusInternalServerError, Path: "/documents/x"}})
+		svc := memory.NewService(&errClient{err: &lightrag.HTTPError{Status: http.StatusInternalServerError}})
 		_, err := svc.GetMemory(ctx, "x")
-		require.ErrorIs(t, err, memory.ErrTransient, "expected ErrTransient, got: %v", err)
+		require.ErrorIs(t, err, memory.ErrTransient)
 	})
 
 	t.Run("http 503 yields ErrTransient", func(t *testing.T) {
-		svc := memory.NewService(&errClient{err: &lightrag.HTTPError{Status: http.StatusServiceUnavailable, Path: "/documents/x"}})
+		svc := memory.NewService(&errClient{err: &lightrag.HTTPError{Status: http.StatusServiceUnavailable}})
 		_, err := svc.GetMemory(ctx, "x")
-		require.ErrorIs(t, err, memory.ErrTransient, "expected ErrTransient, got: %v", err)
+		require.ErrorIs(t, err, memory.ErrTransient)
 	})
 
 	t.Run("context.DeadlineExceeded yields ErrTransient", func(t *testing.T) {
 		svc := memory.NewService(&errClient{err: context.DeadlineExceeded})
 		_, err := svc.GetMemory(ctx, "x")
-		require.ErrorIs(t, err, memory.ErrTransient, "expected ErrTransient, got: %v", err)
+		require.ErrorIs(t, err, memory.ErrTransient)
 	})
 
 	t.Run("context.Canceled yields ErrTransient", func(t *testing.T) {
 		svc := memory.NewService(&errClient{err: context.Canceled})
 		_, err := svc.GetMemory(ctx, "x")
-		require.ErrorIs(t, err, memory.ErrTransient, "expected ErrTransient, got: %v", err)
+		require.ErrorIs(t, err, memory.ErrTransient)
 	})
 
-	t.Run("http 404 still yields ErrNotFound", func(t *testing.T) {
-		svc := memory.NewService(&errClient{err: &lightrag.HTTPError{Status: http.StatusNotFound, Path: "/documents/x"}})
+	t.Run("http 404 yields ErrNotFound", func(t *testing.T) {
+		svc := memory.NewService(&errClient{err: &lightrag.HTTPError{Status: http.StatusNotFound}})
 		_, err := svc.GetMemory(ctx, "x")
-		require.ErrorIs(t, err, memory.ErrNotFound, "expected ErrNotFound, got: %v", err)
+		require.ErrorIs(t, err, memory.ErrNotFound)
 	})
 
 	t.Run("http 400 yields ErrUpstream", func(t *testing.T) {
-		svc := memory.NewService(&errClient{err: &lightrag.HTTPError{Status: http.StatusBadRequest, Path: "/documents/x"}})
+		svc := memory.NewService(&errClient{err: &lightrag.HTTPError{Status: http.StatusBadRequest}})
 		_, err := svc.GetMemory(ctx, "x")
-		require.ErrorIs(t, err, memory.ErrUpstream, "expected ErrUpstream, got: %v", err)
+		require.ErrorIs(t, err, memory.ErrUpstream)
 	})
 }

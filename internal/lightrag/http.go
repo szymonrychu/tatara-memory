@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -61,7 +62,6 @@ func (e *HTTPError) Error() string {
 	return fmt.Sprintf("lightrag: %s -> %d: %s", e.Path, e.Status, e.Body)
 }
 
-// do is the shared instrumented round-trip. Endpoint methods call it.
 func (c *HTTPClient) do(ctx context.Context, op, method, path string, body io.Reader, out any) error {
 	start := time.Now()
 	err := c.roundTrip(ctx, method, path, body, out)
@@ -120,36 +120,45 @@ func encodeJSON(v any) (*bytes.Buffer, error) {
 	return buf, nil
 }
 
-// InsertDocument inserts one or more documents into LightRAG.
-func (c *HTTPClient) InsertDocument(ctx context.Context, req InsertRequest) (*InsertResponse, error) {
+// InsertText submits text for async ingest. Returns status + track_id.
+func (c *HTTPClient) InsertText(ctx context.Context, req InsertTextRequest) (*InsertResponse, error) {
 	body, err := encodeJSON(req)
 	if err != nil {
 		return nil, err
 	}
 	var out InsertResponse
-	if err := c.do(ctx, OpInsertDocument, http.MethodPost, "/documents/text", body, &out); err != nil {
+	if err := c.do(ctx, OpInsertText, http.MethodPost, "/documents/text", body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-// GetDocument retrieves a document by ID.
-func (c *HTTPClient) GetDocument(ctx context.Context, id string) (*Document, error) {
-	var out Document
-	if err := c.do(ctx, OpGetDocument, http.MethodGet, "/documents/"+url.PathEscape(id), nil, &out); err != nil {
+// TrackStatus returns the per-doc statuses for the given track_id.
+func (c *HTTPClient) TrackStatus(ctx context.Context, trackID string) (*TrackStatusResponse, error) {
+	var out TrackStatusResponse
+	if err := c.do(ctx, OpTrackStatus, http.MethodGet,
+		"/documents/track_status/"+url.PathEscape(trackID), nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-// DeleteDocument removes a document by ID.
-func (c *HTTPClient) DeleteDocument(ctx context.Context, id string) error {
-	return c.do(ctx, OpDeleteDocument, http.MethodDelete, "/documents/"+url.PathEscape(id), nil, nil)
+// DeleteDocs deletes documents by their IDs (background-processed).
+func (c *HTTPClient) DeleteDocs(ctx context.Context, req DeleteDocRequest) (*DeleteDocByIdResponse, error) {
+	body, err := encodeJSON(req)
+	if err != nil {
+		return nil, err
+	}
+	var out DeleteDocByIdResponse
+	if err := c.do(ctx, OpDeleteDocs, http.MethodDelete, "/documents/delete_document", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
-// Query executes a retrieval query against LightRAG.
+// Query executes a retrieval query and returns the generated response.
 func (c *HTTPClient) Query(ctx context.Context, req QueryRequest) (*QueryResponse, error) {
-	if !req.Mode.Valid() {
+	if req.Mode != "" && !req.Mode.Valid() {
 		c.metrics.incError(OpQuery)
 		return nil, fmt.Errorf("lightrag: invalid query mode %q", req.Mode)
 	}
@@ -164,83 +173,116 @@ func (c *HTTPClient) Query(ctx context.Context, req QueryRequest) (*QueryRespons
 	return &out, nil
 }
 
-// QueryDescribe executes a generative describe query against LightRAG.
-func (c *HTTPClient) QueryDescribe(ctx context.Context, req QueryRequest) (*DescribeResponse, error) {
-	if !req.Mode.Valid() {
-		c.metrics.incError(OpQueryDescribe)
+// QueryData executes a structured query and returns entities, relationships, and chunks.
+func (c *HTTPClient) QueryData(ctx context.Context, req QueryRequest) (*QueryDataResponse, error) {
+	if req.Mode != "" && !req.Mode.Valid() {
+		c.metrics.incError(OpQueryData)
 		return nil, fmt.Errorf("lightrag: invalid query mode %q", req.Mode)
 	}
 	body, err := encodeJSON(req)
 	if err != nil {
 		return nil, err
 	}
-	var out DescribeResponse
-	if err := c.do(ctx, OpQueryDescribe, http.MethodPost, "/query/describe", body, &out); err != nil {
+	var out QueryDataResponse
+	if err := c.do(ctx, OpQueryData, http.MethodPost, "/query/data", body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-// ListEntities returns entities matching the optional query string.
-func (c *HTTPClient) ListEntities(ctx context.Context, q string) ([]Entity, error) {
-	path := "/entities"
-	if q != "" {
-		path += "?q=" + url.QueryEscape(q)
+// EntityExists checks whether an entity by name is present in the graph.
+func (c *HTTPClient) EntityExists(ctx context.Context, name string) (bool, error) {
+	var out EntityExistsResponse
+	path := "/graph/entity/exists?name=" + url.QueryEscape(name)
+	if err := c.do(ctx, OpEntityExists, http.MethodGet, path, nil, &out); err != nil {
+		return false, err
 	}
-	var out []Entity
-	if err := c.do(ctx, OpListEntities, http.MethodGet, path, nil, &out); err != nil {
+	return out.Exists, nil
+}
+
+// CreateEntity inserts a new entity into the knowledge graph.
+func (c *HTTPClient) CreateEntity(ctx context.Context, req EntityCreateRequest) (*EntityResponse, error) {
+	body, err := encodeJSON(req)
+	if err != nil {
+		return nil, err
+	}
+	var out EntityResponse
+	if err := c.do(ctx, OpCreateEntity, http.MethodPost, "/graph/entity/create", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// UpdateEntity edits an existing entity in the knowledge graph.
+func (c *HTTPClient) UpdateEntity(ctx context.Context, req EntityUpdateRequest) (*EntityResponse, error) {
+	body, err := encodeJSON(req)
+	if err != nil {
+		return nil, err
+	}
+	var out EntityResponse
+	if err := c.do(ctx, OpUpdateEntity, http.MethodPost, "/graph/entity/edit", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DeleteEntity removes an entity (and its incident relations) from the graph.
+func (c *HTTPClient) DeleteEntity(ctx context.Context, req DeleteEntityRequest) error {
+	body, err := encodeJSON(req)
+	if err != nil {
+		return err
+	}
+	return c.do(ctx, OpDeleteEntity, http.MethodDelete, "/documents/delete_entity", body, nil)
+}
+
+// LabelSearch returns labels matching q via /graph/label/search.
+func (c *HTTPClient) LabelSearch(ctx context.Context, q string) ([]string, error) {
+	path := "/graph/label/search?q=" + url.QueryEscape(q)
+	var out []string
+	if err := c.do(ctx, OpLabelSearch, http.MethodGet, path, nil, &out); err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-// GetEntity retrieves an entity by ID.
-func (c *HTTPClient) GetEntity(ctx context.Context, id string) (*Entity, error) {
-	var out Entity
-	if err := c.do(ctx, OpGetEntity, http.MethodGet, "/entities/"+url.PathEscape(id), nil, &out); err != nil {
+// Graph returns a connected subgraph rooted at label.
+// maxDepth and maxNodes are optional; pass 0 to omit.
+func (c *HTTPClient) Graph(ctx context.Context, label string, maxDepth, maxNodes int) (*KnowledgeGraph, error) {
+	q := url.Values{}
+	q.Set("label", label)
+	if maxDepth > 0 {
+		q.Set("max_depth", strconv.Itoa(maxDepth))
+	}
+	if maxNodes > 0 {
+		q.Set("max_nodes", strconv.Itoa(maxNodes))
+	}
+	var out KnowledgeGraph
+	if err := c.do(ctx, OpGraph, http.MethodGet, "/graphs?"+q.Encode(), nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-// UpdateEntity applies a partial update to an entity.
-func (c *HTTPClient) UpdateEntity(ctx context.Context, id string, upd EntityUpdate) (*Entity, error) {
-	body, err := encodeJSON(upd)
+// CreateRelation adds an undirected relation between two existing entities.
+func (c *HTTPClient) CreateRelation(ctx context.Context, req RelationCreateRequest) (*RelationResponse, error) {
+	body, err := encodeJSON(req)
 	if err != nil {
 		return nil, err
 	}
-	var out Entity
-	if err := c.do(ctx, OpUpdateEntity, http.MethodPatch, "/entities/"+url.PathEscape(id), body, &out); err != nil {
+	var out RelationResponse
+	if err := c.do(ctx, OpCreateRelation, http.MethodPost, "/graph/relation/create", body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-// ListEdges returns all edges in the knowledge graph.
-func (c *HTTPClient) ListEdges(ctx context.Context) ([]Edge, error) {
-	var out []Edge
-	if err := c.do(ctx, OpListEdges, http.MethodGet, "/edges", nil, &out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-// CreateEdge creates a new directed edge between two entities.
-func (c *HTTPClient) CreateEdge(ctx context.Context, e Edge) (*Edge, error) {
-	body, err := encodeJSON(e)
+// DeleteRelation removes the relation between source_entity and target_entity.
+func (c *HTTPClient) DeleteRelation(ctx context.Context, req DeleteRelationRequest) error {
+	body, err := encodeJSON(req)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	var out Edge
-	if err := c.do(ctx, OpCreateEdge, http.MethodPost, "/edges", body, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// DeleteEdge removes an edge by ID.
-func (c *HTTPClient) DeleteEdge(ctx context.Context, id string) error {
-	return c.do(ctx, OpDeleteEdge, http.MethodDelete, "/edges/"+url.PathEscape(id), nil, nil)
+	return c.do(ctx, OpDeleteRelation, http.MethodDelete, "/documents/delete_relation", body, nil)
 }
 
 // Health checks the LightRAG service health endpoint.

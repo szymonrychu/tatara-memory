@@ -6,28 +6,37 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/szymonrychu/tatara-memory/internal/lightrag"
 )
 
+// docState holds a doc plus its track_id wiring.
+type docState struct {
+	doc     lightrag.DocStatusResponse
+	trackID string
+}
+
 // Client is an in-memory implementation of lightrag.Client.
 type Client struct {
-	mu               sync.Mutex
-	docs             map[string]lightrag.Document
-	entities         map[string]lightrag.Entity
-	edges            map[string]lightrag.Edge
-	matches          []lightrag.Match
-	describeResponse string
-	describeSources  []string
-	nextID           int
+	mu       sync.Mutex
+	docs     map[string]docState       // doc_id -> state
+	tracks   map[string][]string       // track_id -> []doc_id
+	entities map[string]map[string]any // entity_name -> entity_data
+	edges    map[string]map[string]any // "src||tgt" -> relation_data
+	labels   []string                  // for /graph/label/search
+	queryRes lightrag.QueryResponse
+	dataRes  lightrag.QueryDataResponse
+	nextID   int
 }
 
 // New returns a ready-to-use fake Client.
 func New() *Client {
 	return &Client{
-		docs:     map[string]lightrag.Document{},
-		entities: map[string]lightrag.Entity{},
-		edges:    map[string]lightrag.Edge{},
+		docs:     map[string]docState{},
+		tracks:   map[string][]string{},
+		entities: map[string]map[string]any{},
+		edges:    map[string]map[string]any{},
 	}
 }
 
@@ -36,163 +45,365 @@ func (c *Client) nextStr(prefix string) string {
 	return prefix + "-" + strconv.Itoa(c.nextID)
 }
 
-// SeedEntity pre-populates the entity store.
-func (c *Client) SeedEntity(e lightrag.Entity) {
+// SeedEntity pre-populates an entity by name.
+func (c *Client) SeedEntity(name string, data map[string]any) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.entities[e.ID] = e
-}
-
-// SeedMatches sets the matches returned by Query.
-func (c *Client) SeedMatches(m []lightrag.Match) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.matches = m
-}
-
-// SeedDescribe pre-loads the canned describe response and sources for QueryDescribe.
-func (c *Client) SeedDescribe(response string, sources []string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.describeResponse = response
-	c.describeSources = append([]string(nil), sources...)
-}
-
-// InsertDocument stores documents and returns their assigned IDs.
-func (c *Client) InsertDocument(_ context.Context, req lightrag.InsertRequest) (*lightrag.InsertResponse, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	ids := make([]string, 0, len(req.Documents))
-	for _, d := range req.Documents {
-		if d.ID == "" {
-			d.ID = c.nextStr("doc")
-		}
-		c.docs[d.ID] = d
-		ids = append(ids, d.ID)
+	if data == nil {
+		data = map[string]any{}
 	}
-	return &lightrag.InsertResponse{IDs: ids}, nil
+	c.entities[name] = data
+	c.labels = appendUnique(c.labels, name)
 }
 
-// GetDocument retrieves a document by ID.
-func (c *Client) GetDocument(_ context.Context, id string) (*lightrag.Document, error) {
+// SeedEdge pre-populates a relation by (src, tgt).
+func (c *Client) SeedEdge(src, tgt string, data map[string]any) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	d, ok := c.docs[id]
+	c.edges[edgeKey(src, tgt)] = data
+}
+
+// SeedQueryResponse pre-loads the response returned by Query.
+func (c *Client) SeedQueryResponse(r lightrag.QueryResponse) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.queryRes = r
+}
+
+// SeedQueryDataResponse pre-loads the response returned by QueryData.
+func (c *Client) SeedQueryDataResponse(r lightrag.QueryDataResponse) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.dataRes = r
+}
+
+// SeedLabels pre-populates the label index used by LabelSearch.
+func (c *Client) SeedLabels(labels []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.labels = append([]string(nil), labels...)
+}
+
+// InsertText accepts a text submission and produces a track_id with one processed doc.
+func (c *Client) InsertText(_ context.Context, req lightrag.InsertTextRequest) (*lightrag.InsertResponse, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	trackID := c.nextStr("track")
+	docID := c.nextStr("doc")
+	now := time.Now().UTC().Format(time.RFC3339)
+	c.docs[docID] = docState{
+		doc: lightrag.DocStatusResponse{
+			ID:             docID,
+			ContentSummary: req.Text,
+			ContentLength:  len(req.Text),
+			Status:         lightrag.DocStatusProcessed,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+			TrackID:        trackID,
+			FilePath:       req.FileSource,
+		},
+		trackID: trackID,
+	}
+	c.tracks[trackID] = append(c.tracks[trackID], docID)
+	return &lightrag.InsertResponse{
+		Status:  "success",
+		Message: "submitted",
+		TrackID: trackID,
+	}, nil
+}
+
+// TrackStatus returns the docs associated with trackID.
+func (c *Client) TrackStatus(_ context.Context, trackID string) (*lightrag.TrackStatusResponse, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	docIDs, ok := c.tracks[trackID]
 	if !ok {
-		return nil, &lightrag.HTTPError{Status: 404, Path: "/documents/" + id, Body: "not found"}
+		return nil, &lightrag.HTTPError{Status: 404, Path: "/documents/track_status/" + trackID, Body: "not found"}
 	}
-	return &d, nil
+	out := lightrag.TrackStatusResponse{
+		TrackID:       trackID,
+		TotalCount:    len(docIDs),
+		StatusSummary: map[string]int{},
+	}
+	for _, id := range docIDs {
+		s := c.docs[id]
+		out.Documents = append(out.Documents, s.doc)
+		out.StatusSummary[string(s.doc.Status)]++
+	}
+	return &out, nil
 }
 
-// DeleteDocument removes a document by ID.
-func (c *Client) DeleteDocument(_ context.Context, id string) error {
+// DeleteDocs deletes documents and removes any track references.
+func (c *Client) DeleteDocs(_ context.Context, req lightrag.DeleteDocRequest) (*lightrag.DeleteDocByIdResponse, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if _, ok := c.docs[id]; !ok {
-		return &lightrag.HTTPError{Status: 404, Path: "/documents/" + id, Body: "not found"}
+	for _, id := range req.DocIDs {
+		if _, ok := c.docs[id]; !ok {
+			return nil, &lightrag.HTTPError{Status: 404, Path: "/documents/delete_document", Body: "doc not found: " + id}
+		}
+		state := c.docs[id]
+		delete(c.docs, id)
+		if state.trackID != "" {
+			ids := c.tracks[state.trackID]
+			filtered := ids[:0]
+			for _, did := range ids {
+				if did != id {
+					filtered = append(filtered, did)
+				}
+			}
+			if len(filtered) == 0 {
+				delete(c.tracks, state.trackID)
+			} else {
+				c.tracks[state.trackID] = filtered
+			}
+		}
 	}
-	delete(c.docs, id)
-	return nil
+	docID := ""
+	if len(req.DocIDs) > 0 {
+		docID = req.DocIDs[0]
+	}
+	return &lightrag.DeleteDocByIdResponse{
+		Status:  "deletion_started",
+		Message: "deleted",
+		DocID:   docID,
+	}, nil
 }
 
-// Query returns the matches seeded via SeedMatches.
+// Query returns the seeded query response.
 func (c *Client) Query(_ context.Context, _ lightrag.QueryRequest) (*lightrag.QueryResponse, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return &lightrag.QueryResponse{Matches: append([]lightrag.Match(nil), c.matches...)}, nil
+	cp := c.queryRes
+	if cp.References != nil {
+		cp.References = append([]lightrag.ReferenceItem(nil), cp.References...)
+	}
+	return &cp, nil
 }
 
-// QueryDescribe returns the response seeded via SeedDescribe.
-func (c *Client) QueryDescribe(_ context.Context, _ lightrag.QueryRequest) (*lightrag.DescribeResponse, error) {
+// QueryData returns the seeded data response.
+func (c *Client) QueryData(_ context.Context, _ lightrag.QueryRequest) (*lightrag.QueryDataResponse, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return &lightrag.DescribeResponse{Response: c.describeResponse, Sources: append([]string(nil), c.describeSources...)}, nil
+	cp := c.dataRes
+	return &cp, nil
 }
 
-// ListEntities returns all entities matching the optional query string.
-func (c *Client) ListEntities(_ context.Context, q string) ([]lightrag.Entity, error) {
+// EntityExists reports whether an entity by name exists.
+func (c *Client) EntityExists(_ context.Context, name string) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	out := make([]lightrag.Entity, 0, len(c.entities))
-	for _, e := range c.entities {
-		if q == "" || containsFold(e.Name, q) {
-			out = append(out, e)
+	_, ok := c.entities[name]
+	return ok, nil
+}
+
+// CreateEntity stores a new entity.
+func (c *Client) CreateEntity(_ context.Context, req lightrag.EntityCreateRequest) (*lightrag.EntityResponse, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.entities[req.EntityName]; ok {
+		return nil, &lightrag.HTTPError{Status: 400, Path: "/graph/entity/create", Body: "duplicate entity"}
+	}
+	data := req.EntityData
+	if data == nil {
+		data = map[string]any{}
+	}
+	data["entity_name"] = req.EntityName
+	c.entities[req.EntityName] = data
+	c.labels = appendUnique(c.labels, req.EntityName)
+	return &lightrag.EntityResponse{Status: "success", Message: "created", Data: copyMap(data)}, nil
+}
+
+// UpdateEntity applies a partial update to an existing entity.
+func (c *Client) UpdateEntity(_ context.Context, req lightrag.EntityUpdateRequest) (*lightrag.EntityResponse, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cur, ok := c.entities[req.EntityName]
+	if !ok {
+		return nil, &lightrag.HTTPError{Status: 404, Path: "/graph/entity/edit", Body: "not found"}
+	}
+	finalName := req.EntityName
+	if v, hasRename := req.UpdatedData["entity_name"]; hasRename {
+		if s, ok := v.(string); ok && s != "" && s != req.EntityName {
+			if !req.AllowRename {
+				return nil, &lightrag.HTTPError{Status: 400, Path: "/graph/entity/edit", Body: "rename not allowed"}
+			}
+			finalName = s
+		}
+	}
+	for k, v := range req.UpdatedData {
+		if k == "entity_name" {
+			continue
+		}
+		cur[k] = v
+	}
+	cur["entity_name"] = finalName
+	if finalName != req.EntityName {
+		delete(c.entities, req.EntityName)
+		c.entities[finalName] = cur
+		c.labels = renameLabel(c.labels, req.EntityName, finalName)
+	}
+	return &lightrag.EntityResponse{Status: "success", Message: "updated", Data: copyMap(cur)}, nil
+}
+
+// DeleteEntity removes an entity (and any incident edges).
+func (c *Client) DeleteEntity(_ context.Context, req lightrag.DeleteEntityRequest) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.entities[req.EntityName]; !ok {
+		return &lightrag.HTTPError{Status: 404, Path: "/documents/delete_entity", Body: "not found"}
+	}
+	delete(c.entities, req.EntityName)
+	c.labels = removeLabel(c.labels, req.EntityName)
+	for k := range c.edges {
+		src, tgt := parseEdgeKey(k)
+		if src == req.EntityName || tgt == req.EntityName {
+			delete(c.edges, k)
+		}
+	}
+	return nil
+}
+
+// LabelSearch returns labels matching q (case-insensitive substring).
+func (c *Client) LabelSearch(_ context.Context, q string) ([]string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := []string{}
+	for _, l := range c.labels {
+		if q == "" || containsFold(l, q) {
+			out = append(out, l)
 		}
 	}
 	return out, nil
 }
 
-// GetEntity retrieves an entity by ID.
-func (c *Client) GetEntity(_ context.Context, id string) (*lightrag.Entity, error) {
+// Graph returns a subgraph rooted at label.
+func (c *Client) Graph(_ context.Context, label string, _, _ int) (*lightrag.KnowledgeGraph, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	e, ok := c.entities[id]
+	data, ok := c.entities[label]
 	if !ok {
-		return nil, &lightrag.HTTPError{Status: 404, Path: "/entities/" + id, Body: "not found"}
+		return nil, &lightrag.HTTPError{Status: 404, Path: "/graphs", Body: "label not found"}
 	}
-	return &e, nil
+	g := &lightrag.KnowledgeGraph{
+		Nodes: []lightrag.GraphNode{{ID: label, Labels: []string{label}, Properties: copyMap(data)}},
+	}
+	for k, props := range c.edges {
+		src, tgt := parseEdgeKey(k)
+		if src == label || tgt == label {
+			g.Edges = append(g.Edges, lightrag.GraphEdge{
+				Source: src, Target: tgt, Properties: copyMap(props),
+			})
+			other := tgt
+			if tgt == label {
+				other = src
+			}
+			if d, ok := c.entities[other]; ok {
+				g.Nodes = append(g.Nodes, lightrag.GraphNode{ID: other, Labels: []string{other}, Properties: copyMap(d)})
+			}
+		}
+	}
+	return g, nil
 }
 
-// UpdateEntity applies a partial update to an entity.
-func (c *Client) UpdateEntity(_ context.Context, id string, upd lightrag.EntityUpdate) (*lightrag.Entity, error) {
+// CreateRelation stores a relation between two existing entities.
+func (c *Client) CreateRelation(_ context.Context, req lightrag.RelationCreateRequest) (*lightrag.RelationResponse, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	e, ok := c.entities[id]
-	if !ok {
-		return nil, &lightrag.HTTPError{Status: 404, Path: "/entities/" + id, Body: "not found"}
+	if _, ok := c.entities[req.SourceEntity]; !ok {
+		return nil, &lightrag.HTTPError{Status: 400, Path: "/graph/relation/create", Body: "source not found"}
 	}
-	if upd.Name != nil {
-		e.Name = *upd.Name
+	if _, ok := c.entities[req.TargetEntity]; !ok {
+		return nil, &lightrag.HTTPError{Status: 400, Path: "/graph/relation/create", Body: "target not found"}
 	}
-	if upd.Type != nil {
-		e.Type = *upd.Type
+	data := req.RelationData
+	if data == nil {
+		data = map[string]any{}
 	}
-	if upd.Description != nil {
-		e.Description = *upd.Description
-	}
-	if upd.Properties != nil {
-		e.Properties = upd.Properties
-	}
-	c.entities[id] = e
-	return &e, nil
+	data["src_id"] = req.SourceEntity
+	data["tgt_id"] = req.TargetEntity
+	c.edges[edgeKey(req.SourceEntity, req.TargetEntity)] = data
+	return &lightrag.RelationResponse{Status: "success", Message: "created", Data: copyMap(data)}, nil
 }
 
-// ListEdges returns all edges.
-func (c *Client) ListEdges(_ context.Context) ([]lightrag.Edge, error) {
+// DeleteRelation removes a relation by (src, tgt).
+func (c *Client) DeleteRelation(_ context.Context, req lightrag.DeleteRelationRequest) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	out := make([]lightrag.Edge, 0, len(c.edges))
-	for _, e := range c.edges {
-		out = append(out, e)
+	key := edgeKey(req.SourceEntity, req.TargetEntity)
+	if _, ok := c.edges[key]; !ok {
+		return &lightrag.HTTPError{Status: 404, Path: "/documents/delete_relation", Body: "not found"}
 	}
-	return out, nil
-}
-
-// CreateEdge stores a new edge.
-func (c *Client) CreateEdge(_ context.Context, e lightrag.Edge) (*lightrag.Edge, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if e.ID == "" {
-		e.ID = c.nextStr("edge")
-	}
-	c.edges[e.ID] = e
-	return &e, nil
-}
-
-// DeleteEdge removes an edge by ID.
-func (c *Client) DeleteEdge(_ context.Context, id string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if _, ok := c.edges[id]; !ok {
-		return &lightrag.HTTPError{Status: 404, Path: "/edges/" + id, Body: "not found"}
-	}
-	delete(c.edges, id)
+	delete(c.edges, key)
 	return nil
 }
 
 // Health always returns nil.
 func (c *Client) Health(_ context.Context) error { return nil }
 
+// LookupTracksForDoc returns the trackIDs that include a given doc_id (test helper).
+func (c *Client) LookupTracksForDoc(docID string) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := []string{}
+	for tid, docIDs := range c.tracks {
+		for _, d := range docIDs {
+			if d == docID {
+				out = append(out, tid)
+			}
+		}
+	}
+	return out
+}
+
+func edgeKey(src, tgt string) string { return src + "||" + tgt }
+
+func parseEdgeKey(k string) (string, string) {
+	i := strings.Index(k, "||")
+	if i < 0 {
+		return k, ""
+	}
+	return k[:i], k[i+2:]
+}
+
+func appendUnique(s []string, v string) []string {
+	for _, x := range s {
+		if x == v {
+			return s
+		}
+	}
+	return append(s, v)
+}
+
+func removeLabel(s []string, v string) []string {
+	out := s[:0]
+	for _, x := range s {
+		if x != v {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+func renameLabel(s []string, from, to string) []string {
+	for i, x := range s {
+		if x == from {
+			s[i] = to
+		}
+	}
+	return s
+}
+
 func containsFold(s, sub string) bool {
 	return strings.Contains(strings.ToLower(s), strings.ToLower(sub))
+}
+
+func copyMap(m map[string]any) map[string]any {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
