@@ -63,3 +63,13 @@ Format: `YYYY-MM-DD - decision/finding`
 ## Open questions
 
 *(nothing yet)*
+
+## 2026-05-25 - v0.1.0 deploy + handoff
+
+- Deployed v0.1.0 to homelab `tatara` namespace via helmfile. Auth + observability + cnpg + neo4j + lightrag bootstrap all verified. End-to-end smoke test BLOCKED by lightrag wire-format bugs from Wave 2C (invented schemas instead of reading real OpenAPI). See `docs/superpowers/specs/2026-05-25-lightrag-wire-format-fix.md` + `docs/superpowers/plans/2026-05-25-lightrag-wire-format-fix.md` for the v0.1.1 fix.
+- Real LightRAG v1.4.16 OpenAPI captured at `docs/lightrag-openapi-v1.4.16.json`.
+- OIDC client `tatara-memory` exists in master realm at auth.szymonrichert.pl. Client secret extracted via `terraform output -raw tatara_memory_client_secret` from `~/Documents/infra/terraform/keycloak` (TF_VAR_* loaded from `.env` in that dir).
+- Helm release `tatara-memory` is at revision 5 in tatara namespace. Lightrag pod resolves bolt to `tatara-neo4j-lb-neo4j:7687` (renamed to avoid release-name service collision). Shared cnpg cluster has pgvector extension; lightrag uses `tatara_memory` database alongside the ingest jobs.
+- Pre-created secrets in `tatara` ns: `regcred` (copied from `ai` ns); `tatara-neo4j-password` (manual, has 3 keys: NEO4J_AUTH, NEO4J_PASSWORD, password - one secret feeds both neo4j chart and lightrag).
+- Network policies disabled for v0.1.0 (selectors didn't match real pod labels). v0.1.1 should re-enable with corrected selectors.
+- Tooling bumped to match spellslinger pattern: helm 4, helmfile 1.4.4, sops 3.12, secrets-v4 plugin set.
