@@ -9,10 +9,19 @@ Statuses: `planned`, `in progress`, `shipped`.
 
 ## v1.0 - Phase 1 ship
 
-**Status:** code complete, awaiting Wave 7 deploy
+**Status:** v0.1.2 deployed 2026-05-27, end-to-end smoke green
+(POST/GET/DELETE/Query against real lightrag with OIDC token).
 
 See `docs/superpowers/specs/2026-05-24-tatara-memory-phase1-impl.md`
 and `docs/superpowers/plans/2026-05-24-tatara-memory-phase1.md`.
+
+v0.1.1 followups landed:
+- LightRAG wire format rewritten to match real v1.4.16 OpenAPI.
+- Integration test against real lightrag pod (`-tags integration`).
+- NetworkPolicy re-enabled with correct cnpg/neo4j selectors.
+
+v0.1.2: fix DocStatusResponse.Metadata to map[string]any (LightRAG
+returns mixed-type values).
 
 ## v1.1 - Follow-ups
 
@@ -21,3 +30,6 @@ and `docs/superpowers/plans/2026-05-24-tatara-memory-phase1.md`.
 - GitHub Actions CI (lint, test, build, push image + chart).
 - docker-compose integration tests with real lightrag + postgres + neo4j.
 - Helm chart push to harbor OCI via CI.
+- Fix stale helm-unittest tests for UPPER_SNAKE configmap keys (boy-scout, pre-existing).
+- Verify DeleteMemory is eventually consistent: GET-after-DELETE
+  currently returns 200 until lightrag's async deletion reindex catches up.

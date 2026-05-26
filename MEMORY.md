@@ -73,3 +73,17 @@ Format: `YYYY-MM-DD - decision/finding`
 - Pre-created secrets in `tatara` ns: `regcred` (copied from `ai` ns); `tatara-neo4j-password` (manual, has 3 keys: NEO4J_AUTH, NEO4J_PASSWORD, password - one secret feeds both neo4j chart and lightrag).
 - Network policies disabled for v0.1.0 (selectors didn't match real pod labels). v0.1.1 should re-enable with corrected selectors.
 - Tooling bumped to match spellslinger pattern: helm 4, helmfile 1.4.4, sops 3.12, secrets-v4 plugin set.
+
+## 2026-05-27 - v0.1.2 deployed (end-to-end smoke green)
+
+2026-05-27 - v0.1.1 wire-format rewrite shipped; v0.1.2 followed within minutes to fix DocStatusResponse.Metadata (map[string]string -> map[string]any) caught by GET /v1/memories/{track} smoke. End-to-end POST/GET/DELETE/Query all return correctly with real OIDC tokens.
+2026-05-27 - Domain semantic shifts forced by real LightRAG v1.4.16 API. Recorded so future work knows the shape changes (the OpenAPI is too lossy to "fix" later without a v2 of the domain API):
+  * Memory.ID = track_id (not doc_id; ingest is async, no synchronous doc id)
+  * Memory.Text on GET = content_summary, not original text (LightRAG does not expose original docs via API)
+  * GET /v1/memories/{id} eventual-consistent: doc is queryable seconds after POST; DELETE is async ("deletion_started") so GET-after-DELETE may still return until reindex catches up.
+  * Entity.ID = entity_name (LightRAG keys entities by name); SearchEntities returns labels only (Name set, other fields zero).
+  * Edge.ID = "from||to" composite (LightRAG has no edge ID; relations addressed by (src, tgt) pair). ListEdges iterates labels via Graph(label) - O(N) reads, acceptable for v0.1.x.
+  * QueryMatch.Score = 0 (LightRAG /query returns references, not ranked matches); /query/data exists for structured results when needed.
+2026-05-27 - SSA field-manager fight during v0.1.1 upgrade. A prior `kubectl set image` and the recovery path's `kubectl replace` left orphan field managers (kubectl-set, before-first-apply) that blocked helm 4's server-side apply. Repaired by stripping all non-helm/non-controller field managers from .metadata.managedFields via `kubectl replace` of a filtered manifest, then `helmfile sync --args '--force-conflicts'`. CLAUDE.md should add: never run `kubectl set image` against a helm-managed resource - bump chart appVersion + helm upgrade instead.
+2026-05-27 - Makefile uses `git describe --tags` => image tagged as `v0.1.1` (with v). Chart's appVersion="0.1.1" makes the deployment pull `0.1.1` (no v). Always re-tag without the v after `make push`: `docker tag .../tatara-memory:vX.Y.Z .../tatara-memory:X.Y.Z && docker push .../tatara-memory:X.Y.Z`. Long-term fix: strip leading v in Makefile, or sync chart appVersion to git describe output.
+2026-05-27 - helm-unittest configmap/deployment/helpers tests are stale after the v0.1.0 patch that flipped chart env to UPPER_SNAKE; failures are pre-existing, do not block deploy. Fixing them is a v0.1.x boy-scout task (mechanical: assert UPPER_SNAKE keys, not kebab-case).
