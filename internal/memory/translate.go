@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -29,13 +30,26 @@ func ToInsertText(m Memory) lightrag.InsertTextRequest {
 }
 
 // FromDocStatus maps a LightRAG DocStatusResponse into a domain Memory.
-// trackID becomes Memory.ID; ContentSummary becomes Text.
+// trackID becomes Memory.ID; ContentSummary becomes Text. LightRAG's
+// metadata values are heterogeneous; non-strings are rendered via fmt.Sprint
+// into the string-valued domain map.
 func FromDocStatus(trackID string, d lightrag.DocStatusResponse) Memory {
 	createdAt, _ := time.Parse(time.RFC3339, d.CreatedAt)
+	var md map[string]string
+	if len(d.Metadata) > 0 {
+		md = make(map[string]string, len(d.Metadata))
+		for k, v := range d.Metadata {
+			if s, ok := v.(string); ok {
+				md[k] = s
+				continue
+			}
+			md[k] = fmt.Sprint(v)
+		}
+	}
 	return Memory{
 		ID:        trackID,
 		Text:      d.ContentSummary,
-		Metadata:  d.Metadata,
+		Metadata:  md,
 		CreatedAt: createdAt,
 	}
 }

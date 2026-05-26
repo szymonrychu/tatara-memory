@@ -55,17 +55,17 @@ type InsertResponse struct {
 
 // DocStatusResponse is one document's status from /documents/track_status or /documents/paginated.
 type DocStatusResponse struct {
-	ID             string            `json:"id"`
-	ContentSummary string            `json:"content_summary"`
-	ContentLength  int               `json:"content_length"`
-	Status         DocStatus         `json:"status"`
-	CreatedAt      string            `json:"created_at"`
-	UpdatedAt      string            `json:"updated_at"`
-	TrackID        string            `json:"track_id,omitempty"`
-	ChunksCount    int               `json:"chunks_count,omitempty"`
-	ErrorMsg       string            `json:"error_msg,omitempty"`
-	Metadata       map[string]string `json:"metadata,omitempty"`
-	FilePath       string            `json:"file_path"`
+	ID             string         `json:"id"`
+	ContentSummary string         `json:"content_summary"`
+	ContentLength  int            `json:"content_length"`
+	Status         DocStatus      `json:"status"`
+	CreatedAt      string         `json:"created_at"`
+	UpdatedAt      string         `json:"updated_at"`
+	TrackID        string         `json:"track_id,omitempty"`
+	ChunksCount    int            `json:"chunks_count,omitempty"`
+	ErrorMsg       string         `json:"error_msg,omitempty"`
+	Metadata       map[string]any `json:"metadata,omitempty"`
+	FilePath       string         `json:"file_path"`
 }
 
 // TrackStatusResponse is the body returned by GET /documents/track_status/{track_id}.
