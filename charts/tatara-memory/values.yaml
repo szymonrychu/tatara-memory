@@ -47,6 +47,12 @@ serviceMonitor:
 
 networkPolicy:
   enabled: true
+  # postgresClusterName matches the cnpg.io/cluster label on the cnpg pods.
+  # Defaults to "<release>-postgres" when empty (matches the cnpg/cluster subchart default).
+  postgresClusterName: ""
+  # neo4jName matches the helm.neo4j.com/neo4j.name label on the neo4j pod.
+  # Defaults to .Values.neo4j.neo4j.name when empty.
+  neo4jName: ""
 
 postgres:
   enabled: true

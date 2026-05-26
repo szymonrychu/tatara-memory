@@ -38,20 +38,36 @@ tests:
     asserts:
       - equal:
           path: spec.egress[0].to[0].podSelector.matchLabels["cnpg.io/cluster"]
-          value: tm-tatara-memory-database-cluster
+          value: tm-tatara-memory-postgres
       - equal:
           path: spec.egress[0].ports[0].port
           value: 5432
+  - it: postgres cluster name is overridable
+    set:
+      networkPolicy.enabled: true
+      networkPolicy.postgresClusterName: my-cluster
+    asserts:
+      - equal:
+          path: spec.egress[0].to[0].podSelector.matchLabels["cnpg.io/cluster"]
+          value: my-cluster
   - it: allows egress to neo4j on 7687
     set:
       networkPolicy.enabled: true
     asserts:
       - equal:
-          path: spec.egress[1].to[0].podSelector.matchLabels["app.kubernetes.io/name"]
-          value: neo4j
+          path: spec.egress[1].to[0].podSelector.matchLabels["helm.neo4j.com/neo4j.name"]
+          value: tatara-neo4j
       - equal:
           path: spec.egress[1].ports[0].port
           value: 7687
+  - it: neo4j name is overridable
+    set:
+      networkPolicy.enabled: true
+      networkPolicy.neo4jName: custom-neo
+    asserts:
+      - equal:
+          path: spec.egress[1].to[0].podSelector.matchLabels["helm.neo4j.com/neo4j.name"]
+          value: custom-neo
   - it: allows egress to lightrag on 9621
     set:
       networkPolicy.enabled: true

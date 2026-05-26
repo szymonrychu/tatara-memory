@@ -4,32 +4,36 @@ import "github.com/prometheus/client_golang/prometheus"
 
 // Op name constants used by HTTPClient call sites and metrics pre-init.
 const (
-	OpInsertDocument = "insert_document"
-	OpGetDocument    = "get_document"
-	OpDeleteDocument = "delete_document"
+	OpInsertText     = "insert_text"
+	OpTrackStatus    = "track_status"
+	OpDeleteDocs     = "delete_docs"
 	OpQuery          = "query"
-	OpQueryDescribe  = "query_describe"
-	OpListEntities   = "list_entities"
-	OpGetEntity      = "get_entity"
+	OpQueryData      = "query_data"
+	OpEntityExists   = "entity_exists"
+	OpCreateEntity   = "create_entity"
 	OpUpdateEntity   = "update_entity"
-	OpListEdges      = "list_edges"
-	OpCreateEdge     = "create_edge"
-	OpDeleteEdge     = "delete_edge"
+	OpDeleteEntity   = "delete_entity"
+	OpLabelSearch    = "label_search"
+	OpGraph          = "graph"
+	OpCreateRelation = "create_relation"
+	OpDeleteRelation = "delete_relation"
 	OpHealth         = "health"
 )
 
 var allOps = []string{
-	OpInsertDocument,
-	OpGetDocument,
-	OpDeleteDocument,
+	OpInsertText,
+	OpTrackStatus,
+	OpDeleteDocs,
 	OpQuery,
-	OpQueryDescribe,
-	OpListEntities,
-	OpGetEntity,
+	OpQueryData,
+	OpEntityExists,
+	OpCreateEntity,
 	OpUpdateEntity,
-	OpListEdges,
-	OpCreateEdge,
-	OpDeleteEdge,
+	OpDeleteEntity,
+	OpLabelSearch,
+	OpGraph,
+	OpCreateRelation,
+	OpDeleteRelation,
 	OpHealth,
 }
 
@@ -53,7 +57,6 @@ func newMetrics(reg prometheus.Registerer) *metrics {
 	if reg != nil {
 		reg.MustRegister(m.calls, m.duration)
 	}
-	// Pre-initialize label combinations so Gather() returns families even with zero calls.
 	for _, op := range allOps {
 		for _, result := range []string{"success", "error"} {
 			m.calls.WithLabelValues(op, result)

@@ -1,77 +1,164 @@
 package memory
 
-import "github.com/szymonrychu/tatara-memory/internal/lightrag"
+import (
+	"strings"
+	"time"
 
-// ToLightragInsert converts a Memory into a LightRAG InsertRequest.
-func ToLightragInsert(m Memory) lightrag.InsertRequest {
-	return lightrag.InsertRequest{
-		Documents: []lightrag.Document{
-			{ID: m.ID, Content: m.Text, Metadata: m.Metadata},
-		},
+	"github.com/szymonrychu/tatara-memory/internal/lightrag"
+)
+
+// edgeIDSep is the composite separator for domain Edge.ID = "from||to".
+const edgeIDSep = "||"
+
+// MakeEdgeID builds the composite edge ID from (from, to).
+func MakeEdgeID(from, to string) string { return from + edgeIDSep + to }
+
+// ParseEdgeID splits "from||to" into its parts.
+// Returns ok=false if the input is not a valid composite.
+func ParseEdgeID(id string) (from, to string, ok bool) {
+	i := strings.Index(id, edgeIDSep)
+	if i < 0 {
+		return "", "", false
+	}
+	return id[:i], id[i+len(edgeIDSep):], true
+}
+
+// ToInsertText maps a Memory to a LightRAG InsertTextRequest.
+func ToInsertText(m Memory) lightrag.InsertTextRequest {
+	return lightrag.InsertTextRequest{Text: m.Text}
+}
+
+// FromDocStatus maps a LightRAG DocStatusResponse into a domain Memory.
+// trackID becomes Memory.ID; ContentSummary becomes Text.
+func FromDocStatus(trackID string, d lightrag.DocStatusResponse) Memory {
+	createdAt, _ := time.Parse(time.RFC3339, d.CreatedAt)
+	return Memory{
+		ID:        trackID,
+		Text:      d.ContentSummary,
+		Metadata:  d.Metadata,
+		CreatedAt: createdAt,
 	}
 }
 
-// FromLightragQuery converts a LightRAG QueryResponse to a domain QueryResult.
-func FromLightragQuery(r lightrag.QueryResponse) QueryResult {
-	out := QueryResult{Matches: make([]QueryMatch, 0, len(r.Matches))}
-	for _, m := range r.Matches {
-		out.Matches = append(out.Matches, QueryMatch{ID: m.ID, Score: m.Score, Text: m.Text})
+// QueryResultFromQuery maps a LightRAG QueryResponse to a domain QueryResult.
+// References become Matches; Score is zero because /query doesn't return ranking.
+func QueryResultFromQuery(r lightrag.QueryResponse) QueryResult {
+	out := QueryResult{Matches: make([]QueryMatch, 0, len(r.References))}
+	for _, ref := range r.References {
+		text := ref.FilePath
+		if len(ref.Content) > 0 {
+			text = strings.Join(ref.Content, "\n")
+		}
+		out.Matches = append(out.Matches, QueryMatch{
+			ID:    ref.ReferenceID,
+			Score: 0,
+			Text:  text,
+		})
 	}
 	return out
 }
 
-// FromLightragEntity converts a LightRAG Entity to a domain Entity.
-func FromLightragEntity(e lightrag.Entity) Entity {
-	return Entity{
-		ID:          e.ID,
-		Name:        e.Name,
-		Type:        e.Type,
-		Description: e.Description,
-		Properties:  e.Properties,
+// DescribeResultFromQuery maps a LightRAG QueryResponse into a DescribeResult.
+// references[].file_path is collected into Sources.
+func DescribeResultFromQuery(r lightrag.QueryResponse) DescribeResult {
+	sources := make([]string, 0, len(r.References))
+	for _, ref := range r.References {
+		sources = append(sources, ref.FilePath)
+	}
+	return DescribeResult{Response: r.Response, Sources: sources}
+}
+
+// EntityFromGraphNode maps a graph node into a domain Entity.
+// entity_name is taken from node.ID; entity_type / description from properties.
+func EntityFromGraphNode(n lightrag.GraphNode) Entity {
+	e := Entity{ID: n.ID, Name: n.ID}
+	if t, ok := stringProp(n.Properties, "entity_type"); ok {
+		e.Type = t
+	}
+	if d, ok := stringProp(n.Properties, "description"); ok {
+		e.Description = d
+	}
+	if n.Properties != nil {
+		props := make(map[string]string, len(n.Properties))
+		for k, v := range n.Properties {
+			if k == "entity_name" || k == "entity_type" || k == "description" {
+				continue
+			}
+			if s, ok := v.(string); ok {
+				props[k] = s
+			}
+		}
+		if len(props) > 0 {
+			e.Properties = props
+		}
+	}
+	return e
+}
+
+// EntityUpdatePayload builds the LightRAG updated_data dict from a domain Entity patch.
+func EntityUpdatePayload(patch Entity) map[string]any {
+	data := map[string]any{}
+	if patch.Name != "" {
+		data["entity_name"] = patch.Name
+	}
+	if patch.Type != "" {
+		data["entity_type"] = patch.Type
+	}
+	if patch.Description != "" {
+		data["description"] = patch.Description
+	}
+	for k, v := range patch.Properties {
+		data[k] = v
+	}
+	return data
+}
+
+// EdgeFromGraphEdge maps a graph edge into a domain Edge.
+func EdgeFromGraphEdge(e lightrag.GraphEdge) Edge {
+	out := Edge{
+		ID:       MakeEdgeID(e.Source, e.Target),
+		From:     e.Source,
+		To:       e.Target,
+		Relation: e.Type,
+	}
+	if e.Properties != nil {
+		if r, ok := stringProp(e.Properties, "keywords"); ok && out.Relation == "" {
+			out.Relation = r
+		}
+		props := make(map[string]string, len(e.Properties))
+		for k, v := range e.Properties {
+			if s, ok := v.(string); ok {
+				props[k] = s
+			}
+		}
+		if len(props) > 0 {
+			out.Properties = props
+		}
+	}
+	return out
+}
+
+// RelationCreatePayload turns a domain Edge into the create-relation request body.
+func RelationCreatePayload(e Edge) lightrag.RelationCreateRequest {
+	data := map[string]any{"keywords": e.Relation}
+	for k, v := range e.Properties {
+		data[k] = v
+	}
+	return lightrag.RelationCreateRequest{
+		SourceEntity: e.From,
+		TargetEntity: e.To,
+		RelationData: data,
 	}
 }
 
-// ToLightragEntityUpdate converts a domain Entity patch to a LightRAG EntityUpdate.
-func ToLightragEntityUpdate(e Entity) lightrag.EntityUpdate {
-	var name, typ, desc *string
-	if e.Name != "" {
-		v := e.Name
-		name = &v
+func stringProp(m map[string]any, key string) (string, bool) {
+	if m == nil {
+		return "", false
 	}
-	if e.Type != "" {
-		v := e.Type
-		typ = &v
+	v, ok := m[key]
+	if !ok {
+		return "", false
 	}
-	if e.Description != "" {
-		v := e.Description
-		desc = &v
-	}
-	return lightrag.EntityUpdate{
-		Name:        name,
-		Type:        typ,
-		Description: desc,
-		Properties:  e.Properties,
-	}
-}
-
-// FromLightragEdge converts a LightRAG Edge to a domain Edge.
-func FromLightragEdge(e lightrag.Edge) Edge {
-	return Edge{
-		ID:         e.ID,
-		From:       e.FromEntity,
-		To:         e.ToEntity,
-		Relation:   e.Relation,
-		Properties: e.Properties,
-	}
-}
-
-// ToLightragEdge converts a domain Edge to a LightRAG Edge for creation.
-func ToLightragEdge(e Edge) lightrag.Edge {
-	return lightrag.Edge{
-		ID:         e.ID,
-		FromEntity: e.From,
-		ToEntity:   e.To,
-		Relation:   e.Relation,
-		Properties: e.Properties,
-	}
+	s, ok := v.(string)
+	return s, ok
 }

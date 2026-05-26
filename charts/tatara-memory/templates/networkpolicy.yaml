@@ -28,14 +28,14 @@ spec:
     - to:
         - podSelector:
             matchLabels:
-              cnpg.io/cluster: {{ include "tatara-memory.fullname" . }}-database-cluster
+              cnpg.io/cluster: {{ .Values.networkPolicy.postgresClusterName | default (printf "%s-postgres" (include "tatara-memory.fullname" .)) }}
       ports:
         - port: 5432
           protocol: TCP
     - to:
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: neo4j
+              helm.neo4j.com/neo4j.name: {{ .Values.networkPolicy.neo4jName | default .Values.neo4j.neo4j.name }}
       ports:
         - port: 7687
           protocol: TCP

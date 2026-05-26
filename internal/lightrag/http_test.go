@@ -1,11 +1,12 @@
 package lightrag_test
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -22,73 +23,95 @@ func newTestClient(t *testing.T, handler http.HandlerFunc) (*lightrag.HTTPClient
 	return c, srv
 }
 
-func TestHTTPClient_InsertDocument(t *testing.T) {
+func TestHTTPClient_InsertText(t *testing.T) {
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodPost, r.Method)
-		require.Equal(t, "/documents", r.URL.Path)
-		var in lightrag.InsertRequest
+		require.Equal(t, "/documents/text", r.URL.Path)
+
+		var in lightrag.InsertTextRequest
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&in))
-		require.Len(t, in.Documents, 1)
-		require.Equal(t, "hello world", in.Documents[0].Content)
+		require.Equal(t, "hello world", in.Text)
 
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(lightrag.InsertResponse{IDs: []string{"doc-1"}})
+		_ = json.NewEncoder(w).Encode(lightrag.InsertResponse{
+			Status: "success", Message: "submitted", TrackID: "track-1",
+		})
 	})
 
-	resp, err := c.InsertDocument(context.Background(), lightrag.InsertRequest{
-		Documents: []lightrag.Document{{Content: "hello world"}},
-	})
+	resp, err := c.InsertText(context.Background(), lightrag.InsertTextRequest{Text: "hello world"})
 	require.NoError(t, err)
-	require.Equal(t, []string{"doc-1"}, resp.IDs)
+	require.Equal(t, "track-1", resp.TrackID)
+	require.Equal(t, "success", resp.Status)
 }
 
-func TestHTTPClient_DeleteDocument(t *testing.T) {
+func TestHTTPClient_InsertText_OnlyTextInBody(t *testing.T) {
+	// The lightrag /documents/text endpoint rejects bodies with unexpected fields.
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, http.MethodDelete, r.Method)
-		require.Equal(t, "/documents/doc-1", r.URL.Path)
-		w.WriteHeader(http.StatusNoContent)
+		buf, _ := io.ReadAll(r.Body)
+		require.NotContains(t, string(buf), "documents")
+		require.NotContains(t, string(buf), "content")
+		_ = json.NewEncoder(w).Encode(lightrag.InsertResponse{Status: "success", TrackID: "track-1"})
 	})
 
-	require.NoError(t, c.DeleteDocument(context.Background(), "doc-1"))
+	_, err := c.InsertText(context.Background(), lightrag.InsertTextRequest{Text: "x"})
+	require.NoError(t, err)
 }
 
-func TestHTTPClient_GetDocument(t *testing.T) {
+func TestHTTPClient_TrackStatus(t *testing.T) {
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodGet, r.Method)
-		require.Equal(t, "/documents/doc-1", r.URL.Path)
-		_ = json.NewEncoder(w).Encode(lightrag.Document{ID: "doc-1", Content: "hi"})
+		require.Equal(t, "/documents/track_status/track-1", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(lightrag.TrackStatusResponse{
+			TrackID:    "track-1",
+			TotalCount: 1,
+			Documents: []lightrag.DocStatusResponse{
+				{ID: "doc-1", Status: lightrag.DocStatusProcessed, ContentSummary: "hi"},
+			},
+			StatusSummary: map[string]int{"processed": 1},
+		})
 	})
 
-	doc, err := c.GetDocument(context.Background(), "doc-1")
+	ts, err := c.TrackStatus(context.Background(), "track-1")
 	require.NoError(t, err)
-	require.Equal(t, "doc-1", doc.ID)
-	require.Equal(t, "hi", doc.Content)
+	require.Equal(t, "track-1", ts.TrackID)
+	require.Len(t, ts.Documents, 1)
+	require.Equal(t, lightrag.DocStatusProcessed, ts.Documents[0].Status)
 }
 
-func TestHTTPClient_GetDocument_404(t *testing.T) {
-	c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte(`{"error":"not found"}`))
+func TestHTTPClient_DeleteDocs(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodDelete, r.Method)
+		require.Equal(t, "/documents/delete_document", r.URL.Path)
+
+		var in lightrag.DeleteDocRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&in))
+		require.Equal(t, []string{"doc-1"}, in.DocIDs)
+
+		_ = json.NewEncoder(w).Encode(lightrag.DeleteDocByIdResponse{
+			Status: "deletion_started", Message: "ok", DocID: "doc-1",
+		})
 	})
 
-	_, err := c.GetDocument(context.Background(), "missing")
-	require.Error(t, err)
-	var he *lightrag.HTTPError
-	require.ErrorAs(t, err, &he)
-	require.Equal(t, 404, he.Status)
+	resp, err := c.DeleteDocs(context.Background(), lightrag.DeleteDocRequest{DocIDs: []string{"doc-1"}})
+	require.NoError(t, err)
+	require.Equal(t, "deletion_started", resp.Status)
 }
 
 func TestHTTPClient_Query(t *testing.T) {
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodPost, r.Method)
 		require.Equal(t, "/query", r.URL.Path)
+
 		var in lightrag.QueryRequest
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&in))
 		require.Equal(t, lightrag.QueryModeHybrid, in.Mode)
 		require.Equal(t, "what is X", in.Query)
 
 		_ = json.NewEncoder(w).Encode(lightrag.QueryResponse{
-			Matches: []lightrag.Match{{ID: "m1", Score: 0.9, Text: "X is Y"}},
+			Response: "X is Y",
+			References: []lightrag.ReferenceItem{
+				{ReferenceID: "ref-1", FilePath: "/path/a.md", Content: []string{"chunk a"}},
+			},
 		})
 	})
 
@@ -96,115 +119,183 @@ func TestHTTPClient_Query(t *testing.T) {
 		Query: "what is X", Mode: lightrag.QueryModeHybrid,
 	})
 	require.NoError(t, err)
-	require.Len(t, resp.Matches, 1)
-	require.Equal(t, "m1", resp.Matches[0].ID)
-}
-
-func TestHTTPClient_QueryDescribe(t *testing.T) {
-	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "/query/describe", r.URL.Path)
-		_ = json.NewEncoder(w).Encode(lightrag.DescribeResponse{
-			Response: "X is Y because Z",
-			Sources:  []string{"doc-1", "doc-2"},
-		})
-	})
-
-	resp, err := c.QueryDescribe(context.Background(), lightrag.QueryRequest{
-		Query: "explain X", Mode: lightrag.QueryModeGlobal,
-	})
-	require.NoError(t, err)
-	require.Equal(t, "X is Y because Z", resp.Response)
-	require.Len(t, resp.Sources, 2)
+	require.Equal(t, "X is Y", resp.Response)
+	require.Len(t, resp.References, 1)
+	require.Equal(t, "ref-1", resp.References[0].ReferenceID)
 }
 
 func TestHTTPClient_Query_RejectsInvalidMode(t *testing.T) {
-	c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+	c, _ := newTestClient(t, func(_ http.ResponseWriter, _ *http.Request) {
 		t.Fatal("server should not be called")
 	})
 	_, err := c.Query(context.Background(), lightrag.QueryRequest{Query: "x", Mode: "bogus"})
 	require.Error(t, err)
 }
 
-func TestHTTPClient_ListEntities(t *testing.T) {
+func TestHTTPClient_Query_EmptyModeAllowed(t *testing.T) {
+	// LightRAG defaults Mode to "mix" server-side; client must allow omitting it.
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, http.MethodGet, r.Method)
-		require.Equal(t, "/entities", r.URL.Path)
-		require.Equal(t, "foo", r.URL.Query().Get("q"))
-		_ = json.NewEncoder(w).Encode([]lightrag.Entity{
-			{ID: "e1", Name: "foo", Type: "concept"},
-		})
+		buf, _ := io.ReadAll(r.Body)
+		require.NotContains(t, string(buf), `"mode"`)
+		_ = json.NewEncoder(w).Encode(lightrag.QueryResponse{Response: "ok"})
 	})
-	ents, err := c.ListEntities(context.Background(), "foo")
+	_, err := c.Query(context.Background(), lightrag.QueryRequest{Query: "x"})
 	require.NoError(t, err)
-	require.Len(t, ents, 1)
-	require.Equal(t, "foo", ents[0].Name)
 }
 
-func TestHTTPClient_GetEntity(t *testing.T) {
+func TestHTTPClient_QueryData(t *testing.T) {
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "/entities/e1", r.URL.Path)
-		_ = json.NewEncoder(w).Encode(lightrag.Entity{ID: "e1", Name: "foo"})
+		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, "/query/data", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(lightrag.QueryDataResponse{
+			Status:  "success",
+			Message: "ok",
+			Data:    map[string]any{"entities": []any{}},
+		})
 	})
-	e, err := c.GetEntity(context.Background(), "e1")
+
+	resp, err := c.QueryData(context.Background(), lightrag.QueryRequest{
+		Query: "x", Mode: lightrag.QueryModeMix,
+	})
 	require.NoError(t, err)
-	require.Equal(t, "e1", e.ID)
+	require.Equal(t, "success", resp.Status)
+}
+
+func TestHTTPClient_EntityExists(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodGet, r.Method)
+		require.Equal(t, "/graph/entity/exists", r.URL.Path)
+		require.Equal(t, "Tesla", r.URL.Query().Get("name"))
+		_ = json.NewEncoder(w).Encode(lightrag.EntityExistsResponse{Exists: true})
+	})
+
+	exists, err := c.EntityExists(context.Background(), "Tesla")
+	require.NoError(t, err)
+	require.True(t, exists)
+}
+
+func TestHTTPClient_CreateEntity(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, "/graph/entity/create", r.URL.Path)
+		var in lightrag.EntityCreateRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&in))
+		require.Equal(t, "Tesla", in.EntityName)
+
+		_ = json.NewEncoder(w).Encode(lightrag.EntityResponse{
+			Status: "success", Message: "created",
+			Data: map[string]any{"entity_name": "Tesla"},
+		})
+	})
+	resp, err := c.CreateEntity(context.Background(), lightrag.EntityCreateRequest{
+		EntityName: "Tesla",
+		EntityData: map[string]any{"description": "EV maker"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "success", resp.Status)
 }
 
 func TestHTTPClient_UpdateEntity(t *testing.T) {
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, http.MethodPatch, r.Method)
-		require.Equal(t, "/entities/e1", r.URL.Path)
-		var upd lightrag.EntityUpdate
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&upd))
-		require.NotNil(t, upd.Name)
-		require.Equal(t, "renamed", *upd.Name)
-		_ = json.NewEncoder(w).Encode(lightrag.Entity{ID: "e1", Name: "renamed"})
-	})
-
-	name := "renamed"
-	e, err := c.UpdateEntity(context.Background(), "e1", lightrag.EntityUpdate{Name: &name})
-	require.NoError(t, err)
-	require.Equal(t, "renamed", e.Name)
-}
-
-func TestHTTPClient_ListEdges(t *testing.T) {
-	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "/edges", r.URL.Path)
-		_ = json.NewEncoder(w).Encode([]lightrag.Edge{
-			{ID: "edge-1", FromEntity: "e1", ToEntity: "e2", Relation: "knows"},
-		})
-	})
-	edges, err := c.ListEdges(context.Background())
-	require.NoError(t, err)
-	require.Len(t, edges, 1)
-}
-
-func TestHTTPClient_CreateEdge(t *testing.T) {
-	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodPost, r.Method)
-		require.Equal(t, "/edges", r.URL.Path)
-		var in lightrag.Edge
+		require.Equal(t, "/graph/entity/edit", r.URL.Path)
+
+		var in lightrag.EntityUpdateRequest
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&in))
-		require.Equal(t, "knows", in.Relation)
-		in.ID = "edge-1"
-		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(in)
+		require.Equal(t, "Tesla", in.EntityName)
+		require.Equal(t, "updated", in.UpdatedData["description"])
+
+		_ = json.NewEncoder(w).Encode(lightrag.EntityResponse{Status: "success"})
 	})
 
-	e, err := c.CreateEdge(context.Background(), lightrag.Edge{
-		FromEntity: "e1", ToEntity: "e2", Relation: "knows",
+	_, err := c.UpdateEntity(context.Background(), lightrag.EntityUpdateRequest{
+		EntityName:  "Tesla",
+		UpdatedData: map[string]any{"description": "updated"},
 	})
 	require.NoError(t, err)
-	require.Equal(t, "edge-1", e.ID)
 }
 
-func TestHTTPClient_DeleteEdge(t *testing.T) {
+func TestHTTPClient_DeleteEntity(t *testing.T) {
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodDelete, r.Method)
-		require.Equal(t, "/edges/edge-1", r.URL.Path)
+		require.Equal(t, "/documents/delete_entity", r.URL.Path)
+
+		var in lightrag.DeleteEntityRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&in))
+		require.Equal(t, "Tesla", in.EntityName)
 		w.WriteHeader(http.StatusNoContent)
 	})
-	require.NoError(t, c.DeleteEdge(context.Background(), "edge-1"))
+
+	require.NoError(t, c.DeleteEntity(context.Background(), lightrag.DeleteEntityRequest{EntityName: "Tesla"}))
+}
+
+func TestHTTPClient_LabelSearch(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodGet, r.Method)
+		require.Equal(t, "/graph/label/search", r.URL.Path)
+		require.Equal(t, "Te", r.URL.Query().Get("q"))
+		_ = json.NewEncoder(w).Encode([]string{"Tesla", "Telecom"})
+	})
+
+	out, err := c.LabelSearch(context.Background(), "Te")
+	require.NoError(t, err)
+	require.Equal(t, []string{"Tesla", "Telecom"}, out)
+}
+
+func TestHTTPClient_Graph(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodGet, r.Method)
+		require.Equal(t, "/graphs", r.URL.Path)
+		require.Equal(t, "Tesla", r.URL.Query().Get("label"))
+		require.Equal(t, "2", r.URL.Query().Get("max_depth"))
+		_ = json.NewEncoder(w).Encode(lightrag.KnowledgeGraph{
+			Nodes: []lightrag.GraphNode{{ID: "Tesla"}},
+			Edges: []lightrag.GraphEdge{},
+		})
+	})
+
+	g, err := c.Graph(context.Background(), "Tesla", 2, 0)
+	require.NoError(t, err)
+	require.Len(t, g.Nodes, 1)
+}
+
+func TestHTTPClient_CreateRelation(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, "/graph/relation/create", r.URL.Path)
+
+		var in lightrag.RelationCreateRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&in))
+		require.Equal(t, "Elon Musk", in.SourceEntity)
+		require.Equal(t, "Tesla", in.TargetEntity)
+		require.Equal(t, "CEO", in.RelationData["keywords"])
+
+		_ = json.NewEncoder(w).Encode(lightrag.RelationResponse{Status: "success"})
+	})
+
+	_, err := c.CreateRelation(context.Background(), lightrag.RelationCreateRequest{
+		SourceEntity: "Elon Musk",
+		TargetEntity: "Tesla",
+		RelationData: map[string]any{"keywords": "CEO"},
+	})
+	require.NoError(t, err)
+}
+
+func TestHTTPClient_DeleteRelation(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodDelete, r.Method)
+		require.Equal(t, "/documents/delete_relation", r.URL.Path)
+
+		var in lightrag.DeleteRelationRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&in))
+		require.Equal(t, "a", in.SourceEntity)
+		require.Equal(t, "b", in.TargetEntity)
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	require.NoError(t, c.DeleteRelation(context.Background(), lightrag.DeleteRelationRequest{
+		SourceEntity: "a", TargetEntity: "b",
+	}))
 }
 
 func TestHTTPClient_Health(t *testing.T) {
@@ -215,45 +306,36 @@ func TestHTTPClient_Health(t *testing.T) {
 	require.NoError(t, c.Health(context.Background()))
 }
 
-func TestHTTPClient_InsertDocument_NoCreatedAt(t *testing.T) {
-	// A Document with no CreatedAt set must NOT include "created_at" in the JSON body.
-	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		var buf bytes.Buffer
-		_, _ = buf.ReadFrom(r.Body)
-		body := buf.String()
-		require.NotContains(t, body, "created_at",
-			"created_at must be absent when CreatedAt is nil")
-		_ = json.NewEncoder(w).Encode(lightrag.InsertResponse{IDs: []string{"doc-1"}})
+func TestHTTPClient_HTTPError_Carries404(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"not found"}`))
 	})
 
-	_, err := c.InsertDocument(context.Background(), lightrag.InsertRequest{
-		Documents: []lightrag.Document{{Content: "no timestamp"}},
-	})
-	require.NoError(t, err)
+	_, err := c.TrackStatus(context.Background(), "missing")
+	require.Error(t, err)
+	var he *lightrag.HTTPError
+	require.ErrorAs(t, err, &he)
+	require.Equal(t, 404, he.Status)
 }
 
-func TestHTTPClient_PathEscape_SlashInID(t *testing.T) {
-	// An ID containing "/" must be percent-encoded in the URL path.
-	// net/http decodes r.URL.Path, so we check r.URL.RawPath for the wire encoding.
+func TestHTTPClient_PathEscape_SlashInTrackID(t *testing.T) {
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		raw := r.URL.RawPath
 		if raw == "" {
-			raw = r.URL.Path // no encoding was needed; fallback
+			raw = r.URL.Path
 		}
-		require.Equal(t, "/documents/a%2Fb", raw,
-			"slash in ID must be path-escaped to %%2F")
-		w.WriteHeader(http.StatusNoContent)
+		require.True(t, strings.HasSuffix(raw, "/track%2Fa"),
+			"slash in trackID must be path-escaped, got %q", raw)
+		_ = json.NewEncoder(w).Encode(lightrag.TrackStatusResponse{TrackID: "track/a"})
 	})
-
-	_ = c.DeleteDocument(context.Background(), "a/b")
+	_, _ = c.TrackStatus(context.Background(), "track/a")
 }
 
 func TestHTTPClient_AcceptHeader(t *testing.T) {
-	// Every request must carry Accept: application/json.
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "application/json", r.Header.Get("Accept"))
-		w.WriteHeader(http.StatusNoContent)
+		w.WriteHeader(http.StatusOK)
 	})
-
-	_ = c.DeleteDocument(context.Background(), "doc-1")
+	require.NoError(t, c.Health(context.Background()))
 }
