@@ -78,6 +78,12 @@ subdirectory. The parent `.gitignore` keeps them out of this repo.
 13. **Metrics for everything that counts, times out, or can fail.**
     Counters for events, histograms for durations, gauges for
     in-flight. Expose `/metrics` Prometheus endpoint on every service.
+14. **Never `kubectl set image`, `kubectl edit`, or `kubectl patch`
+    spec fields on a helm-managed resource.** Bump chart appVersion
+    and `helm upgrade` instead. Direct kubectl mutations leave orphan
+    field-managers (kubectl-edit, kubectl-set, before-first-apply)
+    that block helm 4 server-side apply on the next sync. Reason:
+    burned us in the v0.1.1 -> v0.1.2 tatara-memory upgrade.
 
 ## Writing rules
 
