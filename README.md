@@ -36,6 +36,21 @@ helmfile apply
 
 (Build/deploy only from `main`. See parent `CLAUDE.md`.)
 
+## Operator endpoints
+
+The service exposes `/healthz`, `/readyz`, and `/metrics` on the http
+port. These are deliberately not routed through the public ingress
+(`tatara.szymonrichert.pl/api/v1/memory`). Reach them locally:
+
+```bash
+kubectl -n tatara port-forward svc/tatara-memory 8080:http
+curl http://localhost:8080/healthz
+curl http://localhost:8080/readyz
+curl http://localhost:8080/metrics
+```
+
+Prometheus scrapes `/metrics` automatically via the ServiceMonitor.
+
 ## License
 
 AGPL-3.0
