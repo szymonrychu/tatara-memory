@@ -25,3 +25,4 @@ charts/*/charts/neo4j-*
 
 # Mise local override
 .mise.local.toml
+/.worktrees/
