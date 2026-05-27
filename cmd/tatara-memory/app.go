@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -110,8 +111,16 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 		return nil, err
 	}
 
+	if err := ingest.Migrate(ctx, db); err != nil {
+		return nil, fmt.Errorf("ingest migrate: %w", err)
+	}
+	if err := memory.Migrate(ctx, db); err != nil {
+		return nil, fmt.Errorf("memory migrate: %w", err)
+	}
+
 	store := ingest.NewPGStore(db)
-	memSvc := memory.NewService(lrc)
+	tomb := memory.NewTombstoneStore(db)
+	memSvc := memory.NewService(lrc, tomb)
 	pool := ingest.NewPool(store, memSvc, cfg.WorkerPoolSize)
 	pool.Start(ctx)
 

@@ -21,15 +21,23 @@ var ErrUpstream = errors.New("memory: upstream error")
 // ErrTransient is returned when the LightRAG backend is temporarily unavailable.
 var ErrTransient = errors.New("memory: transient upstream error")
 
+// tombstoner is the minimal interface Service needs from TombstoneStore.
+type tombstoner interface {
+	Mark(ctx context.Context, trackID string) error
+	IsDeleted(ctx context.Context, trackID string) (bool, error)
+}
+
 // Service provides memory CRUD and retrieval operations backed by LightRAG.
 type Service struct {
-	lr  lightrag.Client
-	now func() time.Time
+	lr   lightrag.Client
+	tomb tombstoner
+	now  func() time.Time
 }
 
 // NewService returns a Service backed by the given LightRAG client.
-func NewService(lr lightrag.Client) *Service {
-	return &Service{lr: lr, now: time.Now}
+// tomb may be nil; if nil, tombstone checks are skipped (no-op).
+func NewService(lr lightrag.Client, tomb tombstoner) *Service {
+	return &Service{lr: lr, tomb: tomb, now: time.Now}
 }
 
 func newID(prefix string) string {
@@ -79,6 +87,15 @@ func (s *Service) CreateMemory(ctx context.Context, m Memory) (Memory, error) {
 // Returns a Memory derived from the first document associated with the track.
 // LightRAG does not expose original document text; Text holds content_summary.
 func (s *Service) GetMemory(ctx context.Context, trackID string) (Memory, error) {
+	if s.tomb != nil {
+		deleted, err := s.tomb.IsDeleted(ctx, trackID)
+		if err != nil {
+			return Memory{}, fmt.Errorf("tombstone check: %w", err)
+		}
+		if deleted {
+			return Memory{}, ErrNotFound
+		}
+	}
 	ts, err := s.lr.TrackStatus(ctx, trackID)
 	if err != nil {
 		return Memory{}, wrapUpstream(err)
@@ -104,6 +121,11 @@ func (s *Service) DeleteMemory(ctx context.Context, trackID string) error {
 	}
 	if _, err := s.lr.DeleteDocs(ctx, lightrag.DeleteDocRequest{DocIDs: docIDs}); err != nil {
 		return wrapUpstream(err)
+	}
+	if s.tomb != nil {
+		if err := s.tomb.Mark(ctx, trackID); err != nil {
+			return fmt.Errorf("tombstone: %w", err)
+		}
 	}
 	return nil
 }

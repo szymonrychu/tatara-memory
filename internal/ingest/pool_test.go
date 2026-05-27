@@ -30,7 +30,7 @@ func TestPoolDrainsJob(t *testing.T) {
 	defer cancel()
 
 	store := ingest.NewMemStore()
-	svc := memory.NewService(fake.New())
+	svc := memory.NewService(fake.New(), nil)
 	pool := ingest.NewPool(store, svc, 2)
 	pool.Start(ctx)
 	defer pool.Stop()

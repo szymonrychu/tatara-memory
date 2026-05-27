@@ -25,10 +25,27 @@ func (okDriver) Open(string) (driver.Conn, error) { return okConn{}, nil }
 
 type okConn struct{}
 
-func (okConn) Prepare(string) (driver.Stmt, error) { return nil, driver.ErrSkip }
+func (okConn) Prepare(string) (driver.Stmt, error) { return okStmt{}, nil }
 func (okConn) Close() error                        { return nil }
 func (okConn) Begin() (driver.Tx, error)           { return nil, driver.ErrSkip }
 func (okConn) Ping(_ context.Context) error        { return nil }
+func (okConn) Exec(string, []driver.Value) (driver.Result, error) {
+	return driver.RowsAffected(0), nil
+}
+func (okConn) Query(string, []driver.Value) (driver.Rows, error) { return okRows{}, nil }
+
+type okStmt struct{}
+
+func (okStmt) Close() error                               { return nil }
+func (okStmt) NumInput() int                              { return -1 }
+func (okStmt) Exec([]driver.Value) (driver.Result, error) { return driver.RowsAffected(0), nil }
+func (okStmt) Query([]driver.Value) (driver.Rows, error)  { return okRows{}, nil }
+
+type okRows struct{}
+
+func (okRows) Columns() []string         { return nil }
+func (okRows) Close() error              { return nil }
+func (okRows) Next([]driver.Value) error { return io.EOF }
 
 // fakeAppDeps satisfies dbOpener with an always-OK connector.
 type fakeAppDeps struct{}

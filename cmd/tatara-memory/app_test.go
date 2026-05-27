@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"database/sql/driver"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -12,18 +11,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// fakeConnector is a minimal driver.Connector whose connections always fail.
-// Used by newAppForTest to create a *sql.DB without a real Postgres.
-type fakeConnector struct{}
-
-func (fakeConnector) Connect(_ context.Context) (driver.Conn, error) { return nil, driver.ErrBadConn }
-func (fakeConnector) Driver() driver.Driver                          { return nil }
-
-// fakeDeps satisfies dbOpener with a failing connector.
+// fakeDeps satisfies dbOpener using the alwaysOKConnector defined in integration_test.go.
 type fakeDeps struct{}
 
 func (fakeDeps) openDB(_ string) (*sql.DB, error) {
-	return sql.OpenDB(fakeConnector{}), nil
+	return sql.OpenDB(alwaysOKConnector{}), nil
 }
 
 func newAppForTest(t *testing.T) (*app, error) {
