@@ -37,3 +37,18 @@ tests:
       - equal:
           path: spec.tls[0].hosts[0]
           value: tm.example.test
+  - it: applies nginx rewrite when path is not "/"
+    set:
+      ingress.enabled: true
+      ingress.host: tatara.szymonrichert.pl
+      ingress.path: /api/v1/memory
+    asserts:
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/rewrite-target"]
+          value: /$2
+      - equal:
+          path: spec.rules[0].http.paths[0].path
+          value: /api/v1/memory(/|$)(.*)
+      - equal:
+          path: spec.rules[0].http.paths[0].pathType
+          value: ImplementationSpecific

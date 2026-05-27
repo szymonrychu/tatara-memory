@@ -37,6 +37,7 @@ ingress:
   enabled: false
   className: nginx
   host: ""
+  path: "/"
   clusterIssuer: letsencrypt-prod
   tlsSecretName: ""
 
