@@ -8,22 +8,6 @@ import (
 	"github.com/szymonrychu/tatara-memory/internal/lightrag"
 )
 
-// edgeIDSep is the composite separator for domain Edge.ID = "from||to".
-const edgeIDSep = "||"
-
-// MakeEdgeID builds the composite edge ID from (from, to).
-func MakeEdgeID(from, to string) string { return from + edgeIDSep + to }
-
-// ParseEdgeID splits "from||to" into its parts.
-// Returns ok=false if the input is not a valid composite.
-func ParseEdgeID(id string) (from, to string, ok bool) {
-	i := strings.Index(id, edgeIDSep)
-	if i < 0 {
-		return "", "", false
-	}
-	return id[:i], id[i+len(edgeIDSep):], true
-}
-
 // ToInsertText maps a Memory to a LightRAG InsertTextRequest.
 func ToInsertText(m Memory) lightrag.InsertTextRequest {
 	return lightrag.InsertTextRequest{Text: m.Text}
@@ -130,7 +114,7 @@ func EntityUpdatePayload(patch Entity) map[string]any {
 // EdgeFromGraphEdge maps a graph edge into a domain Edge.
 func EdgeFromGraphEdge(e lightrag.GraphEdge) Edge {
 	out := Edge{
-		ID:       MakeEdgeID(e.Source, e.Target),
+		ID:       EncodeEdgeID(e.Source, e.Target),
 		From:     e.Source,
 		To:       e.Target,
 		Relation: e.Type,

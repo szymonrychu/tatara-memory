@@ -12,6 +12,8 @@ import (
 func mapServiceError(w http.ResponseWriter, r *http.Request, err error) {
 	reqID := RequestIDFromContext(r.Context())
 	switch {
+	case errors.Is(err, memory.ErrInvalid):
+		WriteError(w, http.StatusBadRequest, "invalid input", reqID)
 	case errors.Is(err, memory.ErrNotFound):
 		WriteError(w, http.StatusNotFound, "not found", reqID)
 	case errors.Is(err, memory.ErrTransient), errors.Is(err, context.DeadlineExceeded):

@@ -44,17 +44,12 @@ func TestDescribeResultFromQuery_CollectsFilePaths(t *testing.T) {
 	require.Equal(t, []string{"/a.md", "/b.md"}, got.Sources)
 }
 
-func TestMakeAndParseEdgeID(t *testing.T) {
-	id := memory.MakeEdgeID("from", "to")
-	require.Equal(t, "from||to", id)
-
-	from, to, ok := memory.ParseEdgeID(id)
-	require.True(t, ok)
-	require.Equal(t, "from", from)
-	require.Equal(t, "to", to)
-
-	_, _, ok = memory.ParseEdgeID("malformed")
-	require.False(t, ok)
+func TestEdgeFromGraphEdge_OpaqueID(t *testing.T) {
+	e := lightrag.GraphEdge{Source: "from", Target: "to", Type: "rel"}
+	got := memory.EdgeFromGraphEdge(e)
+	require.Equal(t, memory.EncodeEdgeID("from", "to"), got.ID)
+	require.Equal(t, "from", got.From)
+	require.Equal(t, "to", got.To)
 }
 
 func TestEntityFromGraphNode(t *testing.T) {

@@ -21,6 +21,9 @@ var ErrUpstream = errors.New("memory: upstream error")
 // ErrTransient is returned when the LightRAG backend is temporarily unavailable.
 var ErrTransient = errors.New("memory: transient upstream error")
 
+// ErrInvalid is returned when the caller supplies a malformed identifier or payload.
+var ErrInvalid = errors.New("memory: invalid input")
+
 // tombstoner is the minimal interface Service needs from TombstoneStore.
 type tombstoner interface {
 	Mark(ctx context.Context, trackID string) error
@@ -236,8 +239,8 @@ func (s *Service) ListEdges(ctx context.Context) ([]Edge, error) {
 			return nil, wrapUpstream(err)
 		}
 		for _, e := range g.Edges {
-			id := MakeEdgeID(e.Source, e.Target)
-			rev := MakeEdgeID(e.Target, e.Source)
+			id := EncodeEdgeID(e.Source, e.Target)
+			rev := EncodeEdgeID(e.Target, e.Source)
 			if _, ok := seen[id]; ok {
 				continue
 			}
@@ -257,15 +260,15 @@ func (s *Service) CreateEdge(ctx context.Context, e Edge) (Edge, error) {
 		return Edge{}, wrapUpstream(err)
 	}
 	created := e
-	created.ID = MakeEdgeID(e.From, e.To)
+	created.ID = EncodeEdgeID(e.From, e.To)
 	return created, nil
 }
 
-// DeleteEdge removes an edge by composite ID ("from||to").
+// DeleteEdge removes an edge by opaque ID produced by EncodeEdgeID.
 func (s *Service) DeleteEdge(ctx context.Context, id string) error {
-	from, to, ok := ParseEdgeID(id)
-	if !ok {
-		return fmt.Errorf("%w: invalid edge id %q", ErrNotFound, id)
+	from, to, err := DecodeEdgeID(id)
+	if err != nil {
+		return fmt.Errorf("%w: invalid edge id %q", ErrInvalid, id)
 	}
 	if err := s.lr.DeleteRelation(ctx, lightrag.DeleteRelationRequest{
 		SourceEntity: from,

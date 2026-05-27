@@ -163,7 +163,7 @@ func TestServiceEdges(t *testing.T) {
 
 	edge, err := svc.CreateEdge(ctx, memory.Edge{From: "a", To: "b", Relation: "rel"})
 	require.NoError(t, err)
-	require.Equal(t, "a||b", edge.ID)
+	require.Equal(t, memory.EncodeEdgeID("a", "b"), edge.ID)
 
 	list, err := svc.ListEdges(ctx)
 	require.NoError(t, err)
@@ -176,7 +176,7 @@ func TestServiceDeleteEdgeRejectsMalformedID(t *testing.T) {
 	ctx := context.Background()
 	svc := memory.NewService(fake.New(), nil)
 	err := svc.DeleteEdge(ctx, "no-separator")
-	require.ErrorIs(t, err, memory.ErrNotFound)
+	require.ErrorIs(t, err, memory.ErrInvalid)
 }
 
 func TestServiceNotFoundWrapped(t *testing.T) {
