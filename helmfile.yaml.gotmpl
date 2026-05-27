@@ -5,8 +5,7 @@ environments:
 
 helmDefaults:
   wait: true
-  syncArgs:
-    - --rollback-on-failure
+  atomic: true
 
 templates:
   default: &default
