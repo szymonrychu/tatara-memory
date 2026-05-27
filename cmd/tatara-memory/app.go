@@ -23,13 +23,15 @@ import (
 
 // app holds all runtime dependencies for tatara-memory.
 type app struct {
-	log     *slog.Logger
-	reg     *prometheus.Registry
-	db      *sql.DB
-	lrc     lightrag.Client
-	pool    *ingest.Pool
-	server  *http.Server
-	stopOTL func(context.Context) error
+	log          *slog.Logger
+	reg          *prometheus.Registry
+	db           *sql.DB
+	lrc          lightrag.Client
+	pool         *ingest.Pool
+	server       *http.Server
+	reaper       *memory.Reaper
+	reaperCancel context.CancelFunc
+	stopOTL      func(context.Context) error
 }
 
 // shutdown drains the HTTP server, stops the ingest pool, closes the DB, and
@@ -37,6 +39,9 @@ type app struct {
 func (a *app) shutdown(ctx context.Context) error {
 	shutdownCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	if a.reaperCancel != nil {
+		a.reaperCancel()
+	}
 	if a.server != nil {
 		_ = a.server.Shutdown(shutdownCtx)
 	}
@@ -134,6 +139,11 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 		return nil, err
 	}
 
+	reaper := memory.NewReaper(tomb, lrc, logger, reg)
+	tomb.SetMarkCounter(reaper.IncCreated)
+	reaperCtx, reaperCancel := context.WithCancel(context.Background())
+	go reaper.Run(reaperCtx)
+
 	readyFn := readyzFunc(db, lrc)
 	router := httpapi.NewRouter(httpapi.Config{
 		Service:    memSvc,
@@ -151,13 +161,15 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 	}
 
 	return &app{
-		log:     logger,
-		reg:     reg,
-		db:      db,
-		lrc:     lrc,
-		pool:    pool,
-		server:  srv,
-		stopOTL: stop,
+		log:          logger,
+		reg:          reg,
+		db:           db,
+		lrc:          lrc,
+		pool:         pool,
+		server:       srv,
+		reaper:       reaper,
+		reaperCancel: reaperCancel,
+		stopOTL:      stop,
 	}, nil
 }
 

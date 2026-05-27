@@ -11,12 +11,19 @@ import (
 // returns 404 immediately, without waiting for the upstream lightrag
 // reindex to finish.
 type TombstoneStore struct {
-	db *sql.DB
+	db          *sql.DB
+	markCounter func()
 }
 
 // NewTombstoneStore returns a TombstoneStore backed by db.
 func NewTombstoneStore(db *sql.DB) *TombstoneStore {
 	return &TombstoneStore{db: db}
+}
+
+// SetMarkCounter registers a callback invoked each time Mark succeeds.
+// Used to increment tatara_memory_tombstone_total{op="created"}.
+func (s *TombstoneStore) SetMarkCounter(fn func()) {
+	s.markCounter = fn
 }
 
 // Mark records a track_id as deleted. Idempotent: re-marking refreshes
@@ -28,6 +35,9 @@ func (s *TombstoneStore) Mark(ctx context.Context, trackID string) error {
 		trackID)
 	if err != nil {
 		return fmt.Errorf("tombstone mark: %w", err)
+	}
+	if s.markCounter != nil {
+		s.markCounter()
 	}
 	return nil
 }
