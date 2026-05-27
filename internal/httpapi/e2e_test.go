@@ -29,19 +29,19 @@ func TestE2EAllEndpointsAuthEnforced(t *testing.T) {
 		method, path string
 		body         []byte
 	}{
-		{"POST", "/v1/memories", []byte(`{"text":"x"}`)},
-		{"GET", "/v1/memories/m1", nil},
-		{"DELETE", "/v1/memories/m1", nil},
-		{"POST", "/v1/memories:bulk", []byte(`{"items":[{"text":"a"}]}`)},
-		{"GET", "/v1/ingest-jobs/j1", nil},
-		{"POST", "/v1/queries", []byte(`{"mode":"hybrid","text":"x"}`)},
-		{"POST", "/v1/queries:describe", []byte(`{"mode":"hybrid","text":"x"}`)},
-		{"GET", "/v1/entities/e1", nil},
-		{"GET", "/v1/entities?q=t", nil},
-		{"PATCH", "/v1/entities/e1", []byte(`{"description":"d"}`)},
-		{"GET", "/v1/edges", nil},
-		{"POST", "/v1/edges", []byte(`{"from_entity":"a","to_entity":"b","relation":"r"}`)},
-		{"DELETE", "/v1/edges/e1", nil},
+		{"POST", "/memories", []byte(`{"text":"x"}`)},
+		{"GET", "/memories/m1", nil},
+		{"DELETE", "/memories/m1", nil},
+		{"POST", "/memories:bulk", []byte(`{"items":[{"text":"a"}]}`)},
+		{"GET", "/ingest-jobs/j1", nil},
+		{"POST", "/queries", []byte(`{"mode":"hybrid","text":"x"}`)},
+		{"POST", "/queries:describe", []byte(`{"mode":"hybrid","text":"x"}`)},
+		{"GET", "/entities/e1", nil},
+		{"GET", "/entities?q=t", nil},
+		{"PATCH", "/entities/e1", []byte(`{"description":"d"}`)},
+		{"GET", "/edges", nil},
+		{"POST", "/edges", []byte(`{"from_entity":"a","to_entity":"b","relation":"r"}`)},
+		{"DELETE", "/edges/e1", nil},
 	}
 
 	for _, ep := range endpoints {

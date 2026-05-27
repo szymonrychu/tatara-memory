@@ -24,7 +24,7 @@ func TestPostMemory201(t *testing.T) {
 	defer srv.Close()
 
 	body, _ := json.Marshal(map[string]string{"text": "hello"})
-	resp, err := http.Post(srv.URL+"/v1/memories", "application/json", bytes.NewReader(body))
+	resp, err := http.Post(srv.URL+"/memories", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusCreated, resp.StatusCode)
@@ -38,7 +38,7 @@ func TestPostMemoryBadJSON400(t *testing.T) {
 	srv := newSrv(t, &stubService{})
 	defer srv.Close()
 
-	resp, err := http.Post(srv.URL+"/v1/memories", "application/json", bytes.NewReader([]byte("not-json")))
+	resp, err := http.Post(srv.URL+"/memories", "application/json", bytes.NewReader([]byte("not-json")))
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
@@ -48,7 +48,7 @@ func TestGetMemoryNotFound(t *testing.T) {
 	srv := newSrv(t, &stubService{getErr: memory.ErrNotFound})
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/v1/memories/missing")
+	resp, err := http.Get(srv.URL + "/memories/missing")
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusNotFound, resp.StatusCode)
@@ -58,7 +58,7 @@ func TestGetMemoryUpstream502(t *testing.T) {
 	srv := newSrv(t, &stubService{getErr: errors.Join(memory.ErrUpstream, errors.New("lr down"))})
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/v1/memories/x")
+	resp, err := http.Get(srv.URL + "/memories/x")
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusBadGateway, resp.StatusCode)
@@ -68,7 +68,7 @@ func TestGetMemoryTransient503(t *testing.T) {
 	srv := newSrv(t, &stubService{getErr: errors.Join(memory.ErrTransient, errors.New("timeout"))})
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/v1/memories/x")
+	resp, err := http.Get(srv.URL + "/memories/x")
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
@@ -79,7 +79,7 @@ func TestDeleteMemory204(t *testing.T) {
 	srv := newSrv(t, &stubService{})
 	defer srv.Close()
 
-	req, _ := http.NewRequest("DELETE", srv.URL+"/v1/memories/m1", nil)
+	req, _ := http.NewRequest("DELETE", srv.URL+"/memories/m1", nil)
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()

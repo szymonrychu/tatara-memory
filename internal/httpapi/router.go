@@ -21,7 +21,7 @@ type Config struct {
 }
 
 // NewRouter builds and returns the chi router with the full middleware stack.
-// Middleware order: request-id -> recoverer -> access-log -> metrics -> (auth on /v1/*).
+// Middleware order: request-id -> recoverer -> access-log -> metrics -> (auth on API routes).
 // /healthz, /readyz, and /metrics are excluded from auth.
 func NewRouter(cfg Config) *chi.Mux {
 	if cfg.Logger == nil {
@@ -60,25 +60,23 @@ func NewRouter(cfg Config) *chi.Mux {
 }
 
 func mountV1(r chi.Router, cfg Config) {
-	r.Route("/v1", func(r chi.Router) {
-		r.Post("/memories", handlePostMemory(cfg))
-		r.Get("/memories/{id}", handleGetMemory(cfg))
-		r.Delete("/memories/{id}", handleDeleteMemory(cfg))
+	r.Post("/memories", handlePostMemory(cfg))
+	r.Get("/memories/{id}", handleGetMemory(cfg))
+	r.Delete("/memories/{id}", handleDeleteMemory(cfg))
 
-		if cfg.Ingest != nil {
-			r.Post("/memories:bulk", handleBulkIngest(cfg))
-			r.Get("/ingest-jobs/{id}", handleGetJob(cfg))
-		}
+	if cfg.Ingest != nil {
+		r.Post("/memories:bulk", handleBulkIngest(cfg))
+		r.Get("/ingest-jobs/{id}", handleGetJob(cfg))
+	}
 
-		r.Post("/queries", handlePostQuery(cfg))
-		r.Post("/queries:describe", handlePostQueryDescribe(cfg))
+	r.Post("/queries", handlePostQuery(cfg))
+	r.Post("/queries:describe", handlePostQueryDescribe(cfg))
 
-		r.Get("/entities", handleSearchEntities(cfg))
-		r.Get("/entities/{id}", handleGetEntity(cfg))
-		r.Patch("/entities/{id}", handlePatchEntity(cfg))
+	r.Get("/entities", handleSearchEntities(cfg))
+	r.Get("/entities/{id}", handleGetEntity(cfg))
+	r.Patch("/entities/{id}", handlePatchEntity(cfg))
 
-		r.Get("/edges", handleListEdges(cfg))
-		r.Post("/edges", handleCreateEdge(cfg))
-		r.Delete("/edges/{id}", handleDeleteEdge(cfg))
-	})
+	r.Get("/edges", handleListEdges(cfg))
+	r.Post("/edges", handleCreateEdge(cfg))
+	r.Delete("/edges/{id}", handleDeleteEdge(cfg))
 }
