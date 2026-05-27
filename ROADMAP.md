@@ -31,9 +31,9 @@ green end-to-end via the new external URL.
 
 **Status:** planned
 
-- GitHub Actions CI (lint, test, build, push image + chart).
+- ~~GitHub Actions CI (lint, test, build, push image + chart).~~ (replaced by argo tatara-memory-tag CWT)
 - docker-compose integration tests with real lightrag + postgres + neo4j.
-- Helm chart push to harbor OCI via CI.
+- ~~Helm chart push to harbor OCI via CI.~~ (replaced by argo tatara-memory-tag CWT)
 - Fix stale helm-unittest tests for UPPER_SNAKE configmap keys (boy-scout, pre-existing).
 - Verify DeleteMemory is eventually consistent: GET-after-DELETE
   currently returns 200 until lightrag's async deletion reindex catches up.
