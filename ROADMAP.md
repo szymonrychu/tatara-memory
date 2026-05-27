@@ -23,6 +23,10 @@ v0.1.1 followups landed:
 v0.1.2: fix DocStatusResponse.Metadata to map[string]any (LightRAG
 returns mixed-type values).
 
+v0.1.3 (2026-05-27): drop `/v1` route prefix; enable ingress at
+`tatara.szymonrichert.pl/api/v1/memory` with nginx rewrite. Smoke
+green end-to-end via the new external URL.
+
 ## v1.1 - Follow-ups
 
 **Status:** planned
