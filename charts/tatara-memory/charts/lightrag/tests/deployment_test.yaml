@@ -11,12 +11,12 @@ tests:
           path: spec.template.spec.containers[0].image
           pattern: "@sha256:[0-9a-f]{64}$"
 
-  - it: uses envFrom with configmap ref and no inline env array
+  - it: uses envFrom with configmap ref and inline env for secrets
     asserts:
       - equal:
           path: spec.template.spec.containers[0].envFrom[0].configMapRef.name
           value: RELEASE-NAME-lightrag
-      - isNull:
+      - isNotNullOrEmpty:
           path: spec.template.spec.containers[0].env
 
   - it: uses Recreate strategy because PVC is RWO
@@ -46,7 +46,7 @@ tests:
           path: spec.template.spec.containers[0].readinessProbe.tcpSocket.port
           value: http
 
-  - it: external existingSecrets are referenced in envFrom when all are set
+  - it: existingSecrets projected as inline env valueFrom secretKeyRef
     set:
       secrets:
         openai:
@@ -60,20 +60,29 @@ tests:
           existingSecretKey: password
     asserts:
       - contains:
-          path: spec.template.spec.containers[0].envFrom
+          path: spec.template.spec.containers[0].env
           content:
-            secretRef:
-              name: my-openai-secret
+            name: LLM_BINDING_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: my-openai-secret
+                key: api-key
       - contains:
-          path: spec.template.spec.containers[0].envFrom
+          path: spec.template.spec.containers[0].env
           content:
-            secretRef:
-              name: my-pg-secret
+            name: POSTGRES_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: my-pg-secret
+                key: password
       - contains:
-          path: spec.template.spec.containers[0].envFrom
+          path: spec.template.spec.containers[0].env
           content:
-            secretRef:
-              name: my-neo4j-secret
+            name: NEO4J_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: my-neo4j-secret
+                key: password
 
   - it: imagePullSecrets honoured when pullSecretName set
     asserts:

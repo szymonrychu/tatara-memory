@@ -2,7 +2,7 @@ suite: configmap
 templates:
   - templates/configmap.yaml
 tests:
-  - it: renders all kebab-case lightrag config keys
+  - it: renders all UPPER_SNAKE lightrag config keys
     asserts:
       - isKind:
           of: ConfigMap
@@ -10,45 +10,45 @@ tests:
           path: metadata.name
           value: RELEASE-NAME-lightrag
       - isNotNullOrEmpty:
-          path: data.llm-binding
+          path: data.LLM_BINDING
       - isNotNullOrEmpty:
-          path: data.llm-model
+          path: data.LLM_MODEL
       - isNotNullOrEmpty:
-          path: data.embedding-binding
+          path: data.EMBEDDING_BINDING
       - isNotNullOrEmpty:
-          path: data.embedding-model
+          path: data.EMBEDDING_MODEL
       - isNotNullOrEmpty:
-          path: data.embedding-dim
+          path: data.EMBEDDING_DIM
       - isNotNullOrEmpty:
-          path: data.kv-storage
+          path: data.LIGHTRAG_KV_STORAGE
       - isNotNullOrEmpty:
-          path: data.vector-storage
+          path: data.LIGHTRAG_VECTOR_STORAGE
       - isNotNullOrEmpty:
-          path: data.graph-storage
+          path: data.LIGHTRAG_GRAPH_STORAGE
       - isNotNullOrEmpty:
-          path: data.doc-status-storage
+          path: data.LIGHTRAG_DOC_STATUS_STORAGE
       - isNotNullOrEmpty:
-          path: data.neo4j-uri
+          path: data.NEO4J_URI
       - isNotNullOrEmpty:
-          path: data.max-async
+          path: data.MAX_ASYNC
       - isNotNullOrEmpty:
-          path: data.max-parallel-insert
+          path: data.MAX_PARALLEL_INSERT
       - isNotNullOrEmpty:
-          path: data.embedding-func-max-async
+          path: data.EMBEDDING_FUNC_MAX_ASYNC
       - isNotNullOrEmpty:
-          path: data.postgres-host
+          path: data.POSTGRES_HOST
       - isNotNullOrEmpty:
-          path: data.postgres-port
+          path: data.POSTGRES_PORT
       - isNotNullOrEmpty:
-          path: data.postgres-database
+          path: data.POSTGRES_DATABASE
       - isNotNullOrEmpty:
-          path: data.postgres-user
+          path: data.POSTGRES_USER
       - equal:
-          path: data.kv-storage
+          path: data.LIGHTRAG_KV_STORAGE
           value: PGKVStorage
-  - it: rejects unexpected camelCase keys (sanity guard)
+  - it: rejects unexpected kebab-case keys (sanity guard)
     asserts:
       - isNull:
-          path: data.llmBinding
+          path: data.llm-binding
       - isNull:
-          path: data.kvStorage
+          path: data.kv-storage

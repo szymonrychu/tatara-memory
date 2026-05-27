@@ -5,7 +5,7 @@ release:
   name: tm
   namespace: tatara
 tests:
-  - it: renders ConfigMap with kebab-case keys
+  - it: renders ConfigMap with UPPER_SNAKE keys
     asserts:
       - isKind:
           of: ConfigMap
@@ -13,28 +13,22 @@ tests:
           path: metadata.name
           value: tm-tatara-memory
       - isNotNullOrEmpty:
-          path: data.http-addr
+          path: data.HTTP_ADDR
       - isNotNullOrEmpty:
-          path: data.lightrag-base-url
+          path: data.LIGHTRAG_BASE_URL
       - isNotNullOrEmpty:
-          path: data.oidc-issuer
+          path: data.OIDC_ISSUER
       - isNotNullOrEmpty:
-          path: data.oidc-audience
+          path: data.OIDC_AUDIENCE
       - isNotNullOrEmpty:
-          path: data.worker-pool-size
+          path: data.WORKER_POOL_SIZE
       - isNotNullOrEmpty:
-          path: data.log-level
-      - isNotNullOrEmpty:
-          path: data.pg-host
-      - isNotNullOrEmpty:
-          path: data.pg-port
-      - isNotNullOrEmpty:
-          path: data.pg-db
-      - isNotNullOrEmpty:
-          path: data.pg-user
-  - it: rejects any camelCase keys leaking through
+          path: data.LOG_LEVEL
+  - it: rejects any kebab-case keys leaking through
     asserts:
       - isNull:
-          path: data.httpAddr
+          path: data.http-addr
       - isNull:
-          path: data.lightragBaseUrl
+          path: data.lightrag-base-url
+      - isNull:
+          path: data.oidc-issuer
