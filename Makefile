@@ -23,7 +23,7 @@ endif
 # chart-test so the unittest plugin resolves correctly.
 HELM_UNITTEST_BIN := $(shell ls /opt/homebrew/bin/helm 2>/dev/null || echo $(HELM_BIN))
 
-.PHONY: all lint test build image push chart-lint helmfile-lint chart-test chart-push tidy fmt clean
+.PHONY: all lint test build image chart-lint helmfile-lint chart-test tidy fmt clean ci
 
 all: lint test build
 
@@ -60,9 +60,6 @@ image:
 		--load \
 		.
 
-push: image
-	docker push $(IMAGE_REF)
-
 chart-lint:
 	$(HELM_BIN) lint charts/tatara-memory
 
@@ -72,9 +69,7 @@ helmfile-lint:
 chart-test:
 	$(HELM_UNITTEST_BIN) unittest charts/tatara-memory
 
-chart-push:
-	$(HELM_BIN) package charts/tatara-memory -d dist/
-	$(HELM_BIN) push dist/tatara-memory-*.tgz oci://$(REGISTRY)/charts
+ci: lint test
 
 clean:
 	rm -rf bin dist
