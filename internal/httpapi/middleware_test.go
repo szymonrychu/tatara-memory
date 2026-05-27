@@ -66,7 +66,7 @@ func TestMetricsMiddlewareCountsRequest(t *testing.T) {
 		w.WriteHeader(200)
 	}))
 	rr := httptest.NewRecorder()
-	h.ServeHTTP(rr, httptest.NewRequest("GET", "/v1/memories", nil))
+	h.ServeHTTP(rr, httptest.NewRequest("GET", "/memories", nil))
 
 	mfs, err := reg.Gather()
 	require.NoError(t, err)

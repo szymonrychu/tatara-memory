@@ -1,1 +1,4 @@
-{}
+ingress:
+  enabled: true
+  host: tatara.szymonrichert.pl
+  path: /api/v1/memory

@@ -33,7 +33,7 @@ func TestPostQuery200(t *testing.T) {
 	defer srv.Close()
 
 	body, _ := json.Marshal(map[string]string{"mode": "hybrid", "text": "alpha"})
-	resp, err := http.Post(srv.URL+"/v1/queries", "application/json", bytes.NewReader(body))
+	resp, err := http.Post(srv.URL+"/queries", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, 200, resp.StatusCode)
@@ -48,7 +48,7 @@ func TestPostQueryInvalidMode400(t *testing.T) {
 	defer srv.Close()
 
 	body, _ := json.Marshal(map[string]string{"mode": "nope", "text": "x"})
-	resp, err := http.Post(srv.URL+"/v1/queries", "application/json", bytes.NewReader(body))
+	resp, err := http.Post(srv.URL+"/queries", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, 400, resp.StatusCode)
@@ -60,7 +60,7 @@ func TestPostQueriesDescribe200(t *testing.T) {
 	defer srv.Close()
 
 	body, _ := json.Marshal(map[string]string{"mode": "hybrid", "text": "x"})
-	resp, err := http.Post(srv.URL+"/v1/queries:describe", "application/json", bytes.NewReader(body))
+	resp, err := http.Post(srv.URL+"/queries:describe", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, 200, resp.StatusCode)

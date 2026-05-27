@@ -23,7 +23,7 @@ func TestProtectedRouteRejectsMissingToken(t *testing.T) {
 	srv := httptest.NewServer(r)
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/v1/memories/m1")
+	resp, err := http.Get(srv.URL + "/memories/m1")
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
@@ -41,7 +41,7 @@ func TestProtectedRouteAcceptsValidToken(t *testing.T) {
 	defer srv.Close()
 
 	tok := tj.SignToken(map[string]interface{}{"sub": "u1", "aud": "tatara-memory"})
-	req, _ := http.NewRequest("GET", srv.URL+"/v1/memories/m1", nil)
+	req, _ := http.NewRequest("GET", srv.URL+"/memories/m1", nil)
 	req.Header.Set("Authorization", "Bearer "+tok)
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)

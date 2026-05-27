@@ -29,7 +29,7 @@ func (s *entStub) PatchEntity(_ context.Context, _ string, p memory.Entity) (mem
 func TestGetEntity200(t *testing.T) {
 	srv := newSrv(t, &entStub{e: memory.Entity{ID: "e1", Name: "tatara"}})
 	defer srv.Close()
-	resp, err := http.Get(srv.URL + "/v1/entities/e1")
+	resp, err := http.Get(srv.URL + "/entities/e1")
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, 200, resp.StatusCode)
@@ -38,7 +38,7 @@ func TestGetEntity200(t *testing.T) {
 func TestSearchEntities200(t *testing.T) {
 	srv := newSrv(t, &entStub{q: []memory.Entity{{ID: "e1"}}})
 	defer srv.Close()
-	resp, err := http.Get(srv.URL + "/v1/entities?q=tat")
+	resp, err := http.Get(srv.URL + "/entities?q=tat")
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, 200, resp.StatusCode)
@@ -47,7 +47,7 @@ func TestSearchEntities200(t *testing.T) {
 func TestSearchEntitiesMissingQ400(t *testing.T) {
 	srv := newSrv(t, &entStub{})
 	defer srv.Close()
-	resp, err := http.Get(srv.URL + "/v1/entities")
+	resp, err := http.Get(srv.URL + "/entities")
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, 400, resp.StatusCode)
@@ -57,7 +57,7 @@ func TestPatchEntity200(t *testing.T) {
 	srv := newSrv(t, &entStub{})
 	defer srv.Close()
 	body, _ := json.Marshal(memory.Entity{Description: "smelter"})
-	req, _ := http.NewRequest("PATCH", srv.URL+"/v1/entities/e1", bytes.NewReader(body))
+	req, _ := http.NewRequest("PATCH", srv.URL+"/entities/e1", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)

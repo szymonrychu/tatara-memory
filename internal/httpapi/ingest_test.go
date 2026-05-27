@@ -41,7 +41,7 @@ func TestBulkIngest202(t *testing.T) {
 	body, _ := json.Marshal(map[string]interface{}{
 		"items": []map[string]string{{"text": "a"}, {"text": "b"}},
 	})
-	resp, err := http.Post(srv.URL+"/v1/memories:bulk", "application/json", bytes.NewReader(body))
+	resp, err := http.Post(srv.URL+"/memories:bulk", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusAccepted, resp.StatusCode)
@@ -56,7 +56,7 @@ func TestBulkIngestEmpty400(t *testing.T) {
 	defer srv.Close()
 
 	body, _ := json.Marshal(map[string]interface{}{"items": []map[string]string{}})
-	resp, err := http.Post(srv.URL+"/v1/memories:bulk", "application/json", bytes.NewReader(body))
+	resp, err := http.Post(srv.URL+"/memories:bulk", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, 400, resp.StatusCode)
@@ -67,7 +67,7 @@ func TestGetJob200(t *testing.T) {
 	srv := newSrvIngest(t, &stubService{}, ing)
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/v1/ingest-jobs/j1")
+	resp, err := http.Get(srv.URL + "/ingest-jobs/j1")
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, 200, resp.StatusCode)
