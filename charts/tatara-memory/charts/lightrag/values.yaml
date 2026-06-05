@@ -8,7 +8,8 @@ image:
   tag: v1.4.16
   digest: sha256:67ccf8d9f74eb29da872bf8b3e6513605f5ac601fb0509c5b0ca16d98d2d307d
   pullPolicy: IfNotPresent
-  pullSecretName: regcred
+  # pullSecretName is cluster-specific; the deploying helmfile supplies it.
+  pullSecretName: ""
 
 # LightRAG runtime configuration. Each scalar becomes a kebab-case
 # key in the rendered ConfigMap and is exported into the pod via

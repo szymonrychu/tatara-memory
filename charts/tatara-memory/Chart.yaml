@@ -2,8 +2,8 @@ apiVersion: v2
 name: tatara-memory
 description: Tatara memory service (REST over LightRAG, OIDC-gated)
 type: application
-version: 0.1.3
-appVersion: "0.1.3"
+version: 0.1.5
+appVersion: "0.1.4"
 
 dependencies:
   - name: cluster

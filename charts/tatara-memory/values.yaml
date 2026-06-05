@@ -3,8 +3,8 @@ image:
   tag: ""
   pullPolicy: IfNotPresent
 
-imagePullSecrets:
-  - name: regcred
+# imagePullSecrets are cluster-specific; the deploying helmfile supplies them.
+imagePullSecrets: []
 
 replicaCount: 1
 
@@ -74,22 +74,16 @@ neo4j:
   # neo4j chart requires `neo4j.name` and `volumes.data.mode` at top level.
   # Password value is provided via the SOPS-encrypted values overlay
   # (values/tatara-memory/default.secrets.yaml).
-  # disableLookups: true tells the chart to skip its in-cluster regcred
-  # lookup (helmfile template-mode breaks lookups); pre-created regcred
-  # secret in the tatara namespace satisfies the imagePullSecret at runtime.
+  # disableLookups: true tells the chart to skip its in-cluster pull-secret
+  # lookup (helmfile template-mode breaks lookups). The pull secret itself is
+  # cluster-specific and is supplied by the deploying helmfile.
   disableLookups: true
   neo4j:
     name: tatara-neo4j
     edition: community
     acceptLicenseAgreement: "yes"
   image:
-    imagePullSecrets:
-      - regcred
-    imageCredentials:
-      - name: regcred
-        registry: harbor.szymonrichert.pl
-        username: placeholder
-        password: placeholder
+    imagePullSecrets: []
   volumes:
     data:
       mode: defaultStorageClass

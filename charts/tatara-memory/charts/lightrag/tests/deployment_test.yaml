@@ -76,6 +76,9 @@ tests:
               name: my-neo4j-secret
 
   - it: imagePullSecrets honoured when pullSecretName set
+    set:
+      image:
+        pullSecretName: regcred
     asserts:
       - equal:
           path: spec.template.spec.imagePullSecrets[0].name
