@@ -19,20 +19,20 @@ var ErrInvalidScope = errors.New("codegraph: invalid push scope")
 // (sub-project B) emits the full relation vocabulary; this service only needs
 // the relations it groups into traversal sets.
 const (
-	relCalls        = "calls"         //nolint:unused
-	relImports      = "imports"       //nolint:unused
-	relReferences   = "references"    //nolint:unused
-	relDependsOn    = "depends_on"    //nolint:unused
-	relValueRef     = "value_ref"     //nolint:unused
-	relIncludes     = "includes"      //nolint:unused
-	relSubchart     = "subchart"      //nolint:unused
-	relModuleSource = "module_source" //nolint:unused
+	relCalls        = "calls"
+	relImports      = "imports"
+	relReferences   = "references"
+	relDependsOn    = "depends_on"
+	relValueRef     = "value_ref"
+	relIncludes     = "includes"
+	relSubchart     = "subchart"
+	relModuleSource = "module_source"
 )
 
 var (
-	callRelations       = []string{relCalls}                                                                            //nolint:unused
-	dependencyRelations = []string{relImports, relReferences, relDependsOn}                                             //nolint:unused
-	resourceRelations   = []string{relDependsOn, relReferences, relValueRef, relIncludes, relSubchart, relModuleSource} //nolint:unused
+	callRelations       = []string{relCalls}
+	dependencyRelations = []string{relImports, relReferences, relDependsOn}
+	resourceRelations   = []string{relDependsOn, relReferences, relValueRef, relIncludes, relSubchart, relModuleSource}
 )
 
 const (
