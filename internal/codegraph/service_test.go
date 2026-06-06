@@ -35,6 +35,9 @@ func (f *fakeStore) FileImports(_ context.Context, _, _ string) ([]codegraph.Edg
 	return nil, nil
 }
 func (f *fakeStore) CountEntities(_ context.Context, _ string) (int, error) { return 0, nil }
+func (f *fakeStore) CrossRepo(_ context.Context, _, _ string) (codegraph.CrossRepoLinks, error) {
+	return codegraph.CrossRepoLinks{Consumers: []codegraph.CrossRef{}, Providers: []codegraph.CrossRef{}}, nil
+}
 
 func newSvc() (*codegraph.Service, *fakeStore) {
 	fs := &fakeStore{}
@@ -127,6 +130,14 @@ func TestPushWithValidSymbols(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
+}
+
+func TestCrossRepoPassThrough(t *testing.T) {
+	svc, _ := newSvc()
+	links, err := svc.CrossRepo(context.Background(), "r", "e1")
+	require.NoError(t, err)
+	// fakeStore returns zero value
+	require.NotNil(t, links.Consumers)
 }
 
 func TestNamedTraversalsUseCorrectRelationSets(t *testing.T) {

@@ -10,4 +10,5 @@ type Store interface {
 	Neighbors(ctx context.Context, repo, id string, relations []string, dir string, depth int) ([]PathNode, error)
 	FileImports(ctx context.Context, repo, path string) ([]Edge, error)
 	CountEntities(ctx context.Context, repo string) (int, error)
+	CrossRepo(ctx context.Context, repo, id string) (CrossRepoLinks, error)
 }

@@ -100,6 +100,53 @@ func TestReconcileSymbolsPerFileReplacement(t *testing.T) {
 	require.Equal(t, 1, count)
 }
 
+func TestCrossRepoJoinQuery(t *testing.T) {
+	s, _, ctx := freshStoreWithDB(t)
+
+	// repo-a provides "Foo"; repo-b requires "Foo"
+	_, err := s.Reconcile(ctx, codegraph.GraphPush{
+		Repo:  "repo-a",
+		Files: []string{"a.go"},
+		Symbols: []codegraph.SymbolRow{
+			{Symbol: "Foo", Lang: "go", Kind: "func", Role: codegraph.RoleProvides, EntityID: "ea1", SrcFile: "a.go"},
+		},
+	})
+	require.NoError(t, err)
+
+	_, err = s.Reconcile(ctx, codegraph.GraphPush{
+		Repo:  "repo-b",
+		Files: []string{"b.go"},
+		Symbols: []codegraph.SymbolRow{
+			{Symbol: "Foo", Lang: "go", Kind: "func", Role: codegraph.RoleRequires, EntityID: "eb1", SrcFile: "b.go"},
+		},
+	})
+	require.NoError(t, err)
+
+	// CrossRepo for repo-a/ea1: should find repo-b as consumer
+	linksA, err := s.CrossRepo(ctx, "repo-a", "ea1")
+	require.NoError(t, err)
+	require.Len(t, linksA.Consumers, 1)
+	require.Equal(t, "repo-b", linksA.Consumers[0].Repo)
+	require.Equal(t, "eb1", linksA.Consumers[0].EntityID)
+	require.Empty(t, linksA.Providers)
+
+	// CrossRepo for repo-b/eb1: should find repo-a as provider
+	linksB, err := s.CrossRepo(ctx, "repo-b", "eb1")
+	require.NoError(t, err)
+	require.Len(t, linksB.Providers, 1)
+	require.Equal(t, "repo-a", linksB.Providers[0].Repo)
+	require.Equal(t, "ea1", linksB.Providers[0].EntityID)
+	require.Empty(t, linksB.Consumers)
+
+	// Self-repo excluded: repo-a should not appear as its own consumer/provider
+	for _, c := range linksA.Consumers {
+		require.NotEqual(t, "repo-a", c.Repo)
+	}
+	for _, p := range linksB.Providers {
+		require.NotEqual(t, "repo-b", p.Repo)
+	}
+}
+
 func TestReconcileInsertsAndReplacesPerFile(t *testing.T) {
 	s, ctx := freshStore(t)
 

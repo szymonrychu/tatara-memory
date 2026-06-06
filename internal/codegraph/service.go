@@ -110,3 +110,8 @@ func (s *Service) ResourceGraph(ctx context.Context, repo, id string, depth int)
 func (s *Service) FileImports(ctx context.Context, repo, path string) ([]Edge, error) {
 	return s.store.FileImports(ctx, repo, path)
 }
+
+// CrossRepo returns the cross-repo consumers and providers for an entity.
+func (s *Service) CrossRepo(ctx context.Context, repo, id string) (CrossRepoLinks, error) {
+	return s.store.CrossRepo(ctx, repo, id)
+}
