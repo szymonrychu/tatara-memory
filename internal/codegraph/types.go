@@ -63,15 +63,46 @@ type Edge struct {
 	Properties map[string]string `json:"properties,omitempty"`
 }
 
+// Symbol roles for cross-repo resolution.
+const (
+	RoleProvides = "provides"
+	RoleRequires = "requires"
+)
+
+// SymbolRow is a cross-repo provides/requires fact owned by a file.
+type SymbolRow struct {
+	Symbol   string `json:"symbol"`
+	Lang     string `json:"lang"`
+	Kind     string `json:"kind"`
+	Role     string `json:"role"`
+	EntityID string `json:"entity_id"`
+	SrcFile  string `json:"src_file"`
+}
+
+// CrossRef is one end of a cross-repo symbol link.
+type CrossRef struct {
+	Repo     string `json:"repo"`
+	EntityID string `json:"entity_id"`
+	Symbol   string `json:"symbol"`
+	Lang     string `json:"lang"`
+}
+
+// CrossRepoLinks are the cross-repo consumers/providers of an entity.
+type CrossRepoLinks struct {
+	Consumers []CrossRef `json:"consumers"` // others requiring what this entity provides
+	Providers []CrossRef `json:"providers"` // others providing what this entity requires
+}
+
 // GraphPush is one ingest request: the changed file set plus the entities and
 // edges those files own. Reconciliation deletes the prior graph owned by Files
 // then inserts Entities and Edges, in one transaction.
 type GraphPush struct {
-	Repo     string   `json:"repo"`
-	Commit   string   `json:"commit,omitempty"`
-	Files    []string `json:"files"`
-	Entities []Entity `json:"entities"`
-	Edges    []Edge   `json:"edges"`
+	Repo     string      `json:"repo"`
+	Commit   string      `json:"commit,omitempty"`
+	Files    []string    `json:"files"`
+	Entities []Entity    `json:"entities"`
+	Edges    []Edge      `json:"edges"`
+	Symbols  []SymbolRow `json:"symbols,omitempty"`
 }
 
 // PushResult summarises a completed reconciliation.
