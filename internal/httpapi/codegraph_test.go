@@ -1,4 +1,4 @@
-package httpapi
+package httpapi_test
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/szymonrychu/tatara-memory/internal/codegraph"
-	"github.com/szymonrychu/tatara-memory/internal/memory"
+	"github.com/szymonrychu/tatara-memory/internal/httpapi"
 )
 
 type stubCodeGraph struct {
@@ -58,42 +58,9 @@ func (s *stubCodeGraph) FileImports(_ context.Context, _, _ string) ([]codegraph
 	return []codegraph.Edge{{From: "p", To: "q", Relation: "imports"}}, nil
 }
 
-// stubMemory is a minimal MemoryService stub for use in package-internal tests.
-type stubMemory struct{}
-
-func (s *stubMemory) CreateMemory(_ context.Context, m memory.Memory) (memory.Memory, error) {
-	m.ID = "stub"
-	return m, nil
-}
-func (s *stubMemory) GetMemory(_ context.Context, _ string) (memory.Memory, error) {
-	return memory.Memory{}, nil
-}
-func (s *stubMemory) DeleteMemory(_ context.Context, _ string) error { return nil }
-func (s *stubMemory) Query(_ context.Context, _ memory.Query) (memory.QueryResult, error) {
-	return memory.QueryResult{}, nil
-}
-func (s *stubMemory) Describe(_ context.Context, _ memory.Query) (memory.DescribeResult, error) {
-	return memory.DescribeResult{}, nil
-}
-func (s *stubMemory) GetEntity(_ context.Context, _ string) (memory.Entity, error) {
-	return memory.Entity{}, nil
-}
-func (s *stubMemory) SearchEntities(_ context.Context, _ string) ([]memory.Entity, error) {
-	return nil, nil
-}
-func (s *stubMemory) PatchEntity(_ context.Context, _ string, _ memory.Entity) (memory.Entity, error) {
-	return memory.Entity{}, nil
-}
-func (s *stubMemory) ListEdges(_ context.Context) ([]memory.Edge, error) { return nil, nil }
-func (s *stubMemory) CreateEdge(_ context.Context, e memory.Edge) (memory.Edge, error) {
-	e.ID = "stub"
-	return e, nil
-}
-func (s *stubMemory) DeleteEdge(_ context.Context, _ string) error { return nil }
-
-func cgRouter(cg CodeGraphService) http.Handler {
-	return NewRouter(Config{
-		Service:   &stubMemory{},
+func cgRouter(cg httpapi.CodeGraphService) http.Handler {
+	return httpapi.NewRouter(httpapi.Config{
+		Service:   &stubService{},
 		CodeGraph: cg,
 		Registry:  prometheus.NewRegistry(),
 	})
