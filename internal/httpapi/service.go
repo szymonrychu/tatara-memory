@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 
+	"github.com/szymonrychu/tatara-memory/internal/codegraph"
 	"github.com/szymonrychu/tatara-memory/internal/memory"
 )
 
@@ -27,4 +28,19 @@ type MemoryService interface {
 type IngestService interface {
 	Enqueue(ctx context.Context, items []memory.IngestItem) (memory.IngestJob, error)
 	GetJob(ctx context.Context, id string) (memory.IngestJob, error)
+}
+
+// CodeGraphService is the domain interface for the code-structure graph.
+// Concrete implementation lives in internal/codegraph.
+type CodeGraphService interface {
+	Push(ctx context.Context, p codegraph.GraphPush) (codegraph.PushResult, error)
+	Search(ctx context.Context, repo, q, typ string, limit int) ([]codegraph.Entity, error)
+	Entity(ctx context.Context, repo, id string) (codegraph.EntityDetail, error)
+	Neighbors(ctx context.Context, repo, id string, relations []string, dir string, depth int) ([]codegraph.PathNode, error)
+	Callers(ctx context.Context, repo, id string, depth int) ([]codegraph.PathNode, error)
+	Callees(ctx context.Context, repo, id string, depth int) ([]codegraph.PathNode, error)
+	Dependents(ctx context.Context, repo, id string, depth int) ([]codegraph.PathNode, error)
+	Dependencies(ctx context.Context, repo, id string, depth int) ([]codegraph.PathNode, error)
+	ResourceGraph(ctx context.Context, repo, id string, depth int) ([]codegraph.PathNode, error)
+	FileImports(ctx context.Context, repo, path string) ([]codegraph.Edge, error)
 }

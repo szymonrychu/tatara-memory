@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/szymonrychu/tatara-memory/internal/codegraph"
 	"github.com/szymonrychu/tatara-memory/internal/memory"
 )
 
@@ -12,6 +13,10 @@ import (
 func mapServiceError(w http.ResponseWriter, r *http.Request, err error) {
 	reqID := RequestIDFromContext(r.Context())
 	switch {
+	case errors.Is(err, codegraph.ErrEntityNotFound):
+		WriteError(w, http.StatusNotFound, "not found", reqID)
+	case errors.Is(err, codegraph.ErrInvalidScope):
+		WriteError(w, http.StatusBadRequest, err.Error(), reqID)
 	case errors.Is(err, memory.ErrNotFound):
 		WriteError(w, http.StatusNotFound, "not found", reqID)
 	case errors.Is(err, memory.ErrTransient), errors.Is(err, context.DeadlineExceeded):
