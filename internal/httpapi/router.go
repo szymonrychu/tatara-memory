@@ -14,6 +14,7 @@ import (
 type Config struct {
 	Service    MemoryService
 	Ingest     IngestService
+	CodeGraph  CodeGraphService
 	Verify     func(http.Handler) http.Handler // auth middleware; nil disables auth (tests only)
 	Logger     *slog.Logger
 	Registry   *prometheus.Registry
@@ -79,4 +80,17 @@ func mountV1(r chi.Router, cfg Config) {
 	r.Get("/edges", handleListEdges(cfg))
 	r.Post("/edges", handleCreateEdge(cfg))
 	r.Delete("/edges/{id}", handleDeleteEdge(cfg))
+
+	if cfg.CodeGraph != nil {
+		r.Post("/code-graph:bulk", handlePostCodeGraph(cfg))
+		r.Get("/code/entities", handleSearchCodeEntities(cfg))
+		r.Get("/code/entity", handleGetCodeEntity(cfg))
+		r.Get("/code/neighbors", handleNeighbors(cfg))
+		r.Get("/code/callers", handleCallers(cfg))
+		r.Get("/code/callees", handleCallees(cfg))
+		r.Get("/code/dependents", handleDependents(cfg))
+		r.Get("/code/dependencies", handleDependencies(cfg))
+		r.Get("/code/resource-graph", handleResourceGraph(cfg))
+		r.Get("/code/file-imports", handleFileImports(cfg))
+	}
 }
