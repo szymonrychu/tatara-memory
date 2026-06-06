@@ -17,6 +17,8 @@ func mapServiceError(w http.ResponseWriter, r *http.Request, err error) {
 		WriteError(w, http.StatusNotFound, "not found", reqID)
 	case errors.Is(err, codegraph.ErrInvalidScope):
 		WriteError(w, http.StatusBadRequest, err.Error(), reqID)
+	case errors.Is(err, memory.ErrInvalid):
+		WriteError(w, http.StatusBadRequest, "invalid input", reqID)
 	case errors.Is(err, memory.ErrNotFound):
 		WriteError(w, http.StatusNotFound, "not found", reqID)
 	case errors.Is(err, memory.ErrTransient), errors.Is(err, context.DeadlineExceeded):

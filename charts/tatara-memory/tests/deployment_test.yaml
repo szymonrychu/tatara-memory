@@ -5,7 +5,7 @@ release:
   name: tm
   namespace: tatara
 tests:
-  - it: renders one container wired via envFrom only
+  - it: renders one container wired via envFrom and single PG_DSN inline env
     set:
       image.tag: "1.2.3"
     asserts:
@@ -16,15 +16,16 @@ tests:
           value: tatara-memory
       - equal:
           path: spec.template.spec.containers[0].image
-          value: harbor.szymonrichert.pl/tatara/tatara-memory:1.2.3
-      - isNull:
-          path: spec.template.spec.containers[0].env
+          value: harbor.szymonrichert.pl/containers/tatara-memory:1.2.3
       - equal:
           path: spec.template.spec.containers[0].envFrom[0].configMapRef.name
           value: tm-tatara-memory
       - equal:
           path: spec.template.spec.containers[0].envFrom[1].secretRef.name
           value: tm-tatara-memory
+      - equal:
+          path: spec.template.spec.containers[0].env[0].name
+          value: PG_DSN
       - equal:
           path: spec.template.spec.containers[0].ports[0].containerPort
           value: 8080
@@ -48,10 +49,10 @@ tests:
       - equal:
           path: spec.template.spec.containers[0].envFrom[1].secretRef.name
           value: external-tm-secret
-  - it: never declares inline env
+  - it: only PG_DSN in inline env (no other injected env vars)
     asserts:
-      - notExists:
-          path: spec.template.spec.containers[0].env
+      - isNull:
+          path: spec.template.spec.containers[0].env[1]
   - it: envFrom has exactly two entries (configMapRef and secretRef)
     documentSelector:
       path: kind

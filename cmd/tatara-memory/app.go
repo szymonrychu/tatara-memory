@@ -24,13 +24,15 @@ import (
 
 // app holds all runtime dependencies for tatara-memory.
 type app struct {
-	log     *slog.Logger
-	reg     *prometheus.Registry
-	db      *sql.DB
-	lrc     lightrag.Client
-	pool    *ingest.Pool
-	server  *http.Server
-	stopOTL func(context.Context) error
+	log          *slog.Logger
+	reg          *prometheus.Registry
+	db           *sql.DB
+	lrc          lightrag.Client
+	pool         *ingest.Pool
+	server       *http.Server
+	reaper       *memory.Reaper
+	reaperCancel context.CancelFunc
+	stopOTL      func(context.Context) error
 }
 
 // shutdown drains the HTTP server, stops the ingest pool, closes the DB, and
@@ -38,6 +40,9 @@ type app struct {
 func (a *app) shutdown(ctx context.Context) error {
 	shutdownCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	if a.reaperCancel != nil {
+		a.reaperCancel()
+	}
 	if a.server != nil {
 		_ = a.server.Shutdown(shutdownCtx)
 	}
@@ -58,6 +63,9 @@ func (a *app) shutdown(ctx context.Context) error {
 func (a *app) migrate(ctx context.Context) error {
 	if err := ingest.Migrate(ctx, a.db); err != nil {
 		return fmt.Errorf("migrate ingest schema: %w", err)
+	}
+	if err := memory.Migrate(ctx, a.db); err != nil {
+		return fmt.Errorf("migrate memory schema: %w", err)
 	}
 	if err := codegraph.Migrate(ctx, a.db); err != nil {
 		return fmt.Errorf("migrate codegraph schema: %w", err)
@@ -125,7 +133,8 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 	}
 
 	store := ingest.NewPGStore(db)
-	memSvc := memory.NewService(lrc)
+	tomb := memory.NewTombstoneStore(db)
+	memSvc := memory.NewService(lrc, tomb)
 	pool := ingest.NewPool(store, memSvc, cfg.WorkerPoolSize)
 	pool.Start(ctx)
 
@@ -142,6 +151,11 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	reaper := memory.NewReaper(tomb, lrc, logger, reg)
+	tomb.SetMarkCounter(reaper.IncCreated)
+	reaperCtx, reaperCancel := context.WithCancel(context.Background())
+	go reaper.Run(reaperCtx)
 
 	readyFn := readyzFunc(db, lrc)
 	router := httpapi.NewRouter(httpapi.Config{
@@ -161,13 +175,15 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 	}
 
 	return &app{
-		log:     logger,
-		reg:     reg,
-		db:      db,
-		lrc:     lrc,
-		pool:    pool,
-		server:  srv,
-		stopOTL: stop,
+		log:          logger,
+		reg:          reg,
+		db:           db,
+		lrc:          lrc,
+		pool:         pool,
+		server:       srv,
+		reaper:       reaper,
+		reaperCancel: reaperCancel,
+		stopOTL:      stop,
 	}, nil
 }
 

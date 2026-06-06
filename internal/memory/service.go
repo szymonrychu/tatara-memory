@@ -21,15 +21,26 @@ var ErrUpstream = errors.New("memory: upstream error")
 // ErrTransient is returned when the LightRAG backend is temporarily unavailable.
 var ErrTransient = errors.New("memory: transient upstream error")
 
+// ErrInvalid is returned when the caller supplies a malformed identifier or payload.
+var ErrInvalid = errors.New("memory: invalid input")
+
+// tombstoner is the minimal interface Service needs from TombstoneStore.
+type tombstoner interface {
+	Mark(ctx context.Context, trackID string) error
+	IsDeleted(ctx context.Context, trackID string) (bool, error)
+}
+
 // Service provides memory CRUD and retrieval operations backed by LightRAG.
 type Service struct {
-	lr  lightrag.Client
-	now func() time.Time
+	lr   lightrag.Client
+	tomb tombstoner
+	now  func() time.Time
 }
 
 // NewService returns a Service backed by the given LightRAG client.
-func NewService(lr lightrag.Client) *Service {
-	return &Service{lr: lr, now: time.Now}
+// tomb may be nil; if nil, tombstone checks are skipped (no-op).
+func NewService(lr lightrag.Client, tomb tombstoner) *Service {
+	return &Service{lr: lr, tomb: tomb, now: time.Now}
 }
 
 func newID(prefix string) string {
@@ -79,6 +90,15 @@ func (s *Service) CreateMemory(ctx context.Context, m Memory) (Memory, error) {
 // Returns a Memory derived from the first document associated with the track.
 // LightRAG does not expose original document text; Text holds content_summary.
 func (s *Service) GetMemory(ctx context.Context, trackID string) (Memory, error) {
+	if s.tomb != nil {
+		deleted, err := s.tomb.IsDeleted(ctx, trackID)
+		if err != nil {
+			return Memory{}, fmt.Errorf("tombstone check: %w", err)
+		}
+		if deleted {
+			return Memory{}, ErrNotFound
+		}
+	}
 	ts, err := s.lr.TrackStatus(ctx, trackID)
 	if err != nil {
 		return Memory{}, wrapUpstream(err)
@@ -104,6 +124,11 @@ func (s *Service) DeleteMemory(ctx context.Context, trackID string) error {
 	}
 	if _, err := s.lr.DeleteDocs(ctx, lightrag.DeleteDocRequest{DocIDs: docIDs}); err != nil {
 		return wrapUpstream(err)
+	}
+	if s.tomb != nil {
+		if err := s.tomb.Mark(ctx, trackID); err != nil {
+			return fmt.Errorf("tombstone: %w", err)
+		}
 	}
 	return nil
 }
@@ -214,8 +239,8 @@ func (s *Service) ListEdges(ctx context.Context) ([]Edge, error) {
 			return nil, wrapUpstream(err)
 		}
 		for _, e := range g.Edges {
-			id := MakeEdgeID(e.Source, e.Target)
-			rev := MakeEdgeID(e.Target, e.Source)
+			id := EncodeEdgeID(e.Source, e.Target)
+			rev := EncodeEdgeID(e.Target, e.Source)
 			if _, ok := seen[id]; ok {
 				continue
 			}
@@ -235,15 +260,15 @@ func (s *Service) CreateEdge(ctx context.Context, e Edge) (Edge, error) {
 		return Edge{}, wrapUpstream(err)
 	}
 	created := e
-	created.ID = MakeEdgeID(e.From, e.To)
+	created.ID = EncodeEdgeID(e.From, e.To)
 	return created, nil
 }
 
-// DeleteEdge removes an edge by composite ID ("from||to").
+// DeleteEdge removes an edge by opaque ID produced by EncodeEdgeID.
 func (s *Service) DeleteEdge(ctx context.Context, id string) error {
-	from, to, ok := ParseEdgeID(id)
-	if !ok {
-		return fmt.Errorf("%w: invalid edge id %q", ErrNotFound, id)
+	from, to, err := DecodeEdgeID(id)
+	if err != nil {
+		return fmt.Errorf("%w: invalid edge id %q", ErrInvalid, id)
 	}
 	if err := s.lr.DeleteRelation(ctx, lightrag.DeleteRelationRequest{
 		SourceEntity: from,
