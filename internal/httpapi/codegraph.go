@@ -205,3 +205,22 @@ func handleFileImports(cfg Config) http.HandlerFunc {
 		WriteJSON(w, http.StatusOK, map[string]interface{}{"edges": edges})
 	}
 }
+
+func handleCrossRepo(cfg Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		repo, ok := reqRepo(w, r)
+		if !ok {
+			return
+		}
+		id, ok := reqIDParam(w, r)
+		if !ok {
+			return
+		}
+		links, err := cfg.CodeGraph.CrossRepo(r.Context(), repo, id)
+		if err != nil {
+			mapServiceError(w, r, err)
+			return
+		}
+		WriteJSON(w, http.StatusOK, links)
+	}
+}

@@ -35,6 +35,9 @@ func (f *fakeStore) FileImports(_ context.Context, _, _ string) ([]codegraph.Edg
 	return nil, nil
 }
 func (f *fakeStore) CountEntities(_ context.Context, _ string) (int, error) { return 0, nil }
+func (f *fakeStore) CrossRepo(_ context.Context, _, _ string) (codegraph.CrossRepoLinks, error) {
+	return codegraph.CrossRepoLinks{Consumers: []codegraph.CrossRef{}, Providers: []codegraph.CrossRef{}}, nil
+}
 
 func newSvc() (*codegraph.Service, *fakeStore) {
 	fs := &fakeStore{}
@@ -80,6 +83,61 @@ func TestPushOK(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, res.EntitiesUpserted)
 	require.Equal(t, "r", fs.pushed.Repo)
+}
+
+func TestPushRejectsSymbolOutsideFiles(t *testing.T) {
+	svc, _ := newSvc()
+	_, err := svc.Push(context.Background(), codegraph.GraphPush{
+		Repo:  "r",
+		Files: []string{"a.go"},
+		Symbols: []codegraph.SymbolRow{
+			{Symbol: "Foo", Lang: "go", Kind: "func", Role: codegraph.RoleProvides, EntityID: "e1", SrcFile: "b.go"},
+		},
+	})
+	require.ErrorIs(t, err, codegraph.ErrInvalidScope)
+}
+
+func TestPushRejectsSymbolInvalidRole(t *testing.T) {
+	svc, _ := newSvc()
+	_, err := svc.Push(context.Background(), codegraph.GraphPush{
+		Repo:  "r",
+		Files: []string{"a.go"},
+		Symbols: []codegraph.SymbolRow{
+			{Symbol: "Foo", Lang: "go", Kind: "func", Role: "bad_role", EntityID: "e1", SrcFile: "a.go"},
+		},
+	})
+	require.ErrorIs(t, err, codegraph.ErrInvalidScope)
+}
+
+func TestPushBackCompatNoSymbols(t *testing.T) {
+	svc, _ := newSvc()
+	_, err := svc.Push(context.Background(), codegraph.GraphPush{
+		Repo:     "r",
+		Files:    []string{"a.go"},
+		Entities: []codegraph.Entity{{ID: "x", FilePath: "a.go"}},
+	})
+	require.NoError(t, err)
+}
+
+func TestPushWithValidSymbols(t *testing.T) {
+	svc, _ := newSvc()
+	_, err := svc.Push(context.Background(), codegraph.GraphPush{
+		Repo:  "r",
+		Files: []string{"a.go"},
+		Symbols: []codegraph.SymbolRow{
+			{Symbol: "Foo", Lang: "go", Kind: "func", Role: codegraph.RoleProvides, EntityID: "e1", SrcFile: "a.go"},
+			{Symbol: "Bar", Lang: "go", Kind: "func", Role: codegraph.RoleRequires, EntityID: "e2", SrcFile: "a.go"},
+		},
+	})
+	require.NoError(t, err)
+}
+
+func TestCrossRepoPassThrough(t *testing.T) {
+	svc, _ := newSvc()
+	links, err := svc.CrossRepo(context.Background(), "r", "e1")
+	require.NoError(t, err)
+	// fakeStore returns zero value
+	require.NotNil(t, links.Consumers)
 }
 
 func TestNamedTraversalsUseCorrectRelationSets(t *testing.T) {

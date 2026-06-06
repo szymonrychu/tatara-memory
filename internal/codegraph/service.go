@@ -44,6 +44,14 @@ func (s *Service) Push(ctx context.Context, p GraphPush) (PushResult, error) {
 			return PushResult{}, fmt.Errorf("%w: edge %s->%s src_file %q not in files", ErrInvalidScope, e.From, e.To, e.SrcFile)
 		}
 	}
+	for _, sym := range p.Symbols {
+		if _, ok := files[sym.SrcFile]; !ok {
+			return PushResult{}, fmt.Errorf("%w: symbol %s src_file %q not in files", ErrInvalidScope, sym.Symbol, sym.SrcFile)
+		}
+		if sym.Role != RoleProvides && sym.Role != RoleRequires {
+			return PushResult{}, fmt.Errorf("%w: symbol %s role %q must be provides|requires", ErrInvalidScope, sym.Symbol, sym.Role)
+		}
+	}
 	res, err := s.store.Reconcile(ctx, p)
 	if err != nil {
 		return PushResult{}, err
@@ -101,4 +109,9 @@ func (s *Service) ResourceGraph(ctx context.Context, repo, id string, depth int)
 // FileImports returns the import edges originating in path.
 func (s *Service) FileImports(ctx context.Context, repo, path string) ([]Edge, error) {
 	return s.store.FileImports(ctx, repo, path)
+}
+
+// CrossRepo returns the cross-repo consumers and providers for an entity.
+func (s *Service) CrossRepo(ctx context.Context, repo, id string) (CrossRepoLinks, error) {
+	return s.store.CrossRepo(ctx, repo, id)
 }

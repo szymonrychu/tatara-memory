@@ -18,6 +18,11 @@ func NewPGStore(db *sql.DB) *PGStore {
 	return &PGStore{db: db}
 }
 
+// DB returns the underlying database connection (for testing).
+func (s *PGStore) DB() *sql.DB {
+	return s.db
+}
+
 func marshalProps(p map[string]string) string {
 	if len(p) == 0 {
 		return "{}"
@@ -56,6 +61,9 @@ func (s *PGStore) Reconcile(ctx context.Context, p GraphPush) (PushResult, error
 		if _, err := tx.ExecContext(ctx, `DELETE FROM code_entities WHERE repo=$1 AND file_path=$2`, p.Repo, f); err != nil {
 			return PushResult{}, err
 		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM cross_repo_symbols WHERE repo=$1 AND src_file=$2`, p.Repo, f); err != nil {
+			return PushResult{}, err
+		}
 	}
 
 	for _, e := range p.Entities {
@@ -77,6 +85,17 @@ func (s *PGStore) Reconcile(ctx context.Context, p GraphPush) (PushResult, error
 			ON CONFLICT (repo, from_id, to_id, relation) DO UPDATE SET
 				src_file=EXCLUDED.src_file, properties=EXCLUDED.properties`,
 			p.Repo, e.From, e.To, e.Relation, e.SrcFile, marshalProps(e.Properties)); err != nil {
+			return PushResult{}, err
+		}
+	}
+
+	for _, s := range p.Symbols {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO cross_repo_symbols(repo, symbol, lang, kind, role, entity_id, src_file)
+			VALUES ($1,$2,$3,$4,$5,$6,$7)
+			ON CONFLICT (repo, symbol, role, entity_id) DO UPDATE SET
+			    lang=EXCLUDED.lang, kind=EXCLUDED.kind, src_file=EXCLUDED.src_file`,
+			p.Repo, s.Symbol, s.Lang, s.Kind, s.Role, s.EntityID, s.SrcFile); err != nil {
 			return PushResult{}, err
 		}
 	}
@@ -219,6 +238,60 @@ func (s *PGStore) FileImports(ctx context.Context, repo, path string) ([]Edge, e
 	return s.queryEdges(ctx,
 		`SELECT from_id, to_id, relation, src_file, properties FROM code_edges WHERE repo=$1 AND src_file=$2 AND relation='imports'`,
 		repo, path)
+}
+
+// Consumers: others that REQUIRE a symbol this entity PROVIDES.
+const crossConsumersQuery = `
+SELECT r.repo, r.entity_id, r.symbol, r.lang
+FROM cross_repo_symbols p
+JOIN cross_repo_symbols r
+  ON r.symbol = p.symbol AND r.lang = p.lang AND r.role = 'requires'
+WHERE p.repo = $1 AND p.entity_id = $2 AND p.role = 'provides' AND r.repo <> $1
+ORDER BY r.repo, r.entity_id`
+
+// Providers: others that PROVIDE a symbol this entity REQUIRES.
+const crossProvidersQuery = `
+SELECT q.repo, q.entity_id, q.symbol, q.lang
+FROM cross_repo_symbols rq
+JOIN cross_repo_symbols q
+  ON q.symbol = rq.symbol AND q.lang = rq.lang AND q.role = 'provides'
+WHERE rq.repo = $1 AND rq.entity_id = $2 AND rq.role = 'requires' AND q.repo <> $1
+ORDER BY q.repo, q.entity_id`
+
+// CrossRepo returns the cross-repo consumers and providers for an entity.
+func (s *PGStore) CrossRepo(ctx context.Context, repo, id string) (CrossRepoLinks, error) {
+	consumers, err := s.queryCrossRefs(ctx, crossConsumersQuery, repo, id)
+	if err != nil {
+		return CrossRepoLinks{}, err
+	}
+	providers, err := s.queryCrossRefs(ctx, crossProvidersQuery, repo, id)
+	if err != nil {
+		return CrossRepoLinks{}, err
+	}
+	if consumers == nil {
+		consumers = []CrossRef{}
+	}
+	if providers == nil {
+		providers = []CrossRef{}
+	}
+	return CrossRepoLinks{Consumers: consumers, Providers: providers}, nil
+}
+
+func (s *PGStore) queryCrossRefs(ctx context.Context, query, repo, id string) ([]CrossRef, error) {
+	rows, err := s.db.QueryContext(ctx, query, repo, id)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []CrossRef
+	for rows.Next() {
+		var c CrossRef
+		if err := rows.Scan(&c.Repo, &c.EntityID, &c.Symbol, &c.Lang); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
 
 func (s *PGStore) queryEdges(ctx context.Context, query string, args ...any) ([]Edge, error) {

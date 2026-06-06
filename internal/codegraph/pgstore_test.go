@@ -26,18 +26,125 @@ func openPG(t *testing.T) *sql.DB {
 	return db
 }
 
-func freshStore(t *testing.T) (*codegraph.PGStore, context.Context) {
+func freshStoreWithDB(t *testing.T) (*codegraph.PGStore, *sql.DB, context.Context) {
 	t.Helper()
 	ctx := context.Background()
 	db := openPG(t)
 	require.NoError(t, codegraph.Migrate(ctx, db))
-	_, err := db.ExecContext(ctx, `DELETE FROM code_edges; DELETE FROM code_entities;`)
+	_, err := db.ExecContext(ctx, `DELETE FROM cross_repo_symbols; DELETE FROM code_edges; DELETE FROM code_entities;`)
 	require.NoError(t, err)
-	return codegraph.NewPGStore(db), ctx
+	return codegraph.NewPGStore(db), db, ctx
+}
+
+func freshStore(t *testing.T) (*codegraph.PGStore, context.Context) {
+	t.Helper()
+	s, _, ctx := freshStoreWithDB(t)
+	return s, ctx
+}
+
+func TestMigrateCrossRepoSymbolsTable(t *testing.T) {
+	ctx := context.Background()
+	db := openPG(t)
+	require.NoError(t, codegraph.Migrate(ctx, db))
+
+	var exists bool
+	err := db.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM information_schema.tables
+			WHERE table_name = 'cross_repo_symbols'
+		)`).Scan(&exists)
+	require.NoError(t, err)
+	require.True(t, exists, "cross_repo_symbols table must exist after Migrate")
 }
 
 func ent(id, typ, file string) codegraph.Entity {
 	return codegraph.Entity{ID: id, Name: id, Type: typ, FilePath: file, Properties: map[string]string{"language": "go"}}
+}
+
+func TestReconcileSymbolsPerFileReplacement(t *testing.T) {
+	s, db, ctx := freshStoreWithDB(t)
+
+	// Push symbols for files a.go and b.go
+	_, err := s.Reconcile(ctx, codegraph.GraphPush{
+		Repo:  "repo-a",
+		Files: []string{"a.go", "b.go"},
+		Symbols: []codegraph.SymbolRow{
+			{Symbol: "Foo", Lang: "go", Kind: "func", Role: codegraph.RoleProvides, EntityID: "e1", SrcFile: "a.go"},
+			{Symbol: "Bar", Lang: "go", Kind: "func", Role: codegraph.RoleRequires, EntityID: "e2", SrcFile: "b.go"},
+		},
+	})
+	require.NoError(t, err)
+
+	var count int
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM cross_repo_symbols WHERE repo='repo-a'`).Scan(&count))
+	require.Equal(t, 2, count)
+
+	// Re-push a.go with different symbols; b.go's symbols should remain
+	_, err = s.Reconcile(ctx, codegraph.GraphPush{
+		Repo:  "repo-a",
+		Files: []string{"a.go"},
+		Symbols: []codegraph.SymbolRow{
+			{Symbol: "Baz", Lang: "go", Kind: "func", Role: codegraph.RoleProvides, EntityID: "e3", SrcFile: "a.go"},
+		},
+	})
+	require.NoError(t, err)
+
+	// b.go's Bar symbol still present
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM cross_repo_symbols WHERE repo='repo-a' AND src_file='b.go'`).Scan(&count))
+	require.Equal(t, 1, count)
+
+	// a.go's Foo gone, Baz present
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM cross_repo_symbols WHERE repo='repo-a' AND symbol='Foo'`).Scan(&count))
+	require.Equal(t, 0, count)
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM cross_repo_symbols WHERE repo='repo-a' AND symbol='Baz'`).Scan(&count))
+	require.Equal(t, 1, count)
+}
+
+func TestCrossRepoJoinQuery(t *testing.T) {
+	s, _, ctx := freshStoreWithDB(t)
+
+	// repo-a provides "Foo"; repo-b requires "Foo"
+	_, err := s.Reconcile(ctx, codegraph.GraphPush{
+		Repo:  "repo-a",
+		Files: []string{"a.go"},
+		Symbols: []codegraph.SymbolRow{
+			{Symbol: "Foo", Lang: "go", Kind: "func", Role: codegraph.RoleProvides, EntityID: "ea1", SrcFile: "a.go"},
+		},
+	})
+	require.NoError(t, err)
+
+	_, err = s.Reconcile(ctx, codegraph.GraphPush{
+		Repo:  "repo-b",
+		Files: []string{"b.go"},
+		Symbols: []codegraph.SymbolRow{
+			{Symbol: "Foo", Lang: "go", Kind: "func", Role: codegraph.RoleRequires, EntityID: "eb1", SrcFile: "b.go"},
+		},
+	})
+	require.NoError(t, err)
+
+	// CrossRepo for repo-a/ea1: should find repo-b as consumer
+	linksA, err := s.CrossRepo(ctx, "repo-a", "ea1")
+	require.NoError(t, err)
+	require.Len(t, linksA.Consumers, 1)
+	require.Equal(t, "repo-b", linksA.Consumers[0].Repo)
+	require.Equal(t, "eb1", linksA.Consumers[0].EntityID)
+	require.Empty(t, linksA.Providers)
+
+	// CrossRepo for repo-b/eb1: should find repo-a as provider
+	linksB, err := s.CrossRepo(ctx, "repo-b", "eb1")
+	require.NoError(t, err)
+	require.Len(t, linksB.Providers, 1)
+	require.Equal(t, "repo-a", linksB.Providers[0].Repo)
+	require.Equal(t, "ea1", linksB.Providers[0].EntityID)
+	require.Empty(t, linksB.Consumers)
+
+	// Self-repo excluded: repo-a should not appear as its own consumer/provider
+	for _, c := range linksA.Consumers {
+		require.NotEqual(t, "repo-a", c.Repo)
+	}
+	for _, p := range linksB.Providers {
+		require.NotEqual(t, "repo-b", p.Repo)
+	}
 }
 
 func TestReconcileInsertsAndReplacesPerFile(t *testing.T) {

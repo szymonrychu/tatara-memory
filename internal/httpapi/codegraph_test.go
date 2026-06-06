@@ -57,6 +57,12 @@ func (s *stubCodeGraph) ResourceGraph(_ context.Context, _, _ string, _ int) ([]
 func (s *stubCodeGraph) FileImports(_ context.Context, _, _ string) ([]codegraph.Edge, error) {
 	return []codegraph.Edge{{From: "p", To: "q", Relation: "imports"}}, nil
 }
+func (s *stubCodeGraph) CrossRepo(_ context.Context, _, _ string) (codegraph.CrossRepoLinks, error) {
+	return codegraph.CrossRepoLinks{
+		Consumers: []codegraph.CrossRef{{Repo: "repo-b", EntityID: "eb1", Symbol: "Foo", Lang: "go"}},
+		Providers: []codegraph.CrossRef{},
+	}, nil
+}
 
 func cgRouter(cg httpapi.CodeGraphService) http.Handler {
 	return httpapi.NewRouter(httpapi.Config{
@@ -131,4 +137,29 @@ func TestFileImports_OK(t *testing.T) {
 	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Contains(t, w.Body.String(), "imports")
+}
+
+func TestCrossRepo_OK(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/code/cross-repo?repo=r&id=e1", nil)
+	w := httptest.NewRecorder()
+	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	var links codegraph.CrossRepoLinks
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &links))
+	require.NotNil(t, links.Consumers)
+	require.NotNil(t, links.Providers)
+}
+
+func TestCrossRepo_MissingRepo(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/code/cross-repo?id=e1", nil)
+	w := httptest.NewRecorder()
+	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
+	require.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestCrossRepo_MissingID(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/code/cross-repo?repo=r", nil)
+	w := httptest.NewRecorder()
+	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
+	require.Equal(t, http.StatusBadRequest, w.Code)
 }
