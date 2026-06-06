@@ -7,6 +7,18 @@ Statuses: `planned`, `in progress`, `shipped`.
 
 ---
 
+## v0.2 - Code graph (phase 3 sub-project A)
+
+**Status:** in progress 2026-06-06.
+
+code_entities/code_edges schema, POST /code-graph:bulk (synchronous,
+file-granular replace), GET /code/* traversal (entities search, entity,
+neighbors, callers, callees, dependents, dependencies, resource-graph,
+file-imports) via recursive CTEs. Migrations wired at startup in run()
+(also fixes the latent ingest_jobs migration gap). Consumed by
+tatara-memory-repo-ingester (B) and tatara-cli code-graph MCP tools (C).
+Spec: parent-repo `docs/superpowers/specs/2026-06-05-tatara-code-ingestion-design.md`.
+
 ## v1.0 - Phase 1 ship
 
 **Status:** v0.1.2 deployed 2026-05-27, end-to-end smoke green
