@@ -44,6 +44,14 @@ func (s *Service) Push(ctx context.Context, p GraphPush) (PushResult, error) {
 			return PushResult{}, fmt.Errorf("%w: edge %s->%s src_file %q not in files", ErrInvalidScope, e.From, e.To, e.SrcFile)
 		}
 	}
+	for _, sym := range p.Symbols {
+		if _, ok := files[sym.SrcFile]; !ok {
+			return PushResult{}, fmt.Errorf("%w: symbol %s src_file %q not in files", ErrInvalidScope, sym.Symbol, sym.SrcFile)
+		}
+		if sym.Role != RoleProvides && sym.Role != RoleRequires {
+			return PushResult{}, fmt.Errorf("%w: symbol %s role %q must be provides|requires", ErrInvalidScope, sym.Symbol, sym.Role)
+		}
+	}
 	res, err := s.store.Reconcile(ctx, p)
 	if err != nil {
 		return PushResult{}, err

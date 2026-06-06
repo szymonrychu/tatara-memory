@@ -56,6 +56,9 @@ func (s *PGStore) Reconcile(ctx context.Context, p GraphPush) (PushResult, error
 		if _, err := tx.ExecContext(ctx, `DELETE FROM code_entities WHERE repo=$1 AND file_path=$2`, p.Repo, f); err != nil {
 			return PushResult{}, err
 		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM cross_repo_symbols WHERE repo=$1 AND src_file=$2`, p.Repo, f); err != nil {
+			return PushResult{}, err
+		}
 	}
 
 	for _, e := range p.Entities {
@@ -77,6 +80,17 @@ func (s *PGStore) Reconcile(ctx context.Context, p GraphPush) (PushResult, error
 			ON CONFLICT (repo, from_id, to_id, relation) DO UPDATE SET
 				src_file=EXCLUDED.src_file, properties=EXCLUDED.properties`,
 			p.Repo, e.From, e.To, e.Relation, e.SrcFile, marshalProps(e.Properties)); err != nil {
+			return PushResult{}, err
+		}
+	}
+
+	for _, s := range p.Symbols {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO cross_repo_symbols(repo, symbol, lang, kind, role, entity_id, src_file)
+			VALUES ($1,$2,$3,$4,$5,$6,$7)
+			ON CONFLICT (repo, symbol, role, entity_id) DO UPDATE SET
+			    lang=EXCLUDED.lang, kind=EXCLUDED.kind, src_file=EXCLUDED.src_file`,
+			p.Repo, s.Symbol, s.Lang, s.Kind, s.Role, s.EntityID, s.SrcFile); err != nil {
 			return PushResult{}, err
 		}
 	}
