@@ -33,6 +33,9 @@ func TestPGStoreRoundTrip(t *testing.T) {
 	defer db.Close()
 	require.NoError(t, ingest.Migrate(ctx, db))
 
+	_, _ = db.ExecContext(ctx, `DELETE FROM ingest_job_items WHERE job_id='pgjob1'`)
+	_, _ = db.ExecContext(ctx, `DELETE FROM ingest_jobs WHERE id='pgjob1'`)
+
 	store := ingest.NewPGStore(db)
 	job := memory.IngestJob{ID: "pgjob1", Status: memory.JobStatusQueued, Total: 1, CreatedAt: time.Now(), UpdatedAt: time.Now()}
 	require.NoError(t, store.CreateJob(ctx, job, []memory.IngestItem{{IdempotencyKey: "k", Text: "a"}}))
