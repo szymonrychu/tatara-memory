@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 
 	"github.com/szymonrychu/tatara-memory/internal/auth/testjwks"
@@ -24,6 +25,25 @@ func TestProtectedRouteRejectsMissingToken(t *testing.T) {
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/memories/m1")
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+func TestCodeGraphRouteRejectsMissingToken(t *testing.T) {
+	tj := testjwks.Start(t)
+	defer tj.Close()
+
+	r := httpapi.NewRouter(httpapi.Config{
+		Service:   &stubService{},
+		CodeGraph: &stubCodeGraph{},
+		Verify:    tj.Middleware("tatara-memory"),
+		Registry:  prometheus.NewRegistry(),
+	})
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/code/entities?repo=r")
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)

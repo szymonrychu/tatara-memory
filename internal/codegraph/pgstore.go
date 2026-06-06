@@ -126,6 +126,8 @@ func (s *PGStore) SearchEntities(ctx context.Context, repo, q, typ string, limit
 }
 
 // GetEntity returns one entity plus its immediate outgoing and incoming edges.
+// Edges are returned as stored and may reference targets absent from this repo's
+// entities (orphans from a later file change); traversal queries filter those.
 func (s *PGStore) GetEntity(ctx context.Context, repo, id string) (EntityDetail, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, name, type, description, file_path, properties
