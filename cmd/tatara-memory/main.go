@@ -34,6 +34,9 @@ func run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := a.migrate(ctx); err != nil {
+		return err
+	}
 	a.log.Info("starting", "version", version.Version, "addr", cfg.HTTPAddr)
 
 	ln, err := newListener(cfg.HTTPAddr)

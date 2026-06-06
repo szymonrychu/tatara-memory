@@ -94,3 +94,9 @@ func TestNewApp_WithFakes(t *testing.T) {
 	require.NotNil(t, a.server)
 	require.NoError(t, a.shutdown(context.Background()))
 }
+
+func TestApp_Migrate_FailsOnBadDB(t *testing.T) {
+	db, _ := fakeDeps{}.openDB("")
+	a := &app{db: db}
+	require.Error(t, a.migrate(context.Background()))
+}

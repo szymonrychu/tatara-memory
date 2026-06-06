@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/szymonrychu/tatara-memory/internal/auth"
+	"github.com/szymonrychu/tatara-memory/internal/codegraph"
 	"github.com/szymonrychu/tatara-memory/internal/httpapi"
 	"github.com/szymonrychu/tatara-memory/internal/ingest"
 	"github.com/szymonrychu/tatara-memory/internal/lightrag"
@@ -47,6 +49,18 @@ func (a *app) shutdown(ctx context.Context) error {
 	}
 	if a.stopOTL != nil {
 		_ = a.stopOTL(shutdownCtx)
+	}
+	return nil
+}
+
+// migrate applies all embedded schema migrations. It is idempotent
+// (CREATE TABLE IF NOT EXISTS) and runs at startup before serving.
+func (a *app) migrate(ctx context.Context) error {
+	if err := ingest.Migrate(ctx, a.db); err != nil {
+		return fmt.Errorf("migrate ingest schema: %w", err)
+	}
+	if err := codegraph.Migrate(ctx, a.db); err != nil {
+		return fmt.Errorf("migrate codegraph schema: %w", err)
 	}
 	return nil
 }
@@ -117,6 +131,10 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 
 	enqueuer := ingest.NewEnqueuer(store)
 
+	cgStore := codegraph.NewPGStore(db)
+	cgMetrics := codegraph.NewMetrics(reg)
+	cgSvc := codegraph.NewService(cgStore, cgMetrics)
+
 	verifier, err := auth.NewVerifier(ctx, auth.Config{
 		Issuer:   cfg.OIDCIssuer,
 		Audience: cfg.OIDCAudience,
@@ -129,6 +147,7 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 	router := httpapi.NewRouter(httpapi.Config{
 		Service:    memSvc,
 		Ingest:     enqueuer,
+		CodeGraph:  cgSvc,
 		Verify:     auth.Middleware(verifier),
 		Logger:     logger,
 		Registry:   reg,
