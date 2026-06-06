@@ -43,4 +43,5 @@ type CodeGraphService interface {
 	Dependencies(ctx context.Context, repo, id string, depth int) ([]codegraph.PathNode, error)
 	ResourceGraph(ctx context.Context, repo, id string, depth int) ([]codegraph.PathNode, error)
 	FileImports(ctx context.Context, repo, path string) ([]codegraph.Edge, error)
+	CrossRepo(ctx context.Context, repo, id string) (codegraph.CrossRepoLinks, error)
 }
