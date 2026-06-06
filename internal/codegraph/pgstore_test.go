@@ -31,9 +31,24 @@ func freshStore(t *testing.T) (*codegraph.PGStore, context.Context) {
 	ctx := context.Background()
 	db := openPG(t)
 	require.NoError(t, codegraph.Migrate(ctx, db))
-	_, err := db.ExecContext(ctx, `DELETE FROM code_edges; DELETE FROM code_entities;`)
+	_, err := db.ExecContext(ctx, `DELETE FROM cross_repo_symbols; DELETE FROM code_edges; DELETE FROM code_entities;`)
 	require.NoError(t, err)
 	return codegraph.NewPGStore(db), ctx
+}
+
+func TestMigrateCrossRepoSymbolsTable(t *testing.T) {
+	ctx := context.Background()
+	db := openPG(t)
+	require.NoError(t, codegraph.Migrate(ctx, db))
+
+	var exists bool
+	err := db.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM information_schema.tables
+			WHERE table_name = 'cross_repo_symbols'
+		)`).Scan(&exists)
+	require.NoError(t, err)
+	require.True(t, exists, "cross_repo_symbols table must exist after Migrate")
 }
 
 func ent(id, typ, file string) codegraph.Entity {

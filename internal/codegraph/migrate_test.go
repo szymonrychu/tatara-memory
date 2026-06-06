@@ -14,4 +14,7 @@ func TestMigrationSQLExists(t *testing.T) {
 			t.Fatalf("migration SQL missing %q", want)
 		}
 	}
+	if !strings.Contains(sql, "cross_repo_symbols") {
+		t.Fatalf("migration SQL missing cross_repo_symbols")
+	}
 }
