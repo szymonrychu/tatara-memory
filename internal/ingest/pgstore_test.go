@@ -38,7 +38,9 @@ func TestPGStoreRoundTrip(t *testing.T) {
 
 	store := ingest.NewPGStore(db)
 	job := memory.IngestJob{ID: "pgjob1", Status: memory.JobStatusQueued, Total: 1, CreatedAt: time.Now(), UpdatedAt: time.Now()}
-	require.NoError(t, store.CreateJob(ctx, job, []memory.IngestItem{{IdempotencyKey: "k", Text: "a"}}))
+	require.NoError(t, store.CreateJob(ctx, job, []memory.IngestItem{
+		{IdempotencyKey: "k", Text: "chunk body", Metadata: map[string]string{"entity": "go:func:Foo"}},
+	}))
 
 	got, err := store.GetJob(ctx, "pgjob1")
 	require.NoError(t, err)
@@ -48,6 +50,10 @@ func TestPGStoreRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 	require.Equal(t, "k", item.IdempotencyKey)
+	// The worker needs the payload to send to LightRAG; the PG store must
+	// persist and return Text and Metadata, not just the idempotency key.
+	require.Equal(t, "chunk body", item.Text)
+	require.Equal(t, map[string]string{"entity": "go:func:Foo"}, item.Metadata)
 
 	require.NoError(t, store.MarkItemDone(ctx, "pgjob1", "k", nil))
 }

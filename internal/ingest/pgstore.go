@@ -41,10 +41,14 @@ func (s *PGStore) CreateJob(ctx context.Context, j memory.IngestJob, items []mem
 		return err
 	}
 	for _, it := range items {
+		metaJSON, _ := json.Marshal(it.Metadata)
+		if it.Metadata == nil {
+			metaJSON = []byte("{}")
+		}
 		_, err = tx.ExecContext(ctx, `
-			INSERT INTO ingest_job_items(id, job_id, idempotency_key, status, error, created_at)
-			VALUES ($1,$2,$3,'pending','',now())`,
-			newItemID(), j.ID, it.IdempotencyKey)
+			INSERT INTO ingest_job_items(id, job_id, idempotency_key, status, error, text, metadata, created_at)
+			VALUES ($1,$2,$3,'pending','',$4,$5,now())`,
+			newItemID(), j.ID, it.IdempotencyKey, it.Text, string(metaJSON))
 		if err != nil {
 			return err
 		}
@@ -96,13 +100,13 @@ func (s *PGStore) ClaimNextItem(ctx context.Context, jobID string) (memory.Inges
 	defer func() { _ = tx.Rollback() }()
 
 	row := tx.QueryRowContext(ctx, `
-		SELECT id, idempotency_key FROM ingest_job_items
+		SELECT id, idempotency_key, text, metadata FROM ingest_job_items
 		WHERE job_id=$1 AND status='pending'
 		ORDER BY created_at
 		FOR UPDATE SKIP LOCKED
 		LIMIT 1`, jobID)
-	var id, key string
-	if err := row.Scan(&id, &key); err != nil {
+	var id, key, text, metaJSON string
+	if err := row.Scan(&id, &key, &text, &metaJSON); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return memory.IngestItem{}, false, tx.Commit()
 		}
@@ -114,7 +118,11 @@ func (s *PGStore) ClaimNextItem(ctx context.Context, jobID string) (memory.Inges
 	if err := tx.Commit(); err != nil {
 		return memory.IngestItem{}, false, err
 	}
-	return memory.IngestItem{IdempotencyKey: key}, true, nil
+	var meta map[string]string
+	if metaJSON != "" {
+		_ = json.Unmarshal([]byte(metaJSON), &meta)
+	}
+	return memory.IngestItem{IdempotencyKey: key, Text: text, Metadata: meta}, true, nil
 }
 
 // MarkItemDone records the outcome of a processed item.
