@@ -35,6 +35,9 @@ func (s *Service) Push(ctx context.Context, p GraphPush) (PushResult, error) {
 		files[f] = struct{}{}
 	}
 	for _, e := range p.Entities {
+		if e.FilePath == "" {
+			continue // repo/package-scoped entity (e.g. go_package): no single owning file
+		}
 		if _, ok := files[e.FilePath]; !ok {
 			return PushResult{}, fmt.Errorf("%w: entity %s file_path %q not in files", ErrInvalidScope, e.ID, e.FilePath)
 		}

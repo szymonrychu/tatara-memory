@@ -5,6 +5,17 @@ Component-local memory for tatara-memory. Cross-repo decisions live in
 
 Format: `YYYY-MM-DD - decision/finding`
 
+- 2026-06-08 (0.2.1) `/code-graph:bulk` Push() rejected fileless entities:
+  the entity-scope check required every `FilePath` to be in `p.Files`, but a
+  `go_package` entity legitimately has no single owning file (`FilePath==""`).
+  Surfaced on the first real dogfood ingest (400 `invalid push scope ...
+  file_path "" not in files`). Spec already declares `file_path` may be `""`
+  ("" for repo node), and the store handles it (file_path default '', PK
+  `(repo,id)`, upsert-in-place, never errantly deleted). Fix: skip the
+  membership check for empty FilePath (entities only; edge/symbol SrcFile checks
+  stay strict - every edge/symbol carries a real file). Only `go_package` is
+  fileless today (golang.go + golang_fallback.go).
+
 ---
 
 ## Decisions

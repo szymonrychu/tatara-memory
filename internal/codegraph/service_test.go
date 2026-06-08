@@ -54,6 +54,20 @@ func TestPushRejectsEntityOutsideFiles(t *testing.T) {
 	require.ErrorIs(t, err, codegraph.ErrInvalidScope)
 }
 
+func TestPushAllowsFilelessEntity(t *testing.T) {
+	svc, fs := newSvc()
+	_, err := svc.Push(context.Background(), codegraph.GraphPush{
+		Repo:  "r",
+		Files: []string{"a.go"},
+		Entities: []codegraph.Entity{
+			{ID: "go:func:a", FilePath: "a.go"},
+			{ID: "go:package:p", FilePath: ""}, // repo/package-scoped: no single owning file
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, fs.pushed.Entities, 2)
+}
+
 func TestPushRejectsEdgeOutsideFiles(t *testing.T) {
 	svc, _ := newSvc()
 	_, err := svc.Push(context.Background(), codegraph.GraphPush{
