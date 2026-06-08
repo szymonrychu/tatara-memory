@@ -5,6 +5,18 @@ Component-local memory for tatara-memory. Cross-repo decisions live in
 
 Format: `YYYY-MM-DD - decision/finding`
 
+- 2026-06-08 (0.2.3) Async ingest path never persisted item payload: `ingest_jobs`
+  /`ingest_job_items` (0001) stored only the idempotency key - `CreateJob` didn't
+  write `Text`/`Metadata`, `ClaimNextItem` didn't return them - so the worker sent
+  EMPTY text to LightRAG and every insert 422'd `string_too_short` (3278 items
+  failed on the cluster). Masked until the worker actually ran (the 0.2.2 wiring
+  fix); `MemStore` keeps the full item so unit tests passed, and the PG
+  integration test built an item with Text but never asserted it round-tripped.
+  Fix: migration 0002 adds `text`/`metadata` (jsonb) columns; `CreateJob` persists
+  them; `ClaimNextItem` returns them; PG round-trip test now asserts the payload
+  survives. Lesson: two independent latent bugs in the same never-exercised path
+  (worker wiring, then payload persistence) - end-to-end smoke would have caught
+  both; unit tests with the in-memory store caught neither.
 - 2026-06-08 (0.2.2) Ingest worker `Pool` was created + `Start()`ed but NEVER
   wired to job creation: `Pool.Notify` had a single caller (inside `Pool.Resume`)
   and `Resume` had ZERO callers, so the bulk handler made `queued` jobs and
