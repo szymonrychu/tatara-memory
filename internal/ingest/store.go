@@ -21,5 +21,5 @@ type JobStore interface {
 	UpdateJob(ctx context.Context, job memory.IngestJob) error
 	ClaimNextItem(ctx context.Context, jobID string) (memory.IngestItem, bool, error)
 	MarkItemDone(ctx context.Context, jobID, idemKey string, runErr error) error
-	ListRunningJobs(ctx context.Context) ([]string, error)
+	ListUnfinishedJobs(ctx context.Context) ([]string, error)
 }

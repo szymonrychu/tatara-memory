@@ -108,13 +108,13 @@ func (s *MemStore) MarkItemDone(_ context.Context, jobID, key string, runErr err
 	return nil
 }
 
-// ListRunningJobs returns the IDs of all jobs in the running state.
-func (s *MemStore) ListRunningJobs(_ context.Context) ([]string, error) {
+// ListUnfinishedJobs returns the IDs of all jobs that are queued or running.
+func (s *MemStore) ListUnfinishedJobs(_ context.Context) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var ids []string
 	for id, b := range s.jobs {
-		if b.job.Status == memory.JobStatusRunning {
+		if b.job.Status == memory.JobStatusQueued || b.job.Status == memory.JobStatusRunning {
 			ids = append(ids, id)
 		}
 	}

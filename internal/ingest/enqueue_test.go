@@ -13,7 +13,7 @@ import (
 func TestEnqueueAssignsKeys(t *testing.T) {
 	ctx := context.Background()
 	s := ingest.NewMemStore()
-	e := ingest.NewEnqueuer(s)
+	e := ingest.NewEnqueuer(s, nil)
 
 	items := []memory.IngestItem{{Text: "a"}, {IdempotencyKey: "given", Text: "b"}}
 	job, err := e.Enqueue(ctx, items)
@@ -28,7 +28,7 @@ func TestEnqueueAssignsKeys(t *testing.T) {
 
 func TestEnqueueEmpty(t *testing.T) {
 	ctx := context.Background()
-	e := ingest.NewEnqueuer(ingest.NewMemStore())
+	e := ingest.NewEnqueuer(ingest.NewMemStore(), nil)
 	_, err := e.Enqueue(ctx, nil)
 	require.Error(t, err)
 }
@@ -36,7 +36,7 @@ func TestEnqueueEmpty(t *testing.T) {
 func TestEnqueueRejectsDuplicateBatchKey(t *testing.T) {
 	ctx := context.Background()
 	store := ingest.NewMemStore()
-	e := ingest.NewEnqueuer(store)
+	e := ingest.NewEnqueuer(store, nil)
 
 	items := []memory.IngestItem{{IdempotencyKey: "k1", Text: "a"}, {IdempotencyKey: "k1", Text: "b"}}
 	_, err := e.Enqueue(ctx, items)

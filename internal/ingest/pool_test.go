@@ -35,7 +35,7 @@ func TestPoolDrainsJob(t *testing.T) {
 	pool.Start(ctx)
 	defer pool.Stop()
 
-	e := ingest.NewEnqueuer(store)
+	e := ingest.NewEnqueuer(store, nil)
 	job, err := e.Enqueue(ctx, []memory.IngestItem{
 		{Text: "a"}, {Text: "b"}, {Text: "c"},
 	})
@@ -73,7 +73,7 @@ func TestPoolPartial(t *testing.T) {
 	pool.Start(ctx)
 	defer pool.Stop()
 
-	e := ingest.NewEnqueuer(store)
+	e := ingest.NewEnqueuer(store, nil)
 	job, err := e.Enqueue(ctx, []memory.IngestItem{{Text: "ok"}, {Text: "bad"}})
 	require.NoError(t, err)
 	pool.Notify(job.ID)
@@ -100,7 +100,7 @@ func TestPoolAllFailed(t *testing.T) {
 	pool.Start(ctx)
 	defer pool.Stop()
 
-	e := ingest.NewEnqueuer(store)
+	e := ingest.NewEnqueuer(store, nil)
 	job, err := e.Enqueue(ctx, []memory.IngestItem{{Text: "x"}, {Text: "y"}})
 	require.NoError(t, err)
 	pool.Notify(job.ID)
@@ -112,6 +112,51 @@ func TestPoolAllFailed(t *testing.T) {
 
 	j, _ := store.GetJob(ctx, job.ID)
 	require.Equal(t, memory.JobStatusFailed, j.Status)
+}
+
+func TestEnqueueNotifiesPool(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	store := ingest.NewMemStore()
+	svc := memory.NewService(fake.New(), nil)
+	pool := ingest.NewPool(store, svc, 2)
+	pool.Start(ctx)
+	defer pool.Stop()
+
+	// Enqueuer wired to the pool: enqueue alone must schedule the job.
+	e := ingest.NewEnqueuer(store, pool)
+	job, err := e.Enqueue(ctx, []memory.IngestItem{{Text: "a"}, {Text: "b"}})
+	require.NoError(t, err)
+
+	waitFor(t, func() bool {
+		j, err := store.GetJob(ctx, job.ID)
+		return err == nil && j.Status == memory.JobStatusSucceeded
+	}, "enqueued job did not drain without a manual Notify")
+}
+
+func TestPoolResumeQueuedOnStart(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	store := ingest.NewMemStore()
+	require.NoError(t, store.CreateJob(ctx, memory.IngestJob{
+		ID: "queued1", Status: memory.JobStatusQueued, Total: 1, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}, []memory.IngestItem{{IdempotencyKey: "k", Text: "ok"}}))
+
+	svc := memory.NewService(fake.New(), nil)
+	pool := ingest.NewPool(store, svc, 1)
+	pool.Start(ctx)
+	defer pool.Stop()
+
+	n, err := pool.Resume(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+
+	waitFor(t, func() bool {
+		j, _ := store.GetJob(ctx, "queued1")
+		return j.Status == memory.JobStatusSucceeded
+	}, "resumed queued job did not drain")
 }
 
 func TestPoolResumeRunningOnStart(t *testing.T) {
@@ -126,7 +171,9 @@ func TestPoolResumeRunningOnStart(t *testing.T) {
 	pool := ingest.NewPool(store, &failingRunner{}, 1)
 	pool.Start(ctx)
 	defer pool.Stop()
-	require.NoError(t, pool.Resume(ctx))
+	n, err := pool.Resume(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
 
 	waitFor(t, func() bool {
 		j, _ := store.GetJob(ctx, "resume1")

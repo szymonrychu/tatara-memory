@@ -132,9 +132,11 @@ func (s *PGStore) MarkItemDone(ctx context.Context, jobID, key string, runErr er
 	return err
 }
 
-// ListRunningJobs returns the IDs of all jobs in the running state.
-func (s *PGStore) ListRunningJobs(ctx context.Context) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM ingest_jobs WHERE status='running'`)
+// ListUnfinishedJobs returns the IDs of all jobs that are queued or running,
+// i.e. enqueued but not yet terminal. Used at startup to resume work that a
+// crash or restart left scheduled-but-undrained.
+func (s *PGStore) ListUnfinishedJobs(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM ingest_jobs WHERE status IN ('queued','running')`)
 	if err != nil {
 		return nil, err
 	}

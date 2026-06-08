@@ -13,15 +13,25 @@ import (
 // ErrDuplicateKey is returned when a batch contains two items with the same idempotency key.
 var ErrDuplicateKey = errors.New("ingest: duplicate idempotency key in batch")
 
-// Enqueuer creates queued ingest jobs in a JobStore.
-type Enqueuer struct {
-	store JobStore
-	now   func() time.Time
+// Notifier schedules a newly-created job for processing. The ingest Pool
+// satisfies it.
+type Notifier interface {
+	Notify(jobID string)
 }
 
-// NewEnqueuer returns an Enqueuer backed by the given JobStore.
-func NewEnqueuer(s JobStore) *Enqueuer {
-	return &Enqueuer{store: s, now: time.Now}
+// Enqueuer creates queued ingest jobs in a JobStore and schedules them on a
+// Notifier so a worker picks them up immediately.
+type Enqueuer struct {
+	store    JobStore
+	notifier Notifier
+	now      func() time.Time
+}
+
+// NewEnqueuer returns an Enqueuer backed by the given JobStore. notifier is
+// called with each new job ID after it is persisted; pass nil in tests that
+// drive the pool manually.
+func NewEnqueuer(s JobStore, notifier Notifier) *Enqueuer {
+	return &Enqueuer{store: s, notifier: notifier, now: time.Now}
 }
 
 func newJobID() string {
@@ -63,6 +73,9 @@ func (e *Enqueuer) Enqueue(ctx context.Context, items []memory.IngestItem) (memo
 	}
 	if err := e.store.CreateJob(ctx, job, items); err != nil {
 		return memory.IngestJob{}, err
+	}
+	if e.notifier != nil {
+		e.notifier.Notify(job.ID)
 	}
 	return job, nil
 }

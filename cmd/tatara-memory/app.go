@@ -137,8 +137,13 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 	memSvc := memory.NewService(lrc, tomb)
 	pool := ingest.NewPool(store, memSvc, cfg.WorkerPoolSize)
 	pool.Start(ctx)
+	if n, err := pool.Resume(ctx); err != nil {
+		logger.Warn("ingest pool resume failed", "error", err)
+	} else if n > 0 {
+		logger.Info("ingest pool resumed unfinished jobs", "jobs", n)
+	}
 
-	enqueuer := ingest.NewEnqueuer(store)
+	enqueuer := ingest.NewEnqueuer(store, pool)
 
 	cgStore := codegraph.NewPGStore(db)
 	cgMetrics := codegraph.NewMetrics(reg)

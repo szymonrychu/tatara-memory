@@ -29,14 +29,21 @@ type Pool struct {
 
 // NewPool returns a Pool backed by the given store and runner with size worker goroutines.
 func NewPool(store JobStore, runner itemRunner, size int) *Pool {
+	return newPool(store, runner, size, 256)
+}
+
+func newPool(store JobStore, runner itemRunner, size, buf int) *Pool {
 	if size < 1 {
 		size = 1
+	}
+	if buf < 1 {
+		buf = 1
 	}
 	return &Pool{
 		store:  store,
 		runner: runner,
 		size:   size,
-		notify: make(chan string, 256),
+		notify: make(chan string, buf),
 		stop:   make(chan struct{}),
 	}
 }
@@ -69,16 +76,24 @@ func (p *Pool) Notify(jobID string) {
 	}
 }
 
-// Resume re-queues all jobs that were in the running state at startup.
-func (p *Pool) Resume(ctx context.Context) error {
-	ids, err := p.store.ListRunningJobs(ctx)
+// Resume re-queues every unfinished (queued or running) job found at startup
+// and returns how many it scheduled. This recovers jobs that were enqueued but
+// never notified (or whose notify was dropped) before a restart.
+func (p *Pool) Resume(ctx context.Context) (int, error) {
+	ids, err := p.store.ListUnfinishedJobs(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	for _, id := range ids {
-		p.Notify(id)
+	for i, id := range ids {
+		select {
+		case p.notify <- id:
+		case <-p.stop:
+			return i, nil
+		case <-ctx.Done():
+			return i, ctx.Err()
+		}
 	}
-	return nil
+	return len(ids), nil
 }
 
 func (p *Pool) worker(ctx context.Context) {
