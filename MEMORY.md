@@ -5,6 +5,24 @@ Component-local memory for tatara-memory. Cross-repo decisions live in
 
 Format: `YYYY-MM-DD - decision/finding`
 
+- 2026-06-08 (0.2.2) Ingest worker `Pool` was created + `Start()`ed but NEVER
+  wired to job creation: `Pool.Notify` had a single caller (inside `Pool.Resume`)
+  and `Resume` had ZERO callers, so the bulk handler made `queued` jobs and
+  nothing ever woke a worker - every `ingest_jobs` row sat `queued` forever (no
+  repo reached Ingested). First surfaced on the dogfood E3 ingest; the bulk path
+  had never run end-to-end (cf the 2026-06-06 "ingest_jobs un-migrated latent
+  gap" note - same blind spot). Fix: `Enqueuer` takes a `Notifier` (the Pool) as
+  a REQUIRED arg and notifies after persist (required so the wiring can't go
+  silently missing again); `app.go` calls `Pool.Resume` at startup;
+  `ListRunningJobs` -> `ListUnfinishedJobs` (`status IN queued/running`) so a
+  restart recovers stranded jobs without DB surgery; `Resume` schedules via a
+  blocking stop/ctx-aware send, not the lossy fast-path `Notify`, so recovery
+  never drops a job when unfinished > notify buffer. KNOWN follow-ups (pre-
+  existing, NOT triggered by the single-notify-per-job invariant, see ROADMAP):
+  `runJob` Done/Failed counter is a non-atomic read-modify-write that would race
+  on a double-notify; a crash mid-item leaves items `running` and `ClaimNextItem`
+  only claims `pending`, so resume drains to a wrong count; ingester chunk-poll /
+  `CreateMemory` has no timeout.
 - 2026-06-08 (0.2.1) `/code-graph:bulk` Push() rejected fileless entities:
   the entity-scope check required every `FilePath` to be in `p.Files`, but a
   `go_package` entity legitimately has no single owning file (`FilePath==""`).

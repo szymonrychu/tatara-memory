@@ -19,6 +19,22 @@ file-imports) via recursive CTEs. Migrations wired at startup in run()
 tatara-memory-repo-ingester (B) and tatara-cli code-graph MCP tools (C).
 Spec: parent-repo `docs/superpowers/specs/2026-06-05-tatara-code-ingestion-design.md`.
 
+## Ingest worker hardening (post-0.2.2)
+
+**Status:** planned. Found during the 0.2.2 pool-wiring fix (see MEMORY).
+Pre-existing, not triggered by the single-notify-per-job invariant today:
+
+- [ ] `runJob` Done/Failed counter is a non-atomic read-modify-write
+      (`GetJob` -> `cur.Done++` -> `UpdateJob`). Make it an atomic SQL
+      `UPDATE ... SET done = done + 1`, or guard `runJob` with an in-flight
+      jobID set, so a future double-notify can't lose increments.
+- [ ] Crash mid-item leaves the item `running`; `ClaimNextItem` claims only
+      `pending`, so `Resume` re-runs the job but skips the orphan and drains to
+      a wrong count. Reset `running` items to `pending` on resume.
+- [ ] No per-item timeout: `processItem` -> `CreateMemory` blocks a worker
+      indefinitely on a hung LightRAG call. Add a deadline. (Pairs with the
+      ingester-side chunk-poll timeout tracked in the parent ROADMAP.)
+
 ## v1.0 - Phase 1 ship
 
 **Status:** v0.1.2 deployed 2026-05-27, end-to-end smoke green
