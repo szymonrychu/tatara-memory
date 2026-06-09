@@ -31,7 +31,7 @@ func freshStoreWithDB(t *testing.T) (*codegraph.PGStore, *sql.DB, context.Contex
 	ctx := context.Background()
 	db := openPG(t)
 	require.NoError(t, codegraph.Migrate(ctx, db))
-	_, err := db.ExecContext(ctx, `DELETE FROM cross_repo_symbols; DELETE FROM code_edges; DELETE FROM code_entities;`)
+	_, err := db.ExecContext(ctx, `DELETE FROM code_hyperedge_members; DELETE FROM code_hyperedges; DELETE FROM cross_repo_symbols; DELETE FROM code_edges; DELETE FROM code_entities;`)
 	require.NoError(t, err)
 	return codegraph.NewPGStore(db), db, ctx
 }
@@ -184,4 +184,100 @@ func TestReconcileInsertsAndReplacesPerFile(t *testing.T) {
 	callees, err := s.Neighbors(ctx, "r", "go:func:r/a.A", []string{"calls"}, "out", 3)
 	require.NoError(t, err)
 	require.Empty(t, callees)
+}
+
+func TestReconcileWritesConfidenceColumns(t *testing.T) {
+	s, db, ctx := freshStoreWithDB(t)
+
+	_, err := s.Reconcile(ctx, codegraph.GraphPush{
+		Repo:  "rc",
+		Files: []string{"a.go"},
+		Entities: []codegraph.Entity{
+			ent("go:func:rc/a.A", "go_func", "a.go"),
+			ent("go:func:rc/a.B", "go_func", "a.go"),
+		},
+		Edges: []codegraph.Edge{
+			// explicit confidence
+			{From: "go:func:rc/a.A", To: "go:func:rc/a.B", Relation: "calls", SrcFile: "a.go",
+				ConfidenceScore: 0.98, ConfidenceTier: codegraph.TierInferred},
+			// omitted confidence -> server defaults
+			{From: "go:func:rc/a.B", To: "go:func:rc/a.A", Relation: "references", SrcFile: "a.go"},
+		},
+	})
+	require.NoError(t, err)
+
+	var score float64
+	var tier string
+	require.NoError(t, db.QueryRowContext(ctx,
+		`SELECT confidence_score, confidence_tier FROM code_edges WHERE repo='rc' AND relation='calls'`).Scan(&score, &tier))
+	require.InDelta(t, 0.98, score, 1e-9)
+	require.Equal(t, "INFERRED", tier)
+
+	require.NoError(t, db.QueryRowContext(ctx,
+		`SELECT confidence_score, confidence_tier FROM code_edges WHERE repo='rc' AND relation='references'`).Scan(&score, &tier))
+	require.InDelta(t, 1.0, score, 1e-9)
+	require.Equal(t, "EXTRACTED", tier)
+}
+
+func TestReconcileWritesEntityProvenance(t *testing.T) {
+	s, db, ctx := freshStoreWithDB(t)
+
+	_, err := s.Reconcile(ctx, codegraph.GraphPush{
+		Repo:  "rp",
+		Files: []string{"README.md"},
+		Entities: []codegraph.Entity{
+			{ID: "doc:section:README.md#intro", Name: "intro", Type: codegraph.EntityDocSection, FilePath: "README.md",
+				LineStart: 1, LineEnd: 9, SourceURL: "https://example/x", Author: "me", CapturedAt: "2026-06-09T00:00:00Z"},
+		},
+	})
+	require.NoError(t, err)
+
+	var ls, le int
+	var url, author string
+	require.NoError(t, db.QueryRowContext(ctx,
+		`SELECT line_start, line_end, source_url, author FROM code_entities WHERE repo='rp' AND id='doc:section:README.md#intro'`).
+		Scan(&ls, &le, &url, &author))
+	require.Equal(t, 1, ls)
+	require.Equal(t, 9, le)
+	require.Equal(t, "https://example/x", url)
+	require.Equal(t, "me", author)
+}
+
+func TestReconcilePurgesAndInsertsHyperedgesPerFile(t *testing.T) {
+	s, db, ctx := freshStoreWithDB(t)
+
+	_, err := s.Reconcile(ctx, codegraph.GraphPush{
+		Repo:  "rh",
+		Files: []string{"a.go", "b.go"},
+		Entities: []codegraph.Entity{
+			ent("go:func:rh/a.A", "go_func", "a.go"),
+			ent("go:func:rh/a.B", "go_func", "a.go"),
+			ent("go:func:rh/a.C", "go_func", "a.go"),
+			ent("go:func:rh/b.D", "go_func", "b.go"),
+		},
+		Hyperedges: []codegraph.Hyperedge{
+			{ID: "rh:h1", Label: "trio", Relation: "form", ConfidenceScore: 1.0, SrcFile: "a.go",
+				Members: []string{"go:func:rh/a.A", "go:func:rh/a.B", "go:func:rh/a.C"}},
+		},
+	})
+	require.NoError(t, err)
+
+	var hcount, mcount int
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM code_hyperedges WHERE repo='rh'`).Scan(&hcount))
+	require.Equal(t, 1, hcount)
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM code_hyperedge_members WHERE repo='rh' AND hyperedge_id='rh:h1'`).Scan(&mcount))
+	require.Equal(t, 3, mcount)
+
+	// Re-push a.go with no hyperedges: the a.go-owned hyperedge and its members must be purged.
+	_, err = s.Reconcile(ctx, codegraph.GraphPush{
+		Repo:     "rh",
+		Files:    []string{"a.go"},
+		Entities: []codegraph.Entity{ent("go:func:rh/a.A", "go_func", "a.go")},
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM code_hyperedges WHERE repo='rh'`).Scan(&hcount))
+	require.Equal(t, 0, hcount)
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM code_hyperedge_members WHERE repo='rh'`).Scan(&mcount))
+	require.Equal(t, 0, mcount)
 }
