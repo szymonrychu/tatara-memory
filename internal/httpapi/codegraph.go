@@ -58,6 +58,10 @@ func confidenceFilter(w http.ResponseWriter, r *http.Request) (codegraph.Confide
 			WriteError(w, http.StatusBadRequest, "min_confidence must be a number", RequestIDFromContext(r.Context()))
 			return codegraph.ConfidenceFilter{}, false
 		}
+		if v < 0 || v > 1 {
+			WriteError(w, http.StatusBadRequest, "min_confidence must be between 0 and 1", RequestIDFromContext(r.Context()))
+			return codegraph.ConfidenceFilter{}, false
+		}
 		cf.MinConfidence = v
 	}
 	if t := r.URL.Query().Get("tier"); t != "" {

@@ -8,6 +8,11 @@ import (
 	"strings"
 )
 
+// maxImportCycleDepth is the maximum recursion depth used when detecting import
+// cycles in Stats. Keeps the CTE bounded on large graphs with long dependency
+// chains; cycles deeper than this are not counted.
+const maxImportCycleDepth = 20
+
 // PGStore is a PostgreSQL-backed implementation of Store.
 type PGStore struct {
 	db *sql.DB
@@ -503,24 +508,24 @@ func (s *PGStore) Stats(ctx context.Context, repo string) (GraphStats, error) {
 			SELECT cc.start_id, e.to_id, cc.depth + 1
 			FROM cycle_check cc
 			JOIN code_edges e ON e.repo=$1 AND e.relation='imports' AND e.from_id=cc.cur_id
-			WHERE cc.depth < 20 AND cc.cur_id <> cc.start_id
+			WHERE cc.depth < $2 AND cc.cur_id <> cc.start_id
 		)
 		SELECT count(DISTINCT start_id) FROM cycle_check WHERE cur_id=start_id`,
-		repo).Scan(&gs.ImportCycles); err != nil {
+		repo, maxImportCycleDepth).Scan(&gs.ImportCycles); err != nil {
 		return GraphStats{}, err
 	}
 
 	return gs, nil
 }
 
-// AmbiguousEdges returns edges where confidence_tier='AMBIGUOUS' OR confidence_score<=0.3.
+// AmbiguousEdges returns edges where confidence_tier='AMBIGUOUS' OR confidence_score<=ambiguousScoreThreshold.
 func (s *PGStore) AmbiguousEdges(ctx context.Context, repo string, limit int) ([]Edge, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT from_id, to_id, relation, src_file, properties, confidence_score, confidence_tier
 		FROM code_edges
-		WHERE repo=$1 AND (confidence_tier='AMBIGUOUS' OR confidence_score<=0.3)
+		WHERE repo=$1 AND (confidence_tier='AMBIGUOUS' OR confidence_score<=$3)
 		ORDER BY confidence_score
-		LIMIT $2`, repo, limit)
+		LIMIT $2`, repo, limit, ambiguousScoreThreshold)
 	if err != nil {
 		return nil, err
 	}

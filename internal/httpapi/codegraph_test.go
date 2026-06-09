@@ -312,3 +312,28 @@ func TestConfidenceFilter_InvalidMinConfidence(t *testing.T) {
 	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
 	require.Equal(t, http.StatusBadRequest, w.Code)
 }
+
+func TestConfidenceFilter_MinConfidenceBelowZero(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/code/callers?repo=r&id=x&min_confidence=-0.1", nil)
+	w := httptest.NewRecorder()
+	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
+	require.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestConfidenceFilter_MinConfidenceAboveOne(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/code/callers?repo=r&id=x&min_confidence=1.1", nil)
+	w := httptest.NewRecorder()
+	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
+	require.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestConfidenceFilter_MinConfidenceBoundary(t *testing.T) {
+	// 0.0 and 1.0 are valid boundaries
+	for _, v := range []string{"0.0", "1.0", "0.5"} {
+		cg := &stubCodeGraph{nodes: []codegraph.PathNode{{Entity: codegraph.Entity{ID: "go:func:r/x.X"}, Depth: 1}}}
+		req := httptest.NewRequest(http.MethodGet, "/code/callers?repo=r&id=x&min_confidence="+v, nil)
+		w := httptest.NewRecorder()
+		cgRouter(cg).ServeHTTP(w, req)
+		require.Equal(t, http.StatusOK, w.Code, "min_confidence=%s should be accepted", v)
+	}
+}

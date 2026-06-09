@@ -66,12 +66,17 @@ const (
 	TierAmbiguous = "AMBIGUOUS"
 )
 
+// ambiguousScoreThreshold is the upper boundary (inclusive) for the AMBIGUOUS tier.
+// Any edge with confidence_score <= this value is treated as ambiguous.
+// Shared between TierFor and AmbiguousEdges SQL filter.
+const ambiguousScoreThreshold = 0.3
+
 // TierFor maps a confidence score to its tier.
 func TierFor(score float64) string {
 	switch {
 	case score >= 1.0:
 		return TierExtracted
-	case score <= 0.3:
+	case score <= ambiguousScoreThreshold:
 		return TierAmbiguous
 	default:
 		return TierInferred

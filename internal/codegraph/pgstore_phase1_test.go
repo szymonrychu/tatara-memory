@@ -62,6 +62,38 @@ func TestShortestPath_ReachableAndUnreachable(t *testing.T) {
 	require.Empty(t, chain4)
 }
 
+// TestShortestPath_SubstringID verifies that cycle-detection in the recursive CTE
+// does not wrongly prune a candidate node whose ID is a strict substring of an
+// already-visited node's ID. Without exact-match logic (e.g. array membership),
+// "sp:ab" would incorrectly match "sp:a" under a naïve substring check and the
+// path sp:a -> sp:ab -> sp:abc would not be found.
+func TestShortestPath_SubstringID(t *testing.T) {
+	s, ctx := freshStore(t)
+
+	_, err := s.Reconcile(ctx, codegraph.GraphPush{
+		Repo:  "sub",
+		Files: []string{"a.go", "b.go", "c.go"},
+		Entities: []codegraph.Entity{
+			ent("sub:a", "go_func", "a.go"),
+			ent("sub:a:b", "go_func", "b.go"),   // ID contains "sub:a" as a prefix
+			ent("sub:a:b:c", "go_func", "c.go"), // ID contains both "sub:a" and "sub:a:b"
+		},
+		Edges: []codegraph.Edge{
+			{From: "sub:a", To: "sub:a:b", Relation: "calls", SrcFile: "a.go"},
+			{From: "sub:a:b", To: "sub:a:b:c", Relation: "calls", SrcFile: "b.go"},
+		},
+	})
+	require.NoError(t, err)
+
+	// Must return the 3-hop path despite substring relationships between IDs.
+	chain, err := s.ShortestPath(ctx, "sub", "sub:a", "sub:a:b:c", []string{"calls"}, 5)
+	require.NoError(t, err)
+	require.Len(t, chain, 3, "expected path sub:a -> sub:a:b -> sub:a:b:c")
+	require.Equal(t, "sub:a", chain[0].ID)
+	require.Equal(t, "sub:a:b", chain[1].ID)
+	require.Equal(t, "sub:a:b:c", chain[2].ID)
+}
+
 func TestImportantEntities_OrderedByDegree(t *testing.T) {
 	s, ctx := freshStore(t)
 
