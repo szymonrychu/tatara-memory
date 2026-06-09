@@ -50,4 +50,14 @@ type CodeGraphService interface {
 	Stats(ctx context.Context, repo string) (codegraph.GraphStats, error)
 	AmbiguousEdges(ctx context.Context, repo string, limit int) ([]codegraph.Edge, error)
 	EntityExplain(ctx context.Context, repo, id string) (codegraph.EntityExplain, error)
+
+	// Phase 2 semantic ceiling methods.
+	SemanticMisses(ctx context.Context, repo string, files []codegraph.FileSHA) ([]string, error)
+	Related(ctx context.Context, repo, id string, relations []string, minConfidence float64) ([]codegraph.RelatedResult, error)
+	Hyperedges(ctx context.Context, repo, entityID string) ([]codegraph.Hyperedge, error)
+	Hyperedge(ctx context.Context, repo, id string) (codegraph.Hyperedge, error)
+	Communities(ctx context.Context, repo string) ([]codegraph.CommunityRow, error)
+	Community(ctx context.Context, repo string, community int) ([]codegraph.Entity, error)
+	Bridges(ctx context.Context, repo string, limit int) ([]codegraph.Bridge, error)
+	ImportantEntitiesBy(ctx context.Context, repo, by string, limit int) ([]codegraph.EntityDegree, error)
 }

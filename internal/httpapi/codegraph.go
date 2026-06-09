@@ -315,7 +315,14 @@ func handleImportantEntities(cfg Config) http.HandlerFunc {
 			return
 		}
 		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-		entities, err := cfg.CodeGraph.ImportantEntities(r.Context(), repo, limit)
+		by := r.URL.Query().Get("by")
+		var entities []codegraph.EntityDegree
+		var err error
+		if by != "" {
+			entities, err = cfg.CodeGraph.ImportantEntitiesBy(r.Context(), repo, by, limit)
+		} else {
+			entities, err = cfg.CodeGraph.ImportantEntities(r.Context(), repo, limit)
+		}
 		if err != nil {
 			mapServiceError(w, r, err)
 			return
@@ -324,6 +331,171 @@ func handleImportantEntities(cfg Config) http.HandlerFunc {
 			entities = []codegraph.EntityDegree{}
 		}
 		WriteJSON(w, http.StatusOK, map[string]interface{}{"entities": entities})
+	}
+}
+
+func handleRelated(cfg Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		repo, ok := reqRepo(w, r)
+		if !ok {
+			return
+		}
+		id, ok := reqIDParam(w, r)
+		if !ok {
+			return
+		}
+		var relations []string
+		if rel := r.URL.Query().Get("relations"); rel != "" {
+			relations = strings.Split(rel, ",")
+		}
+		var minConf float64
+		if s := r.URL.Query().Get("min_confidence"); s != "" {
+			v, err := strconv.ParseFloat(s, 64)
+			if err != nil || v < 0 || v > 1 {
+				WriteError(w, http.StatusBadRequest, "min_confidence must be a number between 0 and 1", RequestIDFromContext(r.Context()))
+				return
+			}
+			minConf = v
+		}
+		results, err := cfg.CodeGraph.Related(r.Context(), repo, id, relations, minConf)
+		if err != nil {
+			mapServiceError(w, r, err)
+			return
+		}
+		if results == nil {
+			results = []codegraph.RelatedResult{}
+		}
+		WriteJSON(w, http.StatusOK, map[string]interface{}{"related": results})
+	}
+}
+
+func handleHyperedges(cfg Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		repo, ok := reqRepo(w, r)
+		if !ok {
+			return
+		}
+		hes, err := cfg.CodeGraph.Hyperedges(r.Context(), repo, r.URL.Query().Get("entity"))
+		if err != nil {
+			mapServiceError(w, r, err)
+			return
+		}
+		if hes == nil {
+			hes = []codegraph.Hyperedge{}
+		}
+		WriteJSON(w, http.StatusOK, map[string]interface{}{"hyperedges": hes})
+	}
+}
+
+func handleHyperedge(cfg Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		repo, ok := reqRepo(w, r)
+		if !ok {
+			return
+		}
+		id, ok := reqIDParam(w, r)
+		if !ok {
+			return
+		}
+		he, err := cfg.CodeGraph.Hyperedge(r.Context(), repo, id)
+		if err != nil {
+			mapServiceError(w, r, err)
+			return
+		}
+		WriteJSON(w, http.StatusOK, he)
+	}
+}
+
+type semanticMissesRequest struct {
+	Repo  string              `json:"repo"`
+	Files []codegraph.FileSHA `json:"files"`
+}
+
+func handleSemanticMisses(cfg Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req semanticMissesRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			WriteError(w, http.StatusBadRequest, "invalid json", RequestIDFromContext(r.Context()))
+			return
+		}
+		if req.Repo == "" {
+			WriteError(w, http.StatusBadRequest, "repo required", RequestIDFromContext(r.Context()))
+			return
+		}
+		misses, err := cfg.CodeGraph.SemanticMisses(r.Context(), req.Repo, req.Files)
+		if err != nil {
+			mapServiceError(w, r, err)
+			return
+		}
+		if misses == nil {
+			misses = []string{}
+		}
+		WriteJSON(w, http.StatusOK, map[string]interface{}{"misses": misses})
+	}
+}
+
+func handleCommunities(cfg Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		repo, ok := reqRepo(w, r)
+		if !ok {
+			return
+		}
+		comms, err := cfg.CodeGraph.Communities(r.Context(), repo)
+		if err != nil {
+			mapServiceError(w, r, err)
+			return
+		}
+		if comms == nil {
+			comms = []codegraph.CommunityRow{}
+		}
+		WriteJSON(w, http.StatusOK, map[string]interface{}{"communities": comms})
+	}
+}
+
+func handleCommunity(cfg Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		repo, ok := reqRepo(w, r)
+		if !ok {
+			return
+		}
+		cstr := r.URL.Query().Get("community")
+		if cstr == "" {
+			WriteError(w, http.StatusBadRequest, "community query parameter required", RequestIDFromContext(r.Context()))
+			return
+		}
+		cid, err := strconv.Atoi(cstr)
+		if err != nil {
+			WriteError(w, http.StatusBadRequest, "community must be an integer", RequestIDFromContext(r.Context()))
+			return
+		}
+		members, err := cfg.CodeGraph.Community(r.Context(), repo, cid)
+		if err != nil {
+			mapServiceError(w, r, err)
+			return
+		}
+		if members == nil {
+			members = []codegraph.Entity{}
+		}
+		WriteJSON(w, http.StatusOK, map[string]interface{}{"entities": members})
+	}
+}
+
+func handleBridges(cfg Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		repo, ok := reqRepo(w, r)
+		if !ok {
+			return
+		}
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		bridges, err := cfg.CodeGraph.Bridges(r.Context(), repo, limit)
+		if err != nil {
+			mapServiceError(w, r, err)
+			return
+		}
+		if bridges == nil {
+			bridges = []codegraph.Bridge{}
+		}
+		WriteJSON(w, http.StatusOK, map[string]interface{}{"bridges": bridges})
 	}
 }
 
