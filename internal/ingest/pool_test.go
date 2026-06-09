@@ -3,6 +3,7 @@ package ingest_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -179,4 +180,62 @@ func TestPoolResumeRunningOnStart(t *testing.T) {
 		j, _ := store.GetJob(ctx, "resume1")
 		return j.Status.Terminal()
 	}, "resumed job did not terminate")
+}
+
+type capturingSources struct {
+	mu    sync.Mutex
+	added []addedSource
+}
+
+type addedSource struct{ repo, file, trackID string }
+
+func (c *capturingSources) Add(_ context.Context, repo, file, trackID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.added = append(c.added, addedSource{repo, file, trackID})
+	return nil
+}
+
+func (c *capturingSources) snapshot() []addedSource {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]addedSource(nil), c.added...)
+}
+
+// trackingRunner returns a Memory whose ID is "trk_" + the item's idempotency key.
+type trackingRunner struct{}
+
+func (trackingRunner) CreateMemory(_ context.Context, m memory.Memory) (memory.Memory, error) {
+	m.ID = "trk_" + m.ID // m.ID is set by processItem to the item's idempotency key
+	return m, nil
+}
+
+func TestPoolIndexesSourcesAfterCreate(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	store := ingest.NewMemStore()
+	src := &capturingSources{}
+	pool := ingest.NewPoolWithSources(store, trackingRunner{}, 1, src)
+	pool.Start(ctx)
+	defer pool.Stop()
+
+	e := ingest.NewEnqueuer(store, nil)
+	job, err := e.Enqueue(ctx, []memory.IngestItem{
+		{IdempotencyKey: "k1", Text: "a", Metadata: map[string]string{"repo": "repoA", "file_path": "a.go"}},
+		{IdempotencyKey: "k2", Text: "b", Metadata: map[string]string{"repo": "repoA"}}, // no file_path -> not indexed
+	})
+	require.NoError(t, err)
+	pool.Notify(job.ID)
+
+	waitFor(t, func() bool {
+		j, _ := store.GetJob(ctx, job.ID)
+		return j.Status == memory.JobStatusSucceeded
+	}, "job did not succeed")
+
+	got := src.snapshot()
+	require.Len(t, got, 1)
+	require.Equal(t, "repoA", got[0].repo)
+	require.Equal(t, "a.go", got[0].file)
+	require.Equal(t, "trk_k1", got[0].trackID)
 }
