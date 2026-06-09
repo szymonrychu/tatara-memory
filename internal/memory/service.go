@@ -30,17 +30,32 @@ type tombstoner interface {
 	IsDeleted(ctx context.Context, trackID string) (bool, error)
 }
 
+// sourceIndex is the minimal interface Service needs from SourceStore: list and
+// purge the track_ids produced from a repo/file. May be nil (delete-by-source
+// becomes a no-op returning 0).
+type sourceIndex interface {
+	TrackIDs(ctx context.Context, repo, filePath string) ([]string, error)
+	DeleteByFile(ctx context.Context, repo, filePath string) (int64, error)
+}
+
 // Service provides memory CRUD and retrieval operations backed by LightRAG.
 type Service struct {
-	lr   lightrag.Client
-	tomb tombstoner
-	now  func() time.Time
+	lr      lightrag.Client
+	tomb    tombstoner
+	sources sourceIndex
+	now     func() time.Time
 }
 
 // NewService returns a Service backed by the given LightRAG client.
 // tomb may be nil; if nil, tombstone checks are skipped (no-op).
 func NewService(lr lightrag.Client, tomb tombstoner) *Service {
 	return &Service{lr: lr, tomb: tomb, now: time.Now}
+}
+
+// NewServiceWithSources is NewService plus a sources index that backs
+// DeleteMemoriesBySource. sources may be nil (delete-by-source is a no-op).
+func NewServiceWithSources(lr lightrag.Client, tomb tombstoner, sources sourceIndex) *Service {
+	return &Service{lr: lr, tomb: tomb, sources: sources, now: time.Now}
 }
 
 func newID(prefix string) string {
@@ -131,6 +146,32 @@ func (s *Service) DeleteMemory(ctx context.Context, trackID string) error {
 		}
 	}
 	return nil
+}
+
+// DeleteMemoriesBySource purges every memory produced from (repo, filePath):
+// it deletes each indexed track_id via DeleteMemory (lightrag DeleteDocs +
+// tombstone), then clears the source-index rows. Idempotent; returns the count
+// of track_ids purged. A nil sources index is a no-op returning 0.
+func (s *Service) DeleteMemoriesBySource(ctx context.Context, repo, filePath string) (int, error) {
+	if s.sources == nil {
+		return 0, nil
+	}
+	ids, err := s.sources.TrackIDs(ctx, repo, filePath)
+	if err != nil {
+		return 0, fmt.Errorf("source track_ids: %w", err)
+	}
+	for _, id := range ids {
+		if err := s.DeleteMemory(ctx, id); err != nil {
+			if errors.Is(err, ErrNotFound) {
+				continue // already gone upstream; index cleanup below still runs
+			}
+			return 0, fmt.Errorf("delete memory %s for %s/%s: %w", id, repo, filePath, err)
+		}
+	}
+	if _, err := s.sources.DeleteByFile(ctx, repo, filePath); err != nil {
+		return 0, fmt.Errorf("purge source index %s/%s: %w", repo, filePath, err)
+	}
+	return len(ids), nil
 }
 
 func t(b bool) *bool { return &b }
