@@ -5,7 +5,8 @@ Component-local memory for tatara-memory. Cross-repo decisions live in
 
 Format: `YYYY-MM-DD - decision/finding`
 
-- 2026-06-09 (0.2.4) Startup resilience: `waitForDB` helper added to `cmd/tatara-memory/app.go`; called after `openDB` with 60s timeout / 2s interval before migrate/serve. A transient pg outage (connection refused) retries instead of crashlooping. Triggered by 7x crashloop on `mem-tatara-pg-rw:5432` restart. `fakeDeps`/`alwaysOKConnector` already implements `driver.Pinger` so `TestNewApp_WithFakes` / `TestApp_EndToEnd` needed no changes.
+- 2026-06-09 (0.2.5) Phase 0 contract: purge-then-insert in /memories:bulk reconcile_files is synchronous-before-enqueue (ordered, idempotent). Strict job-atomicity of purge+insert (purge as worker pre-phase) is deferred; a crash between purge and enqueue leaves the file empty and the next reconcile re-inserts, satisfying the 1:1 invariant. Noted per no-tech-debt rule; implement as worker pre-phase if strict atomicity is needed.
+- 2026-06-09 (0.2.5) Startup resilience: `waitForDB` helper added to `cmd/tatara-memory/app.go`; called after `openDB` with 60s timeout / 2s interval before migrate/serve. A transient pg outage (connection refused) retries instead of crashlooping. Triggered by 7x crashloop on `mem-tatara-pg-rw:5432` restart. `fakeDeps`/`alwaysOKConnector` already implements `driver.Pinger` so `TestNewApp_WithFakes` / `TestApp_EndToEnd` needed no changes.
 - 2026-06-08 (0.2.3) Async ingest path never persisted item payload: `ingest_jobs`
   /`ingest_job_items` (0001) stored only the idempotency key - `CreateJob` didn't
   write `Text`/`Metadata`, `ClaimNextItem` didn't return them - so the worker sent
