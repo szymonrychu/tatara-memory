@@ -24,15 +24,16 @@ import (
 
 // app holds all runtime dependencies for tatara-memory.
 type app struct {
-	log          *slog.Logger
-	reg          *prometheus.Registry
-	db           *sql.DB
-	lrc          lightrag.Client
-	pool         *ingest.Pool
-	server       *http.Server
-	reaper       *memory.Reaper
-	reaperCancel context.CancelFunc
-	stopOTL      func(context.Context) error
+	log             *slog.Logger
+	reg             *prometheus.Registry
+	db              *sql.DB
+	lrc             lightrag.Client
+	pool            *ingest.Pool
+	server          *http.Server
+	reaper          *memory.Reaper
+	reaperCancel    context.CancelFunc
+	analyticsCancel context.CancelFunc
+	stopOTL         func(context.Context) error
 }
 
 // shutdown drains the HTTP server, stops the ingest pool, closes the DB, and
@@ -40,6 +41,9 @@ type app struct {
 func (a *app) shutdown(ctx context.Context) error {
 	shutdownCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	if a.analyticsCancel != nil {
+		a.analyticsCancel()
+	}
 	if a.reaperCancel != nil {
 		a.reaperCancel()
 	}
@@ -174,11 +178,24 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 	cgMetrics := codegraph.NewMetrics(reg)
 	cgSvc := codegraph.NewService(cgStore, cgMetrics)
 
+	// Build community labeler; nil when OPENAI_API_KEY is unset so the worker
+	// falls back to the first-member-name heuristic.
+	var labeler codegraph.CommunityLabeler
+	if l := codegraph.NewOpenAILabelerFromEnv(); l != nil {
+		labeler = l
+	}
+	analyticsCtx, analyticsCancel := context.WithCancel(context.Background())
+	analyticsWorker := codegraph.NewAnalyticsWorker(cgStore, labeler, codegraph.AnalyticsWorkerConfig{
+		Logger: logger,
+	})
+	go analyticsWorker.Run(analyticsCtx)
+
 	verifier, err := auth.NewVerifier(ctx, auth.Config{
 		Issuer:   cfg.OIDCIssuer,
 		Audience: cfg.OIDCAudience,
 	})
 	if err != nil {
+		analyticsCancel()
 		return nil, err
 	}
 
@@ -205,15 +222,16 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 	}
 
 	return &app{
-		log:          logger,
-		reg:          reg,
-		db:           db,
-		lrc:          lrc,
-		pool:         pool,
-		server:       srv,
-		reaper:       reaper,
-		reaperCancel: reaperCancel,
-		stopOTL:      stop,
+		log:             logger,
+		reg:             reg,
+		db:              db,
+		lrc:             lrc,
+		pool:            pool,
+		server:          srv,
+		reaper:          reaper,
+		reaperCancel:    reaperCancel,
+		analyticsCancel: analyticsCancel,
+		stopOTL:         stop,
 	}, nil
 }
 
