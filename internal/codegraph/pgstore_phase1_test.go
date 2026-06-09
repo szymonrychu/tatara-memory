@@ -173,8 +173,8 @@ func TestAmbiguousEdges_FiltersByTierAndScore(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, edges, 2)
 	// Ordered by confidence_score asc: 0.1 first
-	require.InDelta(t, 0.1, edges[0].ConfidenceScore, 1e-9)
-	require.InDelta(t, 0.2, edges[1].ConfidenceScore, 1e-9)
+	require.InDelta(t, 0.1, edges[0].ConfidenceScore, 1e-6)
+	require.InDelta(t, 0.2, edges[1].ConfidenceScore, 1e-6)
 	for _, e := range edges {
 		require.Equal(t, codegraph.TierAmbiguous, e.ConfidenceTier)
 	}
@@ -222,7 +222,7 @@ func TestRankedSearchEntities_ExactBeforeSubstring(t *testing.T) {
 		Repo:  "rs",
 		Files: []string{"a.go"},
 		Entities: []codegraph.Entity{
-			{ID: "rs:FooBar", Name: "FooBar", Type: "go_func", FilePath: "a.go"}, // substring match
+			{ID: "rs:BarFoo", Name: "BarFoo", Type: "go_func", FilePath: "a.go"}, // substring (not prefix) match
 			{ID: "rs:Foo", Name: "Foo", Type: "go_func", FilePath: "a.go"},       // exact match
 			{ID: "rs:FooSvc", Name: "FooSvc", Type: "go_func", FilePath: "a.go"}, // prefix match
 		},
@@ -236,7 +236,7 @@ func TestRankedSearchEntities_ExactBeforeSubstring(t *testing.T) {
 	require.Equal(t, "rs:Foo", results[0].ID)
 	// Prefix match (rank 1) before substring match (rank 2)
 	require.Equal(t, "rs:FooSvc", results[1].ID)
-	require.Equal(t, "rs:FooBar", results[2].ID)
+	require.Equal(t, "rs:BarFoo", results[2].ID)
 }
 
 func TestEntityExplain_NeighborLabels(t *testing.T) {

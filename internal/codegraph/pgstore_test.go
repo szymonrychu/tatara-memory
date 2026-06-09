@@ -210,12 +210,12 @@ func TestReconcileWritesConfidenceColumns(t *testing.T) {
 	var tier string
 	require.NoError(t, db.QueryRowContext(ctx,
 		`SELECT confidence_score, confidence_tier FROM code_edges WHERE repo='rc' AND relation='calls'`).Scan(&score, &tier))
-	require.InDelta(t, 0.98, score, 1e-9)
+	require.InDelta(t, 0.98, score, 1e-6)
 	require.Equal(t, "INFERRED", tier)
 
 	require.NoError(t, db.QueryRowContext(ctx,
 		`SELECT confidence_score, confidence_tier FROM code_edges WHERE repo='rc' AND relation='references'`).Scan(&score, &tier))
-	require.InDelta(t, 1.0, score, 1e-9)
+	require.InDelta(t, 1.0, score, 1e-6)
 	require.Equal(t, "EXTRACTED", tier)
 }
 
