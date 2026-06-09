@@ -13,6 +13,7 @@ type MemoryService interface {
 	CreateMemory(ctx context.Context, m memory.Memory) (memory.Memory, error)
 	GetMemory(ctx context.Context, id string) (memory.Memory, error)
 	DeleteMemory(ctx context.Context, id string) error
+	DeleteMemoriesBySource(ctx context.Context, repo, filePath string) (int, error)
 	Query(ctx context.Context, q memory.Query) (memory.QueryResult, error)
 	Describe(ctx context.Context, q memory.Query) (memory.DescribeResult, error)
 	GetEntity(ctx context.Context, id string) (memory.Entity, error)
