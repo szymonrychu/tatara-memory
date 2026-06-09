@@ -110,3 +110,15 @@ func TestWaitForDB_TimesOut(t *testing.T) {
 	ping := func(context.Context) error { return errors.New("refused") }
 	require.Error(t, waitForDB(context.Background(), ping, 20*time.Millisecond, 5*time.Millisecond))
 }
+
+func TestApp_AnalyticsWorkerCancelOnShutdown(t *testing.T) {
+	workerCtx, workerCancel := context.WithCancel(context.Background())
+	a := &app{
+		analyticsCancel: workerCancel,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, a.shutdown(ctx))
+	// After shutdown the analytics context must be cancelled.
+	require.Error(t, workerCtx.Err(), "analytics context should be cancelled after shutdown")
+}

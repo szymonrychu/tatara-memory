@@ -327,6 +327,157 @@ func TestConfidenceFilter_MinConfidenceAboveOne(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, w.Code)
 }
 
+func (s *stubCodeGraph) SemanticMisses(_ context.Context, _ string, files []codegraph.FileSHA) ([]string, error) {
+	var out []string
+	for _, f := range files {
+		out = append(out, f.Path)
+	}
+	return out, nil
+}
+
+func (s *stubCodeGraph) Related(_ context.Context, _, _ string, _ []string, _ float64) ([]codegraph.RelatedResult, error) {
+	return []codegraph.RelatedResult{{Entity: codegraph.Entity{ID: "rel:b", Name: "B"}, Relation: codegraph.RelConceptuallyRelated, ConfidenceScore: 0.9}}, nil
+}
+
+func (s *stubCodeGraph) Hyperedges(_ context.Context, _, _ string) ([]codegraph.Hyperedge, error) {
+	return []codegraph.Hyperedge{{ID: "h1", Label: "flow", Members: []string{"a", "b", "c"}}}, nil
+}
+
+func (s *stubCodeGraph) Hyperedge(_ context.Context, _, _ string) (codegraph.Hyperedge, error) {
+	return codegraph.Hyperedge{ID: "h1", Label: "flow", Members: []string{"a", "b", "c"}}, nil
+}
+
+func (s *stubCodeGraph) Communities(_ context.Context, _ string) ([]codegraph.CommunityRow, error) {
+	return []codegraph.CommunityRow{{Community: 0, Label: "auth", Size: 3, Cohesion: 1.0}}, nil
+}
+
+func (s *stubCodeGraph) Community(_ context.Context, _ string, _ int) ([]codegraph.Entity, error) {
+	return []codegraph.Entity{{ID: "cm:a", Name: "A"}}, nil
+}
+
+func (s *stubCodeGraph) Bridges(_ context.Context, _ string, _ int) ([]codegraph.Bridge, error) {
+	return []codegraph.Bridge{{Entity: codegraph.Entity{ID: "cm:c", Name: "C"}, Betweenness: 5.0, NeighborCommunities: 2}}, nil
+}
+
+func (s *stubCodeGraph) ImportantEntitiesBy(_ context.Context, _, by string, _ int) ([]codegraph.EntityDegree, error) {
+	return []codegraph.EntityDegree{{Entity: codegraph.Entity{ID: "imp:" + by}, Degree: 3}}, nil
+}
+
+func newCodeGraphRouter(t *testing.T) http.Handler {
+	t.Helper()
+	return httpapi.NewRouter(httpapi.Config{
+		Service:   &stubService{},
+		CodeGraph: &stubCodeGraph{},
+		Registry:  prometheus.NewRegistry(),
+	})
+}
+
+func TestRoute_Related(t *testing.T) {
+	r := newCodeGraphRouter(t)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/code-graph/related?repo=r&id=rel:a&min_confidence=0.5", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	var body struct {
+		Related []codegraph.RelatedResult `json:"related"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	require.Len(t, body.Related, 1)
+	require.Equal(t, "rel:b", body.Related[0].ID)
+}
+
+func TestRoute_Related_BadMinConfidence(t *testing.T) {
+	r := newCodeGraphRouter(t)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/code-graph/related?repo=r&id=x&min_confidence=2", nil))
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestRoute_Hyperedges(t *testing.T) {
+	r := newCodeGraphRouter(t)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/code-graph/hyperedges?repo=r", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	var body struct {
+		Hyperedges []codegraph.Hyperedge `json:"hyperedges"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	require.Len(t, body.Hyperedges, 1)
+}
+
+func TestRoute_Hyperedge(t *testing.T) {
+	r := newCodeGraphRouter(t)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/code-graph/hyperedge?repo=r&id=h1", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	var h codegraph.Hyperedge
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &h))
+	require.Equal(t, "h1", h.ID)
+}
+
+func TestRoute_SemanticMisses(t *testing.T) {
+	r := newCodeGraphRouter(t)
+	rec := httptest.NewRecorder()
+	payload := `{"repo":"r","files":[{"path":"a.go","content_sha":"s1"},{"path":"b.go","content_sha":"s2"}]}`
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/code-graph/semantic-misses", strings.NewReader(payload)))
+	require.Equal(t, http.StatusOK, rec.Code)
+	var body struct {
+		Misses []string `json:"misses"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	require.ElementsMatch(t, []string{"a.go", "b.go"}, body.Misses)
+}
+
+func TestRoute_Communities(t *testing.T) {
+	r := newCodeGraphRouter(t)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/code-graph/communities?repo=r", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	var body struct {
+		Communities []codegraph.CommunityRow `json:"communities"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	require.Len(t, body.Communities, 1)
+	require.Equal(t, "auth", body.Communities[0].Label)
+}
+
+func TestRoute_Community(t *testing.T) {
+	r := newCodeGraphRouter(t)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/code-graph/community?repo=r&community=0", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	var body struct {
+		Entities []codegraph.Entity `json:"entities"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	require.Len(t, body.Entities, 1)
+}
+
+func TestRoute_Bridges(t *testing.T) {
+	r := newCodeGraphRouter(t)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/code-graph/bridges?repo=r&limit=5", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	var body struct {
+		Bridges []codegraph.Bridge `json:"bridges"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	require.Len(t, body.Bridges, 1)
+	require.Equal(t, "cm:c", body.Bridges[0].ID)
+}
+
+func TestRoute_ImportantBy(t *testing.T) {
+	r := newCodeGraphRouter(t)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/code-graph/important?repo=r&by=betweenness", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	var body struct {
+		Entities []codegraph.EntityDegree `json:"entities"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	require.Len(t, body.Entities, 1)
+	require.Equal(t, "imp:betweenness", body.Entities[0].ID)
+}
+
 func TestConfidenceFilter_MinConfidenceBoundary(t *testing.T) {
 	// 0.0 and 1.0 are valid boundaries
 	for _, v := range []string{"0.0", "1.0", "0.5"} {

@@ -98,5 +98,12 @@ func mountV1(r chi.Router, cfg Config) {
 		r.Get("/code-graph/stats", handleStats(cfg))
 		r.Get("/code-graph/ambiguous", handleAmbiguousEdges(cfg))
 		r.Get("/code-graph/explain", handleEntityExplain(cfg))
+		r.Get("/code-graph/related", handleRelated(cfg))
+		r.Get("/code-graph/hyperedges", handleHyperedges(cfg))
+		r.Get("/code-graph/hyperedge", handleHyperedge(cfg))
+		r.Post("/code-graph/semantic-misses", handleSemanticMisses(cfg))
+		r.Get("/code-graph/communities", handleCommunities(cfg))
+		r.Get("/code-graph/community", handleCommunity(cfg))
+		r.Get("/code-graph/bridges", handleBridges(cfg))
 	}
 }

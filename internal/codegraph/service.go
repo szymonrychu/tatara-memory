@@ -159,3 +159,55 @@ func (s *Service) AmbiguousEdges(ctx context.Context, repo string, limit int) ([
 func (s *Service) EntityExplain(ctx context.Context, repo, id string) (EntityExplain, error) {
 	return s.store.EntityExplain(ctx, repo, id)
 }
+
+// SemanticMisses returns the files whose cached content_sha differs or is absent.
+func (s *Service) SemanticMisses(ctx context.Context, repo string, files []FileSHA) ([]string, error) {
+	return s.store.SemanticMisses(ctx, repo, files)
+}
+
+// Related returns semantic neighbors of id filtered by relations and minConfidence.
+func (s *Service) Related(ctx context.Context, repo, id string, relations []string, minConfidence float64) ([]RelatedResult, error) {
+	return s.store.Related(ctx, repo, id, relations, minConfidence)
+}
+
+// Hyperedges returns the hyperedges in repo, optionally filtered by member entity.
+func (s *Service) Hyperedges(ctx context.Context, repo, entityID string) ([]Hyperedge, error) {
+	return s.store.Hyperedges(ctx, repo, entityID)
+}
+
+// Hyperedge returns a single hyperedge with its members.
+func (s *Service) Hyperedge(ctx context.Context, repo, id string) (Hyperedge, error) {
+	return s.store.Hyperedge(ctx, repo, id)
+}
+
+// Communities returns the detected communities for a repo.
+func (s *Service) Communities(ctx context.Context, repo string) ([]CommunityRow, error) {
+	return s.store.Communities(ctx, repo)
+}
+
+// Community returns the member entities of one community.
+func (s *Service) Community(ctx context.Context, repo string, community int) ([]Entity, error) {
+	return s.store.Community(ctx, repo, community)
+}
+
+// Bridges returns high-betweenness multi-community connectors, capped by limit.
+func (s *Service) Bridges(ctx context.Context, repo string, limit int) ([]Bridge, error) {
+	if limit <= 0 {
+		limit = defaultImportantLimit
+	}
+	if limit > maxImportantLimit {
+		limit = maxImportantLimit
+	}
+	return s.store.Bridges(ctx, repo, limit)
+}
+
+// ImportantEntitiesBy ranks entities by degree (default) or betweenness.
+func (s *Service) ImportantEntitiesBy(ctx context.Context, repo, by string, limit int) ([]EntityDegree, error) {
+	if limit <= 0 {
+		limit = defaultImportantLimit
+	}
+	if limit > maxImportantLimit {
+		limit = maxImportantLimit
+	}
+	return s.store.ImportantEntitiesBy(ctx, repo, by, limit)
+}

@@ -31,7 +31,7 @@ func freshStoreWithDB(t *testing.T) (*codegraph.PGStore, *sql.DB, context.Contex
 	ctx := context.Background()
 	db := openPG(t)
 	require.NoError(t, codegraph.Migrate(ctx, db))
-	_, err := db.ExecContext(ctx, `DELETE FROM code_hyperedge_members; DELETE FROM code_hyperedges; DELETE FROM cross_repo_symbols; DELETE FROM code_edges; DELETE FROM code_entities;`)
+	_, err := db.ExecContext(ctx, `DELETE FROM code_hyperedge_members; DELETE FROM code_hyperedges; DELETE FROM cross_repo_symbols; DELETE FROM code_edges; DELETE FROM code_entities; DELETE FROM semantic_extractions; DELETE FROM code_communities; DELETE FROM repo_analytics_state;`)
 	require.NoError(t, err)
 	return codegraph.NewPGStore(db), db, ctx
 }

@@ -156,18 +156,67 @@ type Hyperedge struct {
 	Properties      map[string]string `json:"properties,omitempty"`
 }
 
+// FileSHA is one file's content hash, used by the semantic-misses cache check
+// and as the per-path value of GraphPush.FileSHAs.
+type FileSHA struct {
+	Path       string `json:"path"`
+	ContentSHA string `json:"content_sha"`
+}
+
 // GraphPush is one ingest request: the changed file set plus the entities and
 // edges those files own. Reconciliation deletes the prior graph owned by Files
-// then inserts Entities, Edges, Symbols, and Hyperedges, in one transaction.
+// (scoped by Extractor) then inserts Entities, Edges, Symbols, and Hyperedges,
+// in one transaction. When FileSHAs is set the semantic_extractions cache is
+// upserted for those paths.
 type GraphPush struct {
-	Repo       string      `json:"repo"`
-	Commit     string      `json:"commit,omitempty"`
-	Files      []string    `json:"files"`
-	Entities   []Entity    `json:"entities"`
-	Edges      []Edge      `json:"edges"`
-	Symbols    []SymbolRow `json:"symbols,omitempty"`
-	Hyperedges []Hyperedge `json:"hyperedges,omitempty"`
+	Repo       string            `json:"repo"`
+	Commit     string            `json:"commit,omitempty"`
+	Extractor  string            `json:"extractor,omitempty"`
+	Files      []string          `json:"files"`
+	Entities   []Entity          `json:"entities"`
+	Edges      []Edge            `json:"edges"`
+	Symbols    []SymbolRow       `json:"symbols,omitempty"`
+	Hyperedges []Hyperedge       `json:"hyperedges,omitempty"`
+	FileSHAs   map[string]string `json:"file_shas,omitempty"`
 }
+
+// ExtractorAST is the default origin tag written to graph rows when a push omits
+// Extractor. Reconcile scopes its per-src_file deletes by this tag.
+const ExtractorAST = "ast"
+
+// ExtractorSemantic tags rows produced by the LLM semantic extraction stage.
+const ExtractorSemantic = "semantic"
+
+// RelatedResult is a semantic neighbor of an entity: the target entity plus the
+// semantic relation and confidence of the edge that reached it.
+type RelatedResult struct {
+	Entity
+	Relation        string  `json:"relation"`
+	ConfidenceScore float64 `json:"confidence_score"`
+	ConfidenceTier  string  `json:"confidence_tier"`
+}
+
+// CommunityRow is one detected community with its label, size, and cohesion.
+type CommunityRow struct {
+	Community int     `json:"community"`
+	Label     string  `json:"label"`
+	Size      int     `json:"size"`
+	Cohesion  float64 `json:"cohesion"`
+}
+
+// Bridge is a high-betweenness entity that connects more than one community.
+type Bridge struct {
+	Entity
+	Betweenness         float64 `json:"betweenness"`
+	Community           int     `json:"community"`
+	NeighborCommunities int     `json:"neighbor_communities"`
+}
+
+// ImportantBy is the ranking column for ImportantEntitiesBy.
+const (
+	ImportantByDegree      = "degree"
+	ImportantByBetweenness = "betweenness"
+)
 
 // PushResult summarises a completed reconciliation.
 type PushResult struct {
