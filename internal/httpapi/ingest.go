@@ -14,9 +14,13 @@ import (
 const maxBulkBody = 32 << 20 // 32 MiB
 
 // BulkMemoriesRequest is the /memories:bulk body. ReconcileFiles is the touched
-// file set whose prior memories are purged before the items are inserted. A
-// legacy bare JSON array of items is still accepted (decoded into Items).
+// file set whose prior memories are purged before the items are inserted. Repo
+// identifies the repository these items belong to; required when ReconcileFiles
+// is non-empty (the purge-before-insert path). It may also be inferred from
+// item metadata for back-compat. A legacy bare JSON array of items is still
+// accepted (decoded into Items).
 type BulkMemoriesRequest struct {
+	Repo           string              `json:"repo,omitempty"`
 	ReconcileFiles []string            `json:"reconcile_files,omitempty"`
 	Items          []memory.IngestItem `json:"items"`
 }
@@ -71,14 +75,21 @@ func handleBulkIngest(cfg Config) http.HandlerFunc {
 		}
 
 		// Purge-before-insert: for every reconcile file, drop its prior memories.
+		// repo is taken from the explicit top-level field first; item metadata is
+		// the back-compat fallback for callers that do not yet send the field.
 		if len(req.ReconcileFiles) > 0 {
-			repo := repoFromItems(req.Items)
-			if repo != "" {
-				for _, f := range req.ReconcileFiles {
-					if _, err := cfg.Service.DeleteMemoriesBySource(r.Context(), repo, f); err != nil {
-						mapServiceError(w, r, err)
-						return
-					}
+			repo := req.Repo
+			if repo == "" {
+				repo = repoFromItems(req.Items)
+			}
+			if repo == "" {
+				WriteError(w, http.StatusBadRequest, "repo is required when reconcile_files is set", RequestIDFromContext(r.Context()))
+				return
+			}
+			for _, f := range req.ReconcileFiles {
+				if _, err := cfg.Service.DeleteMemoriesBySource(r.Context(), repo, f); err != nil {
+					mapServiceError(w, r, err)
+					return
 				}
 			}
 		}

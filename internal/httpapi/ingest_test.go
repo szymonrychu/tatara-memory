@@ -123,3 +123,57 @@ func TestBulkIngestReconcileFilesPurgesFirst(t *testing.T) {
 	got := spy.snapshot()
 	require.ElementsMatch(t, [][2]string{{"repoA", "a.go"}, {"repoA", "b.go"}}, got)
 }
+
+// TestBulkIngestReconcileFilesTopLevelRepo exercises the explicit repo field path,
+// including the pure-deletion case (reconcile_files set, no items).
+func TestBulkIngestReconcileFilesTopLevelRepo(t *testing.T) {
+	spy := &reconcileSpyService{}
+	ing := &ingestStub{enq: memory.IngestJob{ID: "jobTL", Status: memory.JobStatusQueued}}
+	srv := newSrvIngest(t, spy, ing)
+	defer srv.Close()
+
+	// reconcile_files with explicit repo field and items.
+	body := `{"repo":"repoB","reconcile_files":["x.go","y.go"],
+		"items":[{"text":"new x","metadata":{"repo":"repoB","file_path":"x.go"}}]}`
+	resp, err := http.Post(srv.URL+"/memories:bulk", "application/json", bytes.NewReader([]byte(body)))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
+	require.ElementsMatch(t, [][2]string{{"repoB", "x.go"}, {"repoB", "y.go"}}, spy.snapshot())
+}
+
+// TestBulkIngestPureDeletion exercises the pure-deletion reconcile path: files
+// deleted from a repo, no items to insert. Prior to the fix, repo could not be
+// derived and the purge was silently skipped.
+func TestBulkIngestPureDeletion(t *testing.T) {
+	spy := &reconcileSpyService{}
+	ing := &ingestStub{}
+	srv := newSrvIngest(t, spy, ing)
+	defer srv.Close()
+
+	body := `{"repo":"repoC","reconcile_files":["gone.go"]}`
+	resp, err := http.Post(srv.URL+"/memories:bulk", "application/json", bytes.NewReader([]byte(body)))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
+
+	got := spy.snapshot()
+	require.ElementsMatch(t, [][2]string{{"repoC", "gone.go"}}, got)
+}
+
+// TestBulkIngestReconcileFilesNoRepoReturns400 ensures that callers who send
+// reconcile_files without either a top-level repo field or item metadata get a
+// 400 rather than a silent no-op.
+func TestBulkIngestReconcileFilesNoRepoReturns400(t *testing.T) {
+	spy := &reconcileSpyService{}
+	ing := &ingestStub{}
+	srv := newSrvIngest(t, spy, ing)
+	defer srv.Close()
+
+	body := `{"reconcile_files":["gone.go"]}`
+	resp, err := http.Post(srv.URL+"/memories:bulk", "application/json", bytes.NewReader([]byte(body)))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	require.Empty(t, spy.snapshot())
+}
