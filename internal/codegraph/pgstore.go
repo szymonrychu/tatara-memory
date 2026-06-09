@@ -336,21 +336,23 @@ func (s *PGStore) Neighbors(ctx context.Context, repo, id string, relations []st
 }
 
 // shortestPathQuery uses a recursive CTE to find the shortest path from $2 to $5.
-// The path is returned as a '|'-separated string to avoid needing array scanning.
+// Cycle detection uses a text[] array so that membership is exact (no false positives
+// when one entity ID is a prefix/substring of another).
+// The path array is converted to a '|'-separated string for easy scanning.
 const shortestPathQuery = `
-	WITH RECURSIVE walk(id, path_str, depth) AS (
-		SELECT $2::text, $2::text, 0
+	WITH RECURSIVE walk(id, path_arr, depth) AS (
+		SELECT $2::text, ARRAY[$2::text], 0
 		UNION ALL
 		SELECT e.to_id,
-		       walk.path_str || '|' || e.to_id,
+		       walk.path_arr || e.to_id,
 		       walk.depth + 1
 		FROM walk
 		JOIN code_edges e ON e.repo=$1 AND e.from_id=walk.id
 		  AND ($3='' OR e.relation = ANY(string_to_array($3, ',')))
 		WHERE walk.depth < $4
-		  AND position(e.to_id IN walk.path_str) = 0
+		  AND e.to_id <> ALL(walk.path_arr)
 	)
-	SELECT path_str FROM walk WHERE id=$5 ORDER BY depth LIMIT 1`
+	SELECT array_to_string(path_arr, '|') FROM walk WHERE id=$5 ORDER BY depth LIMIT 1`
 
 // ShortestPath returns the ordered entity chain from fromID to toID (inclusive),
 // or an empty slice if unreachable within maxDepth hops.
