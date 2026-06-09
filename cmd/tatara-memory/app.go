@@ -105,6 +105,25 @@ func openDB(dsn string) (*sql.DB, error) {
 	return db, nil
 }
 
+// waitForDB retries ping until it succeeds or timeout elapses.
+// A transient postgres restart retries every interval instead of aborting startup.
+func waitForDB(ctx context.Context, ping func(context.Context) error, timeout, interval time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		if err := ping(ctx); err == nil {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("database not reachable within %s", timeout)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(interval):
+		}
+	}
+}
+
 // dbOpener is the interface used by newAppWithDeps to allow test injection.
 type dbOpener interface {
 	openDB(string) (*sql.DB, error)
@@ -121,6 +140,11 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 	db, err := d.openDB(cfg.PGDSN)
 	if err != nil {
 		return nil, err
+	}
+
+	if err := waitForDB(ctx, db.PingContext, 60*time.Second, 2*time.Second); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("wait for postgres: %w", err)
 	}
 
 	lrc, err := lightrag.NewHTTPClient(lightrag.HTTPConfig{

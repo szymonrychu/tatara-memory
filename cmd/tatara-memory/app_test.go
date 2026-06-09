@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -90,4 +91,22 @@ func TestNewApp_WithFakes(t *testing.T) {
 func TestApp_Migrate_FailsOnBadDB(t *testing.T) {
 	a := &app{db: sql.OpenDB(failingConnector{})}
 	require.Error(t, a.migrate(context.Background()))
+}
+
+func TestWaitForDB_RetriesThenSucceeds(t *testing.T) {
+	n := 0
+	ping := func(context.Context) error {
+		n++
+		if n < 3 {
+			return errors.New("refused")
+		}
+		return nil
+	}
+	require.NoError(t, waitForDB(context.Background(), ping, time.Second, 5*time.Millisecond))
+	require.GreaterOrEqual(t, n, 3)
+}
+
+func TestWaitForDB_TimesOut(t *testing.T) {
+	ping := func(context.Context) error { return errors.New("refused") }
+	require.Error(t, waitForDB(context.Background(), ping, 20*time.Millisecond, 5*time.Millisecond))
 }
