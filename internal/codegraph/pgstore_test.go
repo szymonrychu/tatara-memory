@@ -181,7 +181,7 @@ func TestReconcileInsertsAndReplacesPerFile(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 2, n)
 
-	callees, err := s.Neighbors(ctx, "r", "go:func:r/a.A", []string{"calls"}, "out", 3)
+	callees, err := s.Neighbors(ctx, "r", "go:func:r/a.A", []string{"calls"}, "out", 3, codegraph.ConfidenceFilter{})
 	require.NoError(t, err)
 	require.Empty(t, callees)
 }

@@ -93,5 +93,10 @@ func mountV1(r chi.Router, cfg Config) {
 		r.Get("/code/resource-graph", handleResourceGraph(cfg))
 		r.Get("/code/file-imports", handleFileImports(cfg))
 		r.Get("/code/cross-repo", handleCrossRepo(cfg))
+		r.Get("/code-graph/path", handleShortestPath(cfg))
+		r.Get("/code-graph/important", handleImportantEntities(cfg))
+		r.Get("/code-graph/stats", handleStats(cfg))
+		r.Get("/code-graph/ambiguous", handleAmbiguousEdges(cfg))
+		r.Get("/code-graph/explain", handleEntityExplain(cfg))
 	}
 }
