@@ -15,3 +15,10 @@ func TestMigrationSQLExists(t *testing.T) {
 	require.Contains(t, sql, "deleted_memories")
 	require.Contains(t, sql, "PRIMARY KEY")
 }
+
+func TestMigrationSQLMemorySources(t *testing.T) {
+	sql := memory.MigrationSQL()
+	require.Contains(t, sql, "memory_sources")
+	require.Contains(t, sql, "track_id")
+	require.Contains(t, sql, "memory_sources_repo_file")
+}
