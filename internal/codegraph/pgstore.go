@@ -50,9 +50,16 @@ func scanProps(raw []byte) map[string]string {
 	return m
 }
 
-// Reconcile deletes the prior graph owned by p.Files then inserts p.Entities,
-// p.Edges, p.Symbols, and p.Hyperedges, all in a single transaction.
+// Reconcile deletes the prior graph owned by p.Files for p's Extractor origin,
+// then inserts p.Entities, p.Edges, p.Symbols, and p.Hyperedges (all tagged with
+// that extractor). When p.FileSHAs is set it upserts the semantic_extractions
+// cache. It always marks repo_analytics_state dirty. All in one transaction.
 func (s *PGStore) Reconcile(ctx context.Context, p GraphPush) (PushResult, error) {
+	ext := p.Extractor
+	if ext == "" {
+		ext = ExtractorAST
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return PushResult{}, err
@@ -60,21 +67,23 @@ func (s *PGStore) Reconcile(ctx context.Context, p GraphPush) (PushResult, error
 	defer func() { _ = tx.Rollback() }()
 
 	for _, f := range p.Files {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM code_edges WHERE repo=$1 AND src_file=$2`, p.Repo, f); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM code_edges WHERE repo=$1 AND src_file=$2 AND extractor=$3`, p.Repo, f, ext); err != nil {
 			return PushResult{}, err
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM code_entities WHERE repo=$1 AND file_path=$2`, p.Repo, f); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM code_entities WHERE repo=$1 AND file_path=$2 AND extractor=$3`, p.Repo, f, ext); err != nil {
 			return PushResult{}, err
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM cross_repo_symbols WHERE repo=$1 AND src_file=$2`, p.Repo, f); err != nil {
-			return PushResult{}, err
+		if ext == ExtractorAST {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM cross_repo_symbols WHERE repo=$1 AND src_file=$2`, p.Repo, f); err != nil {
+				return PushResult{}, err
+			}
 		}
 		if _, err := tx.ExecContext(ctx,
 			`DELETE FROM code_hyperedge_members WHERE repo=$1 AND hyperedge_id IN (
-				SELECT id FROM code_hyperedges WHERE repo=$1 AND src_file=$2)`, p.Repo, f); err != nil {
+				SELECT id FROM code_hyperedges WHERE repo=$1 AND src_file=$2 AND extractor=$3)`, p.Repo, f, ext); err != nil {
 			return PushResult{}, err
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM code_hyperedges WHERE repo=$1 AND src_file=$2`, p.Repo, f); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM code_hyperedges WHERE repo=$1 AND src_file=$2 AND extractor=$3`, p.Repo, f, ext); err != nil {
 			return PushResult{}, err
 		}
 	}
@@ -82,15 +91,16 @@ func (s *PGStore) Reconcile(ctx context.Context, p GraphPush) (PushResult, error
 	for _, e := range p.Entities {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO code_entities(repo, id, name, type, description, file_path, properties,
-				line_start, line_end, source_url, author, captured_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12)
+				line_start, line_end, source_url, author, captured_at, extractor)
+			VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12,$13)
 			ON CONFLICT (repo, id) DO UPDATE SET
 				name=EXCLUDED.name, type=EXCLUDED.type, description=EXCLUDED.description,
 				file_path=EXCLUDED.file_path, properties=EXCLUDED.properties,
 				line_start=EXCLUDED.line_start, line_end=EXCLUDED.line_end,
-				source_url=EXCLUDED.source_url, author=EXCLUDED.author, captured_at=EXCLUDED.captured_at`,
+				source_url=EXCLUDED.source_url, author=EXCLUDED.author, captured_at=EXCLUDED.captured_at,
+				extractor=EXCLUDED.extractor`,
 			p.Repo, e.ID, e.Name, e.Type, e.Description, e.FilePath, marshalProps(e.Properties),
-			nullInt(e.LineStart), nullInt(e.LineEnd), nullStr(e.SourceURL), nullStr(e.Author), nullTime(e.CapturedAt)); err != nil {
+			nullInt(e.LineStart), nullInt(e.LineEnd), nullStr(e.SourceURL), nullStr(e.Author), nullTime(e.CapturedAt), ext); err != nil {
 			return PushResult{}, err
 		}
 	}
@@ -104,12 +114,13 @@ func (s *PGStore) Reconcile(ctx context.Context, p GraphPush) (PushResult, error
 			tier = TierFor(score)
 		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO code_edges(repo, from_id, to_id, relation, src_file, properties, confidence_score, confidence_tier)
-			VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8)
+			INSERT INTO code_edges(repo, from_id, to_id, relation, src_file, properties, confidence_score, confidence_tier, extractor)
+			VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9)
 			ON CONFLICT (repo, from_id, to_id, relation) DO UPDATE SET
 				src_file=EXCLUDED.src_file, properties=EXCLUDED.properties,
-				confidence_score=EXCLUDED.confidence_score, confidence_tier=EXCLUDED.confidence_tier`,
-			p.Repo, e.From, e.To, e.Relation, e.SrcFile, marshalProps(e.Properties), score, tier); err != nil {
+				confidence_score=EXCLUDED.confidence_score, confidence_tier=EXCLUDED.confidence_tier,
+				extractor=EXCLUDED.extractor`,
+			p.Repo, e.From, e.To, e.Relation, e.SrcFile, marshalProps(e.Properties), score, tier, ext); err != nil {
 			return PushResult{}, err
 		}
 	}
@@ -131,12 +142,13 @@ func (s *PGStore) Reconcile(ctx context.Context, p GraphPush) (PushResult, error
 			score = 1.0
 		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO code_hyperedges(repo, id, label, relation, confidence_score, src_file, properties)
-			VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)
+			INSERT INTO code_hyperedges(repo, id, label, relation, confidence_score, src_file, properties, extractor)
+			VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8)
 			ON CONFLICT (repo, id) DO UPDATE SET
 				label=EXCLUDED.label, relation=EXCLUDED.relation,
-				confidence_score=EXCLUDED.confidence_score, src_file=EXCLUDED.src_file, properties=EXCLUDED.properties`,
-			p.Repo, h.ID, h.Label, h.Relation, score, h.SrcFile, marshalProps(h.Properties)); err != nil {
+				confidence_score=EXCLUDED.confidence_score, src_file=EXCLUDED.src_file,
+				properties=EXCLUDED.properties, extractor=EXCLUDED.extractor`,
+			p.Repo, h.ID, h.Label, h.Relation, score, h.SrcFile, marshalProps(h.Properties), ext); err != nil {
 			return PushResult{}, err
 		}
 		for _, m := range h.Members {
@@ -148,6 +160,24 @@ func (s *PGStore) Reconcile(ctx context.Context, p GraphPush) (PushResult, error
 				return PushResult{}, err
 			}
 		}
+	}
+
+	for path, sha := range p.FileSHAs {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO semantic_extractions(repo, file_path, content_sha, extracted_at)
+			VALUES ($1,$2,$3, now())
+			ON CONFLICT (repo, file_path) DO UPDATE SET
+				content_sha=EXCLUDED.content_sha, extracted_at=now()`,
+			p.Repo, path, sha); err != nil {
+			return PushResult{}, err
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO repo_analytics_state(repo, dirty, reconciled_at)
+		VALUES ($1, true, now())
+		ON CONFLICT (repo) DO UPDATE SET dirty=true, reconciled_at=now()`, p.Repo); err != nil {
+		return PushResult{}, err
 	}
 
 	if err := tx.Commit(); err != nil {
