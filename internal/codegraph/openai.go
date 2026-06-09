@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -17,7 +18,8 @@ type CommunityLabeler interface {
 
 // OpenAILabeler is a minimal chat/completions client used to name communities.
 // Gated on OPENAI_API_KEY; NewOpenAILabelerFromEnv returns nil when unset, in
-// which case callers fall back to the top-degree member name.
+// which case callers fall back to the first non-empty member name (deterministic,
+// Louvain order; not degree-sorted).
 type OpenAILabeler struct {
 	apiKey  string
 	model   string
@@ -95,5 +97,8 @@ func (l *OpenAILabeler) Label(ctx context.Context, memberNames []string) (string
 	if len(cr.Choices) == 0 {
 		return "", fmt.Errorf("openai label: empty choices")
 	}
-	return cr.Choices[0].Message.Content, nil
+	lbl := strings.TrimSpace(cr.Choices[0].Message.Content)
+	lbl = strings.TrimPrefix(lbl, `"`)
+	lbl = strings.TrimSuffix(lbl, `"`)
+	return lbl, nil
 }

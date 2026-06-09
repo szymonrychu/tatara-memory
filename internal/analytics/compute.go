@@ -31,7 +31,7 @@ type CommunitySignal struct {
 	Community int
 	Size      int
 	Cohesion  float64
-	Members   []string // entity IDs, for top-degree labeling by callers
+	Members   []string // entity IDs; first non-empty member name used as fallback label (deterministic, Louvain order; not degree-sorted)
 }
 
 // Result bundles the computed node and community signals.

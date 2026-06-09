@@ -8,12 +8,6 @@ ALTER TABLE code_entities
 ALTER TABLE code_hyperedges
     ADD COLUMN IF NOT EXISTS extractor text NOT NULL DEFAULT 'ast';
 
--- Analytics columns on code_entities (server-computed, not on the wire).
-ALTER TABLE code_entities
-    ADD COLUMN IF NOT EXISTS community   int,
-    ADD COLUMN IF NOT EXISTS degree      int,
-    ADD COLUMN IF NOT EXISTS betweenness double precision;
-
 CREATE INDEX IF NOT EXISTS code_edges_repo_extractor ON code_edges (repo, extractor);
 CREATE INDEX IF NOT EXISTS code_entities_repo_extractor ON code_entities (repo, extractor);
 CREATE INDEX IF NOT EXISTS code_hyperedges_repo_extractor ON code_hyperedges (repo, extractor);

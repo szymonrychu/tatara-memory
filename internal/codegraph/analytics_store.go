@@ -2,7 +2,6 @@ package codegraph
 
 import (
 	"context"
-	"time"
 
 	"github.com/szymonrychu/tatara-memory/internal/analytics"
 )
@@ -32,7 +31,8 @@ func (s *PGStore) DirtyRepos(ctx context.Context, debounceSecs int) ([]string, e
 
 // RecomputeAnalytics loads the repo's graph, computes signals via gonum, persists
 // them to code_entities + code_communities, labels communities (via labeler or
-// top-degree member name when labeler is nil), and clears the dirty flag.
+// first non-empty member name (deterministic, Louvain order; not degree-sorted)
+// when labeler is nil), and clears the dirty flag.
 func (s *PGStore) RecomputeAnalytics(ctx context.Context, repo string, labeler CommunityLabeler) error {
 	ids, names, err := s.loadEntityIDs(ctx, repo)
 	if err != nil {
@@ -84,16 +84,15 @@ func (s *PGStore) RecomputeAnalytics(ctx context.Context, repo string, labeler C
 }
 
 // labelCommunity returns an LLM label when a labeler is set and succeeds,
-// otherwise the highest-degree member's name (no LLM).
+// otherwise the first non-empty member name (deterministic, Louvain order;
+// not degree-sorted).
 func labelCommunity(ctx context.Context, labeler CommunityLabeler, c analytics.CommunitySignal, names map[string]string) string {
 	memberNames := make([]string, 0, len(c.Members))
 	for _, id := range c.Members {
 		memberNames = append(memberNames, names[id])
 	}
 	if labeler != nil {
-		lctx, cancel := context.WithTimeout(ctx, 20*time.Second)
-		defer cancel()
-		if lbl, err := labeler.Label(lctx, memberNames); err == nil && lbl != "" {
+		if lbl, err := labeler.Label(ctx, memberNames); err == nil && lbl != "" {
 			return lbl
 		}
 	}
