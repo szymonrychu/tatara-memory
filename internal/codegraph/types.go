@@ -66,12 +66,17 @@ const (
 	TierAmbiguous = "AMBIGUOUS"
 )
 
+// ambiguousScoreThreshold is the upper boundary (inclusive) for the AMBIGUOUS tier.
+// Any edge with confidence_score <= this value is treated as ambiguous.
+// Shared between TierFor and AmbiguousEdges SQL filter.
+const ambiguousScoreThreshold = 0.3
+
 // TierFor maps a confidence score to its tier.
 func TierFor(score float64) string {
 	switch {
 	case score >= 1.0:
 		return TierExtracted
-	case score <= 0.3:
+	case score <= ambiguousScoreThreshold:
 		return TierAmbiguous
 	default:
 		return TierInferred
@@ -184,6 +189,54 @@ type EntityDetail struct {
 type PathNode struct {
 	Entity
 	Depth int `json:"depth"`
+}
+
+// EntityDegree is an entity with its computed degree (in+out edge count).
+type EntityDegree struct {
+	Entity
+	Degree int `json:"degree"`
+}
+
+// GraphStats holds aggregate counts for a repo's code graph.
+type GraphStats struct {
+	Entities         int            `json:"entities"`
+	Edges            int            `json:"edges"`
+	EntitiesByType   map[string]int `json:"entities_by_type"`
+	EdgesByRelation  map[string]int `json:"edges_by_relation"`
+	EdgesByTier      map[string]int `json:"edges_by_tier"`
+	IsolatedEntities int            `json:"isolated_entities"`
+	ImportCycles     int            `json:"import_cycles"`
+}
+
+// NeighborEntity is a lightweight entity summary used in EntityExplain neighbors.
+type NeighborEntity struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Type      string `json:"type"`
+	FilePath  string `json:"file_path"`
+	LineStart int    `json:"line_start,omitempty"`
+	LineEnd   int    `json:"line_end,omitempty"`
+}
+
+// EntityExplain is EntityDetail plus labeled in/out neighbor entities.
+type EntityExplain struct {
+	EntityDetail
+	OutNeighbors []NeighborEntity `json:"out_neighbors"`
+	InNeighbors  []NeighborEntity `json:"in_neighbors"`
+}
+
+// ConfidenceFilter is an optional filter applied to edge traversals.
+// Zero values mean no filtering.
+type ConfidenceFilter struct {
+	MinConfidence float64
+	Tier          string
+}
+
+// ValidTiers is the set of recognized confidence tier values.
+var ValidTiers = map[string]bool{
+	TierExtracted: true,
+	TierInferred:  true,
+	TierAmbiguous: true,
 }
 
 func clampDepth(d int) int {

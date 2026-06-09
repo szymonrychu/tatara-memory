@@ -16,11 +16,13 @@ import (
 )
 
 type stubCodeGraph struct {
-	pushErr   error
-	pushed    codegraph.GraphPush
-	entity    codegraph.EntityDetail
-	entityErr error
-	nodes     []codegraph.PathNode
+	pushErr    error
+	pushed     codegraph.GraphPush
+	entity     codegraph.EntityDetail
+	entityErr  error
+	nodes      []codegraph.PathNode
+	lastCF     codegraph.ConfidenceFilter
+	explainErr error
 }
 
 func (s *stubCodeGraph) Push(_ context.Context, p codegraph.GraphPush) (codegraph.PushResult, error) {
@@ -36,22 +38,28 @@ func (s *stubCodeGraph) Search(_ context.Context, _, _, _ string, _ int) ([]code
 func (s *stubCodeGraph) Entity(_ context.Context, _, _ string) (codegraph.EntityDetail, error) {
 	return s.entity, s.entityErr
 }
-func (s *stubCodeGraph) Neighbors(_ context.Context, _, _ string, _ []string, _ string, _ int) ([]codegraph.PathNode, error) {
+func (s *stubCodeGraph) Neighbors(_ context.Context, _, _ string, _ []string, _ string, _ int, cf codegraph.ConfidenceFilter) ([]codegraph.PathNode, error) {
+	s.lastCF = cf
 	return s.nodes, nil
 }
-func (s *stubCodeGraph) Callers(_ context.Context, _, _ string, _ int) ([]codegraph.PathNode, error) {
+func (s *stubCodeGraph) Callers(_ context.Context, _, _ string, _ int, cf codegraph.ConfidenceFilter) ([]codegraph.PathNode, error) {
+	s.lastCF = cf
 	return s.nodes, nil
 }
-func (s *stubCodeGraph) Callees(_ context.Context, _, _ string, _ int) ([]codegraph.PathNode, error) {
+func (s *stubCodeGraph) Callees(_ context.Context, _, _ string, _ int, cf codegraph.ConfidenceFilter) ([]codegraph.PathNode, error) {
+	s.lastCF = cf
 	return s.nodes, nil
 }
-func (s *stubCodeGraph) Dependents(_ context.Context, _, _ string, _ int) ([]codegraph.PathNode, error) {
+func (s *stubCodeGraph) Dependents(_ context.Context, _, _ string, _ int, cf codegraph.ConfidenceFilter) ([]codegraph.PathNode, error) {
+	s.lastCF = cf
 	return s.nodes, nil
 }
-func (s *stubCodeGraph) Dependencies(_ context.Context, _, _ string, _ int) ([]codegraph.PathNode, error) {
+func (s *stubCodeGraph) Dependencies(_ context.Context, _, _ string, _ int, cf codegraph.ConfidenceFilter) ([]codegraph.PathNode, error) {
+	s.lastCF = cf
 	return s.nodes, nil
 }
-func (s *stubCodeGraph) ResourceGraph(_ context.Context, _, _ string, _ int) ([]codegraph.PathNode, error) {
+func (s *stubCodeGraph) ResourceGraph(_ context.Context, _, _ string, _ int, cf codegraph.ConfidenceFilter) ([]codegraph.PathNode, error) {
+	s.lastCF = cf
 	return s.nodes, nil
 }
 func (s *stubCodeGraph) FileImports(_ context.Context, _, _ string) ([]codegraph.Edge, error) {
@@ -61,6 +69,45 @@ func (s *stubCodeGraph) CrossRepo(_ context.Context, _, _ string) (codegraph.Cro
 	return codegraph.CrossRepoLinks{
 		Consumers: []codegraph.CrossRef{{Repo: "repo-b", EntityID: "eb1", Symbol: "Foo", Lang: "go"}},
 		Providers: []codegraph.CrossRef{},
+	}, nil
+}
+func (s *stubCodeGraph) ShortestPath(_ context.Context, _, _, _ string, _ []string, _ int) ([]codegraph.Entity, error) {
+	return []codegraph.Entity{
+		{ID: "go:func:r/a.A", Name: "A", Type: "go_func"},
+		{ID: "go:func:r/b.B", Name: "B", Type: "go_func"},
+	}, nil
+}
+func (s *stubCodeGraph) ImportantEntities(_ context.Context, _ string, _ int) ([]codegraph.EntityDegree, error) {
+	return []codegraph.EntityDegree{
+		{Entity: codegraph.Entity{ID: "go:func:r/a.A", Name: "A", Type: "go_func"}, Degree: 5},
+	}, nil
+}
+func (s *stubCodeGraph) Stats(_ context.Context, _ string) (codegraph.GraphStats, error) {
+	return codegraph.GraphStats{
+		Entities:        3,
+		Edges:           2,
+		EntitiesByType:  map[string]int{"go_func": 3},
+		EdgesByRelation: map[string]int{"calls": 2},
+		EdgesByTier:     map[string]int{codegraph.TierExtracted: 2},
+	}, nil
+}
+func (s *stubCodeGraph) AmbiguousEdges(_ context.Context, _ string, _ int) ([]codegraph.Edge, error) {
+	return []codegraph.Edge{
+		{From: "a", To: "b", Relation: "calls", ConfidenceScore: 0.2, ConfidenceTier: codegraph.TierAmbiguous},
+	}, nil
+}
+func (s *stubCodeGraph) EntityExplain(_ context.Context, _, _ string) (codegraph.EntityExplain, error) {
+	if s.explainErr != nil {
+		return codegraph.EntityExplain{}, s.explainErr
+	}
+	return codegraph.EntityExplain{
+		EntityDetail: codegraph.EntityDetail{
+			Entity:   codegraph.Entity{ID: "go:func:r/a.A", Name: "A", Type: "go_func"},
+			OutEdges: []codegraph.Edge{},
+			InEdges:  []codegraph.Edge{},
+		},
+		OutNeighbors: []codegraph.NeighborEntity{{ID: "go:func:r/b.B", Name: "B", Type: "go_func"}},
+		InNeighbors:  []codegraph.NeighborEntity{},
 	}, nil
 }
 
@@ -162,4 +209,131 @@ func TestCrossRepo_MissingID(t *testing.T) {
 	w := httptest.NewRecorder()
 	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
 	require.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestShortestPath_OK(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/code-graph/path?repo=r&from=go:func:r/a.A&to=go:func:r/b.B", nil)
+	w := httptest.NewRecorder()
+	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	var res map[string]interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &res))
+	path, ok := res["path"].([]interface{})
+	require.True(t, ok)
+	require.Len(t, path, 2)
+}
+
+func TestShortestPath_MissingFrom(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/code-graph/path?repo=r&to=b", nil)
+	w := httptest.NewRecorder()
+	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
+	require.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestShortestPath_MissingTo(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/code-graph/path?repo=r&from=a", nil)
+	w := httptest.NewRecorder()
+	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
+	require.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestImportantEntities_OK(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/code-graph/important?repo=r&limit=5", nil)
+	w := httptest.NewRecorder()
+	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Contains(t, w.Body.String(), "degree")
+	require.Contains(t, w.Body.String(), "go:func:r/a.A")
+}
+
+func TestStats_OK(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/code-graph/stats?repo=r", nil)
+	w := httptest.NewRecorder()
+	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	var stats codegraph.GraphStats
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &stats))
+	require.Equal(t, 3, stats.Entities)
+	require.Equal(t, 2, stats.Edges)
+}
+
+func TestStats_MissingRepo(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/code-graph/stats", nil)
+	w := httptest.NewRecorder()
+	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
+	require.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestAmbiguousEdges_OK(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/code-graph/ambiguous?repo=r", nil)
+	w := httptest.NewRecorder()
+	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Contains(t, w.Body.String(), "AMBIGUOUS")
+}
+
+func TestEntityExplain_OK(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/code-graph/explain?repo=r&id=go:func:r/a.A", nil)
+	w := httptest.NewRecorder()
+	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Contains(t, w.Body.String(), "out_neighbors")
+	require.Contains(t, w.Body.String(), "go:func:r/b.B")
+}
+
+func TestEntityExplain_NotFound(t *testing.T) {
+	cg := &stubCodeGraph{explainErr: codegraph.ErrEntityNotFound}
+	req := httptest.NewRequest(http.MethodGet, "/code-graph/explain?repo=r&id=missing", nil)
+	w := httptest.NewRecorder()
+	cgRouter(cg).ServeHTTP(w, req)
+	require.Equal(t, http.StatusNotFound, w.Code)
+}
+
+func TestConfidenceFilter_InvalidTier(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/code/callers?repo=r&id=x&tier=INVALID", nil)
+	w := httptest.NewRecorder()
+	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
+	require.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestConfidenceFilter_ValidTier(t *testing.T) {
+	cg := &stubCodeGraph{nodes: []codegraph.PathNode{{Entity: codegraph.Entity{ID: "go:func:r/x.X"}, Depth: 1}}}
+	req := httptest.NewRequest(http.MethodGet, "/code/callers?repo=r&id=x&tier=EXTRACTED&min_confidence=0.9", nil)
+	w := httptest.NewRecorder()
+	cgRouter(cg).ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, codegraph.TierExtracted, cg.lastCF.Tier)
+	require.InDelta(t, 0.9, cg.lastCF.MinConfidence, 1e-9)
+}
+
+func TestConfidenceFilter_InvalidMinConfidence(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/code/callers?repo=r&id=x&min_confidence=notanumber", nil)
+	w := httptest.NewRecorder()
+	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
+	require.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestConfidenceFilter_MinConfidenceBelowZero(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/code/callers?repo=r&id=x&min_confidence=-0.1", nil)
+	w := httptest.NewRecorder()
+	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
+	require.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestConfidenceFilter_MinConfidenceAboveOne(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/code/callers?repo=r&id=x&min_confidence=1.1", nil)
+	w := httptest.NewRecorder()
+	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
+	require.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestConfidenceFilter_MinConfidenceBoundary(t *testing.T) {
+	// 0.0 and 1.0 are valid boundaries
+	for _, v := range []string{"0.0", "1.0", "0.5"} {
+		cg := &stubCodeGraph{nodes: []codegraph.PathNode{{Entity: codegraph.Entity{ID: "go:func:r/x.X"}, Depth: 1}}}
+		req := httptest.NewRequest(http.MethodGet, "/code/callers?repo=r&id=x&min_confidence="+v, nil)
+		w := httptest.NewRecorder()
+		cgRouter(cg).ServeHTTP(w, req)
+		require.Equal(t, http.StatusOK, w.Code, "min_confidence=%s should be accepted", v)
+	}
 }

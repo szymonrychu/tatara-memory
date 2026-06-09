@@ -8,6 +8,11 @@ import (
 	"strings"
 )
 
+// maxImportCycleDepth is the maximum recursion depth used when detecting import
+// cycles in Stats. Keeps the CTE bounded on large graphs with long dependency
+// chains; cycles deeper than this are not counted.
+const maxImportCycleDepth = 20
+
 // PGStore is a PostgreSQL-backed implementation of Store.
 type PGStore struct {
 	db *sql.DB
@@ -164,7 +169,8 @@ func (s *PGStore) CountEntities(ctx context.Context, repo string) (int, error) {
 }
 
 // SearchEntities returns entities in repo matching an optional name/description
-// fragment and optional exact type, ordered by name.
+// fragment and optional exact type, ordered by relevance (exact name=0,
+// name prefix=1, name substring=2, description substring=3), tie-broken by name.
 func (s *PGStore) SearchEntities(ctx context.Context, repo, q, typ string, limit int) ([]Entity, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, name, type, description, file_path, properties
@@ -172,7 +178,15 @@ func (s *PGStore) SearchEntities(ctx context.Context, repo, q, typ string, limit
 		WHERE repo=$1
 		  AND ($2='' OR name ILIKE '%'||$2||'%' OR description ILIKE '%'||$2||'%')
 		  AND ($3='' OR type=$3)
-		ORDER BY name
+		ORDER BY
+		  CASE
+		    WHEN $2='' THEN 4
+		    WHEN name ILIKE $2 THEN 0
+		    WHEN name ILIKE $2||'%' THEN 1
+		    WHEN name ILIKE '%'||$2||'%' THEN 2
+		    ELSE 3
+		  END,
+		  name
 		LIMIT $4`, repo, q, typ, limit)
 	if err != nil {
 		return nil, err
@@ -253,14 +267,62 @@ const neighborsInQuery = `
 	WHERE w.depth > 0
 	ORDER BY en.id, w.depth`
 
+const neighborsOutCFQuery = `
+	WITH RECURSIVE walk(id, depth) AS (
+		SELECT $2::text, 0
+		UNION
+		SELECT e.to_id, w.depth + 1
+		FROM walk w
+		JOIN code_edges e ON e.repo=$1 AND e.from_id=w.id
+		 AND e.relation = ANY(string_to_array($3, ','))
+		 AND e.confidence_score >= $5
+		 AND ($6='' OR e.confidence_tier=$6)
+		WHERE w.depth < $4
+	)
+	SELECT DISTINCT ON (en.id) en.id, en.name, en.type, en.description, en.file_path, en.properties, w.depth
+	FROM walk w
+	JOIN code_entities en ON en.repo=$1 AND en.id=w.id
+	WHERE w.depth > 0
+	ORDER BY en.id, w.depth`
+
+const neighborsInCFQuery = `
+	WITH RECURSIVE walk(id, depth) AS (
+		SELECT $2::text, 0
+		UNION
+		SELECT e.from_id, w.depth + 1
+		FROM walk w
+		JOIN code_edges e ON e.repo=$1 AND e.to_id=w.id
+		 AND e.relation = ANY(string_to_array($3, ','))
+		 AND e.confidence_score >= $5
+		 AND ($6='' OR e.confidence_tier=$6)
+		WHERE w.depth < $4
+	)
+	SELECT DISTINCT ON (en.id) en.id, en.name, en.type, en.description, en.file_path, en.properties, w.depth
+	FROM walk w
+	JOIN code_entities en ON en.repo=$1 AND en.id=w.id
+	WHERE w.depth > 0
+	ORDER BY en.id, w.depth`
+
 // Neighbors walks edges of the given relations from id, in the given direction
 // ("out" follows from->to, "in" follows to->from), up to depth hops.
-func (s *PGStore) Neighbors(ctx context.Context, repo, id string, relations []string, dir string, depth int) ([]PathNode, error) {
-	query := neighborsOutQuery
-	if dir == "in" {
-		query = neighborsInQuery
+// cf is an optional confidence filter; zero value means no filtering.
+func (s *PGStore) Neighbors(ctx context.Context, repo, id string, relations []string, dir string, depth int, cf ConfidenceFilter) ([]PathNode, error) {
+	var rows *sql.Rows
+	var err error
+	relStr := strings.Join(relations, ",")
+	if cf.MinConfidence > 0 || cf.Tier != "" {
+		query := neighborsOutCFQuery
+		if dir == "in" {
+			query = neighborsInCFQuery
+		}
+		rows, err = s.db.QueryContext(ctx, query, repo, id, relStr, depth, cf.MinConfidence, cf.Tier)
+	} else {
+		query := neighborsOutQuery
+		if dir == "in" {
+			query = neighborsInQuery
+		}
+		rows, err = s.db.QueryContext(ctx, query, repo, id, relStr, depth)
 	}
-	rows, err := s.db.QueryContext(ctx, query, repo, id, strings.Join(relations, ","), depth)
 	if err != nil {
 		return nil, err
 	}
@@ -274,6 +336,274 @@ func (s *PGStore) Neighbors(ctx context.Context, repo, id string, relations []st
 		}
 		n.Properties = scanProps(raw)
 		out = append(out, n)
+	}
+	return out, rows.Err()
+}
+
+// shortestPathQuery uses a recursive CTE to find the shortest path from $2 to $5.
+// Cycle detection uses a text[] array so that membership is exact (no false positives
+// when one entity ID is a prefix/substring of another).
+// The path array is converted to a '|'-separated string for easy scanning.
+const shortestPathQuery = `
+	WITH RECURSIVE walk(id, path_arr, depth) AS (
+		SELECT $2::text, ARRAY[$2::text], 0
+		UNION ALL
+		SELECT e.to_id,
+		       walk.path_arr || e.to_id,
+		       walk.depth + 1
+		FROM walk
+		JOIN code_edges e ON e.repo=$1 AND e.from_id=walk.id
+		  AND ($3='' OR e.relation = ANY(string_to_array($3, ',')))
+		WHERE walk.depth < $4
+		  AND e.to_id <> ALL(walk.path_arr)
+	)
+	SELECT array_to_string(path_arr, '|') FROM walk WHERE id=$5 ORDER BY depth LIMIT 1`
+
+// ShortestPath returns the ordered entity chain from fromID to toID (inclusive),
+// or an empty slice if unreachable within maxDepth hops.
+func (s *PGStore) ShortestPath(ctx context.Context, repo, fromID, toID string, relations []string, maxDepth int) ([]Entity, error) {
+	relStr := strings.Join(relations, ",")
+	row := s.db.QueryRowContext(ctx, shortestPathQuery, repo, fromID, relStr, maxDepth, toID)
+	var pathStr string
+	if err := row.Scan(&pathStr); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return []Entity{}, nil
+		}
+		return nil, err
+	}
+	ids := strings.Split(pathStr, "|")
+	out := make([]Entity, 0, len(ids))
+	for _, pid := range ids {
+		r := s.db.QueryRowContext(ctx,
+			`SELECT id, name, type, description, file_path, properties FROM code_entities WHERE repo=$1 AND id=$2`,
+			repo, pid)
+		e, err := scanEntity(r)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, nil
+}
+
+// ImportantEntities returns entities ranked by degree (in+out edge count) DESC.
+func (s *PGStore) ImportantEntities(ctx context.Context, repo string, limit int) ([]EntityDegree, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT en.id, en.name, en.type, en.description, en.file_path, en.properties,
+		       COALESCE(out_c.cnt, 0) + COALESCE(in_c.cnt, 0) AS degree
+		FROM code_entities en
+		LEFT JOIN (
+			SELECT from_id AS id, count(*) AS cnt
+			FROM code_edges WHERE repo=$1 GROUP BY from_id
+		) out_c ON out_c.id=en.id
+		LEFT JOIN (
+			SELECT to_id AS id, count(*) AS cnt
+			FROM code_edges WHERE repo=$1 GROUP BY to_id
+		) in_c ON in_c.id=en.id
+		WHERE en.repo=$1
+		ORDER BY degree DESC
+		LIMIT $2`, repo, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []EntityDegree
+	for rows.Next() {
+		var ed EntityDegree
+		var raw []byte
+		if err := rows.Scan(&ed.ID, &ed.Name, &ed.Type, &ed.Description, &ed.FilePath, &raw, &ed.Degree); err != nil {
+			return nil, err
+		}
+		ed.Properties = scanProps(raw)
+		out = append(out, ed)
+	}
+	return out, rows.Err()
+}
+
+// Stats returns aggregate counts for a repo's code graph.
+func (s *PGStore) Stats(ctx context.Context, repo string) (GraphStats, error) {
+	var gs GraphStats
+
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM code_entities WHERE repo=$1`, repo).Scan(&gs.Entities); err != nil {
+		return GraphStats{}, err
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM code_edges WHERE repo=$1`, repo).Scan(&gs.Edges); err != nil {
+		return GraphStats{}, err
+	}
+
+	rows, err := s.db.QueryContext(ctx, `SELECT type, count(*) FROM code_entities WHERE repo=$1 GROUP BY type`, repo)
+	if err != nil {
+		return GraphStats{}, err
+	}
+	gs.EntitiesByType = make(map[string]int)
+	for rows.Next() {
+		var k string
+		var v int
+		if err := rows.Scan(&k, &v); err != nil {
+			_ = rows.Close()
+			return GraphStats{}, err
+		}
+		gs.EntitiesByType[k] = v
+	}
+	if err := rows.Close(); err != nil {
+		return GraphStats{}, err
+	}
+
+	rows, err = s.db.QueryContext(ctx, `SELECT relation, count(*) FROM code_edges WHERE repo=$1 GROUP BY relation`, repo)
+	if err != nil {
+		return GraphStats{}, err
+	}
+	gs.EdgesByRelation = make(map[string]int)
+	for rows.Next() {
+		var k string
+		var v int
+		if err := rows.Scan(&k, &v); err != nil {
+			_ = rows.Close()
+			return GraphStats{}, err
+		}
+		gs.EdgesByRelation[k] = v
+	}
+	if err := rows.Close(); err != nil {
+		return GraphStats{}, err
+	}
+
+	rows, err = s.db.QueryContext(ctx, `SELECT confidence_tier, count(*) FROM code_edges WHERE repo=$1 GROUP BY confidence_tier`, repo)
+	if err != nil {
+		return GraphStats{}, err
+	}
+	gs.EdgesByTier = make(map[string]int)
+	for rows.Next() {
+		var k string
+		var v int
+		if err := rows.Scan(&k, &v); err != nil {
+			_ = rows.Close()
+			return GraphStats{}, err
+		}
+		gs.EdgesByTier[k] = v
+	}
+	if err := rows.Close(); err != nil {
+		return GraphStats{}, err
+	}
+
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT count(*) FROM code_entities en
+		WHERE en.repo=$1
+		  AND NOT EXISTS (
+		      SELECT 1 FROM code_edges e
+		      WHERE e.repo=$1 AND (e.from_id=en.id OR e.to_id=en.id)
+		  )`, repo).Scan(&gs.IsolatedEntities); err != nil {
+		return GraphStats{}, err
+	}
+
+	// Import cycles: count distinct start nodes that can reach themselves via 'imports'.
+	if err := s.db.QueryRowContext(ctx, `
+		WITH RECURSIVE cycle_check(start_id, cur_id, depth) AS (
+			SELECT e.from_id, e.to_id, 1
+			FROM code_edges e
+			WHERE e.repo=$1 AND e.relation='imports'
+			UNION ALL
+			SELECT cc.start_id, e.to_id, cc.depth + 1
+			FROM cycle_check cc
+			JOIN code_edges e ON e.repo=$1 AND e.relation='imports' AND e.from_id=cc.cur_id
+			WHERE cc.depth < $2 AND cc.cur_id <> cc.start_id
+		)
+		SELECT count(DISTINCT start_id) FROM cycle_check WHERE cur_id=start_id`,
+		repo, maxImportCycleDepth).Scan(&gs.ImportCycles); err != nil {
+		return GraphStats{}, err
+	}
+
+	return gs, nil
+}
+
+// AmbiguousEdges returns edges where confidence_tier='AMBIGUOUS' OR confidence_score<=ambiguousScoreThreshold.
+func (s *PGStore) AmbiguousEdges(ctx context.Context, repo string, limit int) ([]Edge, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT from_id, to_id, relation, src_file, properties, confidence_score, confidence_tier
+		FROM code_edges
+		WHERE repo=$1 AND (confidence_tier='AMBIGUOUS' OR confidence_score<=$3)
+		ORDER BY confidence_score
+		LIMIT $2`, repo, limit, ambiguousScoreThreshold)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	return scanEdgesWithConfidence(rows)
+}
+
+// EntityExplain returns EntityDetail plus labeled in/out neighbor entities.
+func (s *PGStore) EntityExplain(ctx context.Context, repo, id string) (EntityExplain, error) {
+	det, err := s.GetEntity(ctx, repo, id)
+	if err != nil {
+		return EntityExplain{}, err
+	}
+	outNeighbors, err := s.queryNeighborEntities(ctx, repo, id, true)
+	if err != nil {
+		return EntityExplain{}, err
+	}
+	inNeighbors, err := s.queryNeighborEntities(ctx, repo, id, false)
+	if err != nil {
+		return EntityExplain{}, err
+	}
+	if outNeighbors == nil {
+		outNeighbors = []NeighborEntity{}
+	}
+	if inNeighbors == nil {
+		inNeighbors = []NeighborEntity{}
+	}
+	return EntityExplain{EntityDetail: det, OutNeighbors: outNeighbors, InNeighbors: inNeighbors}, nil
+}
+
+func (s *PGStore) queryNeighborEntities(ctx context.Context, repo, id string, outbound bool) ([]NeighborEntity, error) {
+	var q string
+	if outbound {
+		q = `SELECT en.id, en.name, en.type, en.file_path, en.line_start, en.line_end
+			 FROM code_edges e
+			 JOIN code_entities en ON en.repo=e.repo AND en.id=e.to_id
+			 WHERE e.repo=$1 AND e.from_id=$2
+			 ORDER BY en.name`
+	} else {
+		q = `SELECT en.id, en.name, en.type, en.file_path, en.line_start, en.line_end
+			 FROM code_edges e
+			 JOIN code_entities en ON en.repo=e.repo AND en.id=e.from_id
+			 WHERE e.repo=$1 AND e.to_id=$2
+			 ORDER BY en.name`
+	}
+	rows, err := s.db.QueryContext(ctx, q, repo, id)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []NeighborEntity
+	for rows.Next() {
+		var ne NeighborEntity
+		var ls, le sql.NullInt64
+		if err := rows.Scan(&ne.ID, &ne.Name, &ne.Type, &ne.FilePath, &ls, &le); err != nil {
+			return nil, err
+		}
+		if ls.Valid {
+			ne.LineStart = int(ls.Int64)
+		}
+		if le.Valid {
+			ne.LineEnd = int(le.Int64)
+		}
+		out = append(out, ne)
+	}
+	return out, rows.Err()
+}
+
+func scanEdgesWithConfidence(rows *sql.Rows) ([]Edge, error) {
+	var out []Edge
+	for rows.Next() {
+		var e Edge
+		var raw []byte
+		if err := rows.Scan(&e.From, &e.To, &e.Relation, &e.SrcFile, &raw, &e.ConfidenceScore, &e.ConfidenceTier); err != nil {
+			return nil, err
+		}
+		e.Properties = scanProps(raw)
+		out = append(out, e)
 	}
 	return out, rows.Err()
 }

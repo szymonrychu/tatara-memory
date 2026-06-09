@@ -15,6 +15,7 @@ type fakeStore struct {
 	lastRel []string
 	lastDir string
 	lastDep int
+	lastCF  codegraph.ConfidenceFilter
 }
 
 func (f *fakeStore) Reconcile(_ context.Context, p codegraph.GraphPush) (codegraph.PushResult, error) {
@@ -27,8 +28,8 @@ func (f *fakeStore) SearchEntities(_ context.Context, _, _, _ string, _ int) ([]
 func (f *fakeStore) GetEntity(_ context.Context, _, _ string) (codegraph.EntityDetail, error) {
 	return codegraph.EntityDetail{}, nil
 }
-func (f *fakeStore) Neighbors(_ context.Context, _, _ string, relations []string, dir string, depth int) ([]codegraph.PathNode, error) {
-	f.lastRel, f.lastDir, f.lastDep = relations, dir, depth
+func (f *fakeStore) Neighbors(_ context.Context, _, _ string, relations []string, dir string, depth int, cf codegraph.ConfidenceFilter) ([]codegraph.PathNode, error) {
+	f.lastRel, f.lastDir, f.lastDep, f.lastCF = relations, dir, depth, cf
 	return nil, nil
 }
 func (f *fakeStore) FileImports(_ context.Context, _, _ string) ([]codegraph.Edge, error) {
@@ -37,6 +38,21 @@ func (f *fakeStore) FileImports(_ context.Context, _, _ string) ([]codegraph.Edg
 func (f *fakeStore) CountEntities(_ context.Context, _ string) (int, error) { return 0, nil }
 func (f *fakeStore) CrossRepo(_ context.Context, _, _ string) (codegraph.CrossRepoLinks, error) {
 	return codegraph.CrossRepoLinks{Consumers: []codegraph.CrossRef{}, Providers: []codegraph.CrossRef{}}, nil
+}
+func (f *fakeStore) ShortestPath(_ context.Context, _, _, _ string, _ []string, _ int) ([]codegraph.Entity, error) {
+	return nil, nil
+}
+func (f *fakeStore) ImportantEntities(_ context.Context, _ string, _ int) ([]codegraph.EntityDegree, error) {
+	return nil, nil
+}
+func (f *fakeStore) Stats(_ context.Context, _ string) (codegraph.GraphStats, error) {
+	return codegraph.GraphStats{EntitiesByType: map[string]int{}, EdgesByRelation: map[string]int{}, EdgesByTier: map[string]int{}}, nil
+}
+func (f *fakeStore) AmbiguousEdges(_ context.Context, _ string, _ int) ([]codegraph.Edge, error) {
+	return nil, nil
+}
+func (f *fakeStore) EntityExplain(_ context.Context, _, _ string) (codegraph.EntityExplain, error) {
+	return codegraph.EntityExplain{}, nil
 }
 
 func newSvc() (*codegraph.Service, *fakeStore) {
@@ -157,21 +173,56 @@ func TestCrossRepoPassThrough(t *testing.T) {
 func TestNamedTraversalsUseCorrectRelationSets(t *testing.T) {
 	svc, fs := newSvc()
 	ctx := context.Background()
+	noCF := codegraph.ConfidenceFilter{}
 
-	_, _ = svc.Callers(ctx, "r", "id", 0)
+	_, _ = svc.Callers(ctx, "r", "id", 0, noCF)
 	require.Equal(t, []string{"calls"}, fs.lastRel)
 	require.Equal(t, "in", fs.lastDir)
 	require.Equal(t, 3, fs.lastDep)
 
-	_, _ = svc.Callees(ctx, "r", "id", 50)
+	_, _ = svc.Callees(ctx, "r", "id", 50, noCF)
 	require.Equal(t, "out", fs.lastDir)
 	require.Equal(t, 10, fs.lastDep)
 
-	_, _ = svc.Dependents(ctx, "r", "id", 2)
+	_, _ = svc.Dependents(ctx, "r", "id", 2, noCF)
 	require.Equal(t, []string{"imports", "references", "depends_on"}, fs.lastRel)
 	require.Equal(t, "in", fs.lastDir)
 
-	_, _ = svc.ResourceGraph(ctx, "r", "id", 1)
+	_, _ = svc.ResourceGraph(ctx, "r", "id", 1, noCF)
 	require.Equal(t, []string{"depends_on", "references", "value_ref", "includes", "subchart", "module_source"}, fs.lastRel)
 	require.Equal(t, "out", fs.lastDir)
+}
+
+func TestConfidenceFilterPassedThrough(t *testing.T) {
+	svc, fs := newSvc()
+	ctx := context.Background()
+	cf := codegraph.ConfidenceFilter{MinConfidence: 0.8, Tier: codegraph.TierInferred}
+
+	_, _ = svc.Callers(ctx, "r", "id", 0, cf)
+	require.Equal(t, cf, fs.lastCF)
+}
+
+func TestNewServiceMethods(t *testing.T) {
+	svc, _ := newSvc()
+	ctx := context.Background()
+
+	chain, err := svc.ShortestPath(ctx, "r", "a", "b", nil, 5)
+	require.NoError(t, err)
+	require.Nil(t, chain)
+
+	degs, err := svc.ImportantEntities(ctx, "r", 10)
+	require.NoError(t, err)
+	require.Nil(t, degs)
+
+	stats, err := svc.Stats(ctx, "r")
+	require.NoError(t, err)
+	require.NotNil(t, stats.EntitiesByType)
+
+	edges, err := svc.AmbiguousEdges(ctx, "r", 10)
+	require.NoError(t, err)
+	require.Nil(t, edges)
+
+	ex, err := svc.EntityExplain(ctx, "r", "id")
+	require.NoError(t, err)
+	require.Equal(t, "", ex.ID)
 }

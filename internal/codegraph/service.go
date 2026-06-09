@@ -6,8 +6,12 @@ import (
 )
 
 const (
-	defaultSearchLimit = 50
-	maxSearchLimit     = 500
+	defaultSearchLimit    = 50
+	maxSearchLimit        = 500
+	defaultImportantLimit = 20
+	maxImportantLimit     = 200
+	defaultAmbiguousLimit = 50
+	maxAmbiguousLimit     = 500
 )
 
 // Service validates requests, applies traversal caps, and delegates to a Store.
@@ -80,33 +84,33 @@ func (s *Service) Entity(ctx context.Context, repo, id string) (EntityDetail, er
 }
 
 // Neighbors walks the given relations from id with capped depth and normalized direction.
-func (s *Service) Neighbors(ctx context.Context, repo, id string, relations []string, dir string, depth int) ([]PathNode, error) {
-	return s.store.Neighbors(ctx, repo, id, relations, normalizeDir(dir), clampDepth(depth))
+func (s *Service) Neighbors(ctx context.Context, repo, id string, relations []string, dir string, depth int, cf ConfidenceFilter) ([]PathNode, error) {
+	return s.store.Neighbors(ctx, repo, id, relations, normalizeDir(dir), clampDepth(depth), cf)
 }
 
 // Callers returns entities that call id (reverse "calls").
-func (s *Service) Callers(ctx context.Context, repo, id string, depth int) ([]PathNode, error) {
-	return s.Neighbors(ctx, repo, id, callRelations, "in", depth)
+func (s *Service) Callers(ctx context.Context, repo, id string, depth int, cf ConfidenceFilter) ([]PathNode, error) {
+	return s.Neighbors(ctx, repo, id, callRelations, "in", depth, cf)
 }
 
 // Callees returns entities that id calls (forward "calls").
-func (s *Service) Callees(ctx context.Context, repo, id string, depth int) ([]PathNode, error) {
-	return s.Neighbors(ctx, repo, id, callRelations, "out", depth)
+func (s *Service) Callees(ctx context.Context, repo, id string, depth int, cf ConfidenceFilter) ([]PathNode, error) {
+	return s.Neighbors(ctx, repo, id, callRelations, "out", depth, cf)
 }
 
 // Dependents returns entities that depend on id (reverse imports/references/depends_on).
-func (s *Service) Dependents(ctx context.Context, repo, id string, depth int) ([]PathNode, error) {
-	return s.Neighbors(ctx, repo, id, dependencyRelations, "in", depth)
+func (s *Service) Dependents(ctx context.Context, repo, id string, depth int, cf ConfidenceFilter) ([]PathNode, error) {
+	return s.Neighbors(ctx, repo, id, dependencyRelations, "in", depth, cf)
 }
 
 // Dependencies returns entities that id depends on (forward imports/references/depends_on).
-func (s *Service) Dependencies(ctx context.Context, repo, id string, depth int) ([]PathNode, error) {
-	return s.Neighbors(ctx, repo, id, dependencyRelations, "out", depth)
+func (s *Service) Dependencies(ctx context.Context, repo, id string, depth int, cf ConfidenceFilter) ([]PathNode, error) {
+	return s.Neighbors(ctx, repo, id, dependencyRelations, "out", depth, cf)
 }
 
 // ResourceGraph returns the forward infra-dependency subgraph from id (tf/helm relations).
-func (s *Service) ResourceGraph(ctx context.Context, repo, id string, depth int) ([]PathNode, error) {
-	return s.Neighbors(ctx, repo, id, resourceRelations, "out", depth)
+func (s *Service) ResourceGraph(ctx context.Context, repo, id string, depth int, cf ConfidenceFilter) ([]PathNode, error) {
+	return s.Neighbors(ctx, repo, id, resourceRelations, "out", depth, cf)
 }
 
 // FileImports returns the import edges originating in path.
@@ -117,4 +121,41 @@ func (s *Service) FileImports(ctx context.Context, repo, path string) ([]Edge, e
 // CrossRepo returns the cross-repo consumers and providers for an entity.
 func (s *Service) CrossRepo(ctx context.Context, repo, id string) (CrossRepoLinks, error) {
 	return s.store.CrossRepo(ctx, repo, id)
+}
+
+// ShortestPath returns the ordered entity chain from fromID to toID, or empty if unreachable.
+func (s *Service) ShortestPath(ctx context.Context, repo, fromID, toID string, relations []string, depth int) ([]Entity, error) {
+	return s.store.ShortestPath(ctx, repo, fromID, toID, relations, clampDepth(depth))
+}
+
+// ImportantEntities returns entities ranked by degree DESC.
+func (s *Service) ImportantEntities(ctx context.Context, repo string, limit int) ([]EntityDegree, error) {
+	if limit <= 0 {
+		limit = defaultImportantLimit
+	}
+	if limit > maxImportantLimit {
+		limit = maxImportantLimit
+	}
+	return s.store.ImportantEntities(ctx, repo, limit)
+}
+
+// Stats returns aggregate counts for a repo's code graph.
+func (s *Service) Stats(ctx context.Context, repo string) (GraphStats, error) {
+	return s.store.Stats(ctx, repo)
+}
+
+// AmbiguousEdges returns edges with low confidence.
+func (s *Service) AmbiguousEdges(ctx context.Context, repo string, limit int) ([]Edge, error) {
+	if limit <= 0 {
+		limit = defaultAmbiguousLimit
+	}
+	if limit > maxAmbiguousLimit {
+		limit = maxAmbiguousLimit
+	}
+	return s.store.AmbiguousEdges(ctx, repo, limit)
+}
+
+// EntityExplain returns EntityDetail plus labeled neighbor entities.
+func (s *Service) EntityExplain(ctx context.Context, repo, id string) (EntityExplain, error) {
+	return s.store.EntityExplain(ctx, repo, id)
 }

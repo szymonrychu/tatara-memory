@@ -141,6 +141,86 @@ func TestHyperedgeAndGraphPushJSON(t *testing.T) {
 	}
 }
 
+func TestValidTiers(t *testing.T) {
+	if !ValidTiers[TierExtracted] || !ValidTiers[TierInferred] || !ValidTiers[TierAmbiguous] {
+		t.Fatal("ValidTiers must contain all three tier constants")
+	}
+	if ValidTiers["INVALID"] {
+		t.Fatal("ValidTiers must not contain unknown values")
+	}
+}
+
+func TestConfidenceFilterZeroIsNoOp(t *testing.T) {
+	f := ConfidenceFilter{}
+	if f.MinConfidence != 0 || f.Tier != "" {
+		t.Fatal("zero ConfidenceFilter should have no filtering")
+	}
+}
+
+func TestEntityDegreeJSON(t *testing.T) {
+	ed := EntityDegree{Entity: Entity{ID: "e1", Name: "foo", Type: "go_func"}, Degree: 5}
+	b, err := json.Marshal(ed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]interface{}
+	_ = json.Unmarshal(b, &m)
+	if m["degree"] != float64(5) {
+		t.Fatalf("degree field wrong: %v", m["degree"])
+	}
+	if m["id"] != "e1" {
+		t.Fatalf("id field wrong: %v", m["id"])
+	}
+}
+
+func TestGraphStatsJSON(t *testing.T) {
+	gs := GraphStats{
+		Entities:         10,
+		Edges:            5,
+		EntitiesByType:   map[string]int{"go_func": 10},
+		EdgesByRelation:  map[string]int{"calls": 5},
+		EdgesByTier:      map[string]int{TierExtracted: 5},
+		IsolatedEntities: 1,
+		ImportCycles:     0,
+	}
+	b, err := json.Marshal(gs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]interface{}
+	_ = json.Unmarshal(b, &m)
+	if m["entities"] != float64(10) {
+		t.Fatalf("entities field wrong: %v", m["entities"])
+	}
+	if m["isolated_entities"] != float64(1) {
+		t.Fatalf("isolated_entities wrong: %v", m["isolated_entities"])
+	}
+}
+
+func TestEntityExplainJSON(t *testing.T) {
+	ex := EntityExplain{
+		EntityDetail: EntityDetail{
+			Entity:   Entity{ID: "e1", Name: "foo", Type: "go_func"},
+			OutEdges: []Edge{{From: "e1", To: "e2", Relation: "calls", SrcFile: "a.go"}},
+			InEdges:  nil,
+		},
+		OutNeighbors: []NeighborEntity{{ID: "e2", Name: "bar", Type: "go_func"}},
+		InNeighbors:  []NeighborEntity{},
+	}
+	b, err := json.Marshal(ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]interface{}
+	_ = json.Unmarshal(b, &m)
+	if _, ok := m["out_neighbors"]; !ok {
+		t.Fatal("out_neighbors missing from json")
+	}
+	if _, ok := m["in_neighbors"]; !ok {
+		t.Fatal("in_neighbors missing from json")
+	}
+}
+
 func TestConfidenceFor(t *testing.T) {
 	cases := []struct {
 		name     string
