@@ -35,7 +35,7 @@ func TestResumeSchedulesAllDespiteSmallBuffer(t *testing.T) {
 		}
 	}
 
-	p := newPool(store, slowRunner{}, 1, 1)
+	p := newPool(store, slowRunner{}, 1, 1, nil)
 	p.Start(ctx)
 	defer p.Stop()
 

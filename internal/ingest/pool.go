@@ -15,11 +15,18 @@ type itemRunner interface {
 	CreateMemory(ctx context.Context, m memory.Memory) (memory.Memory, error)
 }
 
+// SourceSink records that a track_id was produced from a repo/file. The memory
+// SourceStore satisfies it. May be nil (indexing disabled).
+type SourceSink interface {
+	Add(ctx context.Context, repo, filePath, trackID string) error
+}
+
 // Pool is an async worker pool that processes queued ingest jobs.
 type Pool struct {
 	store   JobStore
 	runner  itemRunner
 	size    int
+	sources SourceSink
 	notify  chan string
 	stop    chan struct{}
 	wg      sync.WaitGroup
@@ -29,10 +36,16 @@ type Pool struct {
 
 // NewPool returns a Pool backed by the given store and runner with size worker goroutines.
 func NewPool(store JobStore, runner itemRunner, size int) *Pool {
-	return newPool(store, runner, size, 256)
+	return newPool(store, runner, size, 256, nil)
 }
 
-func newPool(store JobStore, runner itemRunner, size, buf int) *Pool {
+// NewPoolWithSources is NewPool plus a sink that indexes (repo, file_path,
+// track_id) after each successful CreateMemory. sources may be nil.
+func NewPoolWithSources(store JobStore, runner itemRunner, size int, sources SourceSink) *Pool {
+	return newPool(store, runner, size, 256, sources)
+}
+
+func newPool(store JobStore, runner itemRunner, size, buf int, sources SourceSink) *Pool {
 	if size < 1 {
 		size = 1
 	}
@@ -40,11 +53,12 @@ func newPool(store JobStore, runner itemRunner, size, buf int) *Pool {
 		buf = 1
 	}
 	return &Pool{
-		store:  store,
-		runner: runner,
-		size:   size,
-		notify: make(chan string, buf),
-		stop:   make(chan struct{}),
+		store:   store,
+		runner:  runner,
+		size:    size,
+		sources: sources,
+		notify:  make(chan string, buf),
+		stop:    make(chan struct{}),
 	}
 }
 
@@ -160,10 +174,22 @@ func (p *Pool) runJob(ctx context.Context, jobID string) {
 }
 
 func (p *Pool) processItem(ctx context.Context, it memory.IngestItem) error {
-	_, err := p.runner.CreateMemory(ctx, memory.Memory{
+	created, err := p.runner.CreateMemory(ctx, memory.Memory{
 		ID:       it.IdempotencyKey,
 		Text:     it.Text,
 		Metadata: it.Metadata,
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	if p.sources != nil {
+		repo := it.Metadata["repo"]
+		file := it.Metadata["file_path"]
+		if repo != "" && file != "" && created.ID != "" {
+			if err := p.sources.Add(ctx, repo, file, created.ID); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

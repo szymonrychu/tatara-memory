@@ -40,8 +40,46 @@ const (
 	maxDepth     = 10
 )
 
+// Phase 0 entity-type constants (doc/concept/rationale nodes flow through
+// Entities, not a separate array). Locked by the Phase 0 contract.
+const (
+	EntityDocFile    = "doc_file"
+	EntityDocSection = "doc_section"
+	EntityConcept    = "concept"
+	EntityRationale  = "rationale"
+)
+
+// Phase 0 semantic relation constants (reserved now, emitted Phase 2).
+const (
+	RelConceptuallyRelated = "conceptually_related_to"
+	RelSemanticallySimilar = "semantically_similar_to"
+	RelRationaleFor        = "rationale_for"
+	RelSharesDataWith      = "shares_data_with"
+	RelCites               = "cites"
+)
+
+// Confidence tiers for code edges. Mapping (per Phase 0 lock):
+// 1.0 -> EXTRACTED; (0.3,1) -> INFERRED; <=0.3 -> AMBIGUOUS.
+const (
+	TierExtracted = "EXTRACTED"
+	TierInferred  = "INFERRED"
+	TierAmbiguous = "AMBIGUOUS"
+)
+
+// TierFor maps a confidence score to its tier.
+func TierFor(score float64) string {
+	switch {
+	case score >= 1.0:
+		return TierExtracted
+	case score <= 0.3:
+		return TierAmbiguous
+	default:
+		return TierInferred
+	}
+}
+
 // Entity is a node in the code graph (a package, type, function, resource,
-// template, value key, file, or repo root). The ID is a canonical
+// template, value key, file, doc, concept, or repo root). The ID is a canonical
 // "<lang>:<kind>:<fqn>" string and is treated as opaque by the store.
 type Entity struct {
 	ID          string            `json:"id"`
@@ -49,18 +87,26 @@ type Entity struct {
 	Type        string            `json:"type"`
 	Description string            `json:"description,omitempty"`
 	FilePath    string            `json:"file_path"`
+	LineStart   int               `json:"line_start,omitempty"`
+	LineEnd     int               `json:"line_end,omitempty"`
+	SourceURL   string            `json:"source_url,omitempty"`
+	Author      string            `json:"author,omitempty"`
+	CapturedAt  string            `json:"captured_at,omitempty"`
 	Properties  map[string]string `json:"properties,omitempty"`
 }
 
 // Edge is a directed, typed relationship between two entities. SrcFile is the
 // file that owns the edge (where the reference originates) and is the unit of
-// file-granular replacement.
+// file-granular replacement. ConfidenceScore/ConfidenceTier are promoted to
+// typed columns on reconcile (DEFAULT 1.0/'EXTRACTED' when the producer omits).
 type Edge struct {
-	From       string            `json:"from"`
-	To         string            `json:"to"`
-	Relation   string            `json:"relation"`
-	SrcFile    string            `json:"src_file"`
-	Properties map[string]string `json:"properties,omitempty"`
+	From            string            `json:"from"`
+	To              string            `json:"to"`
+	Relation        string            `json:"relation"`
+	SrcFile         string            `json:"src_file"`
+	ConfidenceScore float64           `json:"confidence_score,omitempty"`
+	ConfidenceTier  string            `json:"confidence_tier,omitempty"`
+	Properties      map[string]string `json:"properties,omitempty"`
 }
 
 // Symbol roles for cross-repo resolution.
@@ -93,16 +139,29 @@ type CrossRepoLinks struct {
 	Providers []CrossRef `json:"providers"` // others providing what this entity requires
 }
 
+// Hyperedge is a genuinely n-ary relationship over 3+ entities, owned by SrcFile
+// and reconciled per-file like edges. Empty until Phase 2.
+type Hyperedge struct {
+	ID              string            `json:"id"`
+	Label           string            `json:"label"`
+	Relation        string            `json:"relation"` // participate_in|implement|form
+	ConfidenceScore float64           `json:"confidence_score,omitempty"`
+	SrcFile         string            `json:"src_file"`
+	Members         []string          `json:"members"` // entity IDs (3+)
+	Properties      map[string]string `json:"properties,omitempty"`
+}
+
 // GraphPush is one ingest request: the changed file set plus the entities and
 // edges those files own. Reconciliation deletes the prior graph owned by Files
-// then inserts Entities and Edges, in one transaction.
+// then inserts Entities, Edges, Symbols, and Hyperedges, in one transaction.
 type GraphPush struct {
-	Repo     string      `json:"repo"`
-	Commit   string      `json:"commit,omitempty"`
-	Files    []string    `json:"files"`
-	Entities []Entity    `json:"entities"`
-	Edges    []Edge      `json:"edges"`
-	Symbols  []SymbolRow `json:"symbols,omitempty"`
+	Repo       string      `json:"repo"`
+	Commit     string      `json:"commit,omitempty"`
+	Files      []string    `json:"files"`
+	Entities   []Entity    `json:"entities"`
+	Edges      []Edge      `json:"edges"`
+	Symbols    []SymbolRow `json:"symbols,omitempty"`
+	Hyperedges []Hyperedge `json:"hyperedges,omitempty"`
 }
 
 // PushResult summarises a completed reconciliation.

@@ -45,8 +45,8 @@ func scanProps(raw []byte) map[string]string {
 	return m
 }
 
-// Reconcile deletes the prior graph owned by p.Files then inserts p.Entities and
-// p.Edges, all in a single transaction.
+// Reconcile deletes the prior graph owned by p.Files then inserts p.Entities,
+// p.Edges, p.Symbols, and p.Hyperedges, all in a single transaction.
 func (s *PGStore) Reconcile(ctx context.Context, p GraphPush) (PushResult, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -64,39 +64,84 @@ func (s *PGStore) Reconcile(ctx context.Context, p GraphPush) (PushResult, error
 		if _, err := tx.ExecContext(ctx, `DELETE FROM cross_repo_symbols WHERE repo=$1 AND src_file=$2`, p.Repo, f); err != nil {
 			return PushResult{}, err
 		}
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM code_hyperedge_members WHERE repo=$1 AND hyperedge_id IN (
+				SELECT id FROM code_hyperedges WHERE repo=$1 AND src_file=$2)`, p.Repo, f); err != nil {
+			return PushResult{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM code_hyperedges WHERE repo=$1 AND src_file=$2`, p.Repo, f); err != nil {
+			return PushResult{}, err
+		}
 	}
 
 	for _, e := range p.Entities {
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO code_entities(repo, id, name, type, description, file_path, properties)
-			VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)
+			INSERT INTO code_entities(repo, id, name, type, description, file_path, properties,
+				line_start, line_end, source_url, author, captured_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12)
 			ON CONFLICT (repo, id) DO UPDATE SET
 				name=EXCLUDED.name, type=EXCLUDED.type, description=EXCLUDED.description,
-				file_path=EXCLUDED.file_path, properties=EXCLUDED.properties`,
-			p.Repo, e.ID, e.Name, e.Type, e.Description, e.FilePath, marshalProps(e.Properties)); err != nil {
+				file_path=EXCLUDED.file_path, properties=EXCLUDED.properties,
+				line_start=EXCLUDED.line_start, line_end=EXCLUDED.line_end,
+				source_url=EXCLUDED.source_url, author=EXCLUDED.author, captured_at=EXCLUDED.captured_at`,
+			p.Repo, e.ID, e.Name, e.Type, e.Description, e.FilePath, marshalProps(e.Properties),
+			nullInt(e.LineStart), nullInt(e.LineEnd), nullStr(e.SourceURL), nullStr(e.Author), nullTime(e.CapturedAt)); err != nil {
 			return PushResult{}, err
 		}
 	}
 
 	for _, e := range p.Edges {
+		score := e.ConfidenceScore
+		tier := e.ConfidenceTier
+		if score == 0 && tier == "" {
+			score, tier = 1.0, TierExtracted
+		} else if tier == "" {
+			tier = TierFor(score)
+		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO code_edges(repo, from_id, to_id, relation, src_file, properties)
-			VALUES ($1,$2,$3,$4,$5,$6::jsonb)
+			INSERT INTO code_edges(repo, from_id, to_id, relation, src_file, properties, confidence_score, confidence_tier)
+			VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8)
 			ON CONFLICT (repo, from_id, to_id, relation) DO UPDATE SET
-				src_file=EXCLUDED.src_file, properties=EXCLUDED.properties`,
-			p.Repo, e.From, e.To, e.Relation, e.SrcFile, marshalProps(e.Properties)); err != nil {
+				src_file=EXCLUDED.src_file, properties=EXCLUDED.properties,
+				confidence_score=EXCLUDED.confidence_score, confidence_tier=EXCLUDED.confidence_tier`,
+			p.Repo, e.From, e.To, e.Relation, e.SrcFile, marshalProps(e.Properties), score, tier); err != nil {
 			return PushResult{}, err
 		}
 	}
 
-	for _, s := range p.Symbols {
+	for _, sym := range p.Symbols {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO cross_repo_symbols(repo, symbol, lang, kind, role, entity_id, src_file)
 			VALUES ($1,$2,$3,$4,$5,$6,$7)
 			ON CONFLICT (repo, symbol, role, entity_id) DO UPDATE SET
 			    lang=EXCLUDED.lang, kind=EXCLUDED.kind, src_file=EXCLUDED.src_file`,
-			p.Repo, s.Symbol, s.Lang, s.Kind, s.Role, s.EntityID, s.SrcFile); err != nil {
+			p.Repo, sym.Symbol, sym.Lang, sym.Kind, sym.Role, sym.EntityID, sym.SrcFile); err != nil {
 			return PushResult{}, err
+		}
+	}
+
+	for _, h := range p.Hyperedges {
+		score := h.ConfidenceScore
+		if score == 0 {
+			score = 1.0
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO code_hyperedges(repo, id, label, relation, confidence_score, src_file, properties)
+			VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)
+			ON CONFLICT (repo, id) DO UPDATE SET
+				label=EXCLUDED.label, relation=EXCLUDED.relation,
+				confidence_score=EXCLUDED.confidence_score, src_file=EXCLUDED.src_file, properties=EXCLUDED.properties`,
+			p.Repo, h.ID, h.Label, h.Relation, score, h.SrcFile, marshalProps(h.Properties)); err != nil {
+			return PushResult{}, err
+		}
+		for _, m := range h.Members {
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO code_hyperedge_members(repo, hyperedge_id, entity_id)
+				VALUES ($1,$2,$3)
+				ON CONFLICT (repo, hyperedge_id, entity_id) DO NOTHING`,
+				p.Repo, h.ID, m); err != nil {
+				return PushResult{}, err
+			}
 		}
 	}
 
@@ -329,4 +374,25 @@ func scanEdges(rows *sql.Rows) ([]Edge, error) {
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+func nullInt(v int) any {
+	if v == 0 {
+		return nil
+	}
+	return v
+}
+
+func nullStr(v string) any {
+	if v == "" {
+		return nil
+	}
+	return v
+}
+
+func nullTime(v string) any {
+	if v == "" {
+		return nil
+	}
+	return v
 }
