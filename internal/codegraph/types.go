@@ -156,18 +156,36 @@ type Hyperedge struct {
 	Properties      map[string]string `json:"properties,omitempty"`
 }
 
+// FileSHA is one file's content hash, used by the semantic-misses cache check
+// and as the per-path value of GraphPush.FileSHAs.
+type FileSHA struct {
+	Path       string `json:"path"`
+	ContentSHA string `json:"content_sha"`
+}
+
 // GraphPush is one ingest request: the changed file set plus the entities and
 // edges those files own. Reconciliation deletes the prior graph owned by Files
-// then inserts Entities, Edges, Symbols, and Hyperedges, in one transaction.
+// (scoped by Extractor) then inserts Entities, Edges, Symbols, and Hyperedges,
+// in one transaction. When FileSHAs is set the semantic_extractions cache is
+// upserted for those paths.
 type GraphPush struct {
-	Repo       string      `json:"repo"`
-	Commit     string      `json:"commit,omitempty"`
-	Files      []string    `json:"files"`
-	Entities   []Entity    `json:"entities"`
-	Edges      []Edge      `json:"edges"`
-	Symbols    []SymbolRow `json:"symbols,omitempty"`
-	Hyperedges []Hyperedge `json:"hyperedges,omitempty"`
+	Repo       string            `json:"repo"`
+	Commit     string            `json:"commit,omitempty"`
+	Extractor  string            `json:"extractor,omitempty"`
+	Files      []string          `json:"files"`
+	Entities   []Entity          `json:"entities"`
+	Edges      []Edge            `json:"edges"`
+	Symbols    []SymbolRow       `json:"symbols,omitempty"`
+	Hyperedges []Hyperedge       `json:"hyperedges,omitempty"`
+	FileSHAs   map[string]string `json:"file_shas,omitempty"`
 }
+
+// ExtractorAST is the default origin tag written to graph rows when a push omits
+// Extractor. Reconcile scopes its per-src_file deletes by this tag.
+const ExtractorAST = "ast"
+
+// ExtractorSemantic tags rows produced by the LLM semantic extraction stage.
+const ExtractorSemantic = "semantic"
 
 // PushResult summarises a completed reconciliation.
 type PushResult struct {

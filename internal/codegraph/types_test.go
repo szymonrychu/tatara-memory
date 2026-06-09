@@ -3,6 +3,8 @@ package codegraph
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestSymbolRowTypes(t *testing.T) {
@@ -240,4 +242,30 @@ func TestConfidenceFor(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGraphPushExtractorFileSHAsJSONTags(t *testing.T) {
+	p := GraphPush{
+		Repo:      "r",
+		Extractor: "semantic",
+		Files:     []string{"a.go"},
+		FileSHAs:  map[string]string{"a.go": "sha1"},
+	}
+	b, err := json.Marshal(p)
+	require.NoError(t, err)
+	s := string(b)
+	require.Contains(t, s, `"extractor":"semantic"`)
+	require.Contains(t, s, `"file_shas":{"a.go":"sha1"}`)
+
+	// omitempty: extractor and file_shas absent when zero
+	b2, err := json.Marshal(GraphPush{Repo: "r", Files: []string{"a.go"}})
+	require.NoError(t, err)
+	require.NotContains(t, string(b2), "extractor")
+	require.NotContains(t, string(b2), "file_shas")
+
+	// FileSHA decodes path/content_sha tags
+	var fs FileSHA
+	require.NoError(t, json.Unmarshal([]byte(`{"path":"a.go","content_sha":"deadbeef"}`), &fs))
+	require.Equal(t, "a.go", fs.Path)
+	require.Equal(t, "deadbeef", fs.ContentSHA)
 }
