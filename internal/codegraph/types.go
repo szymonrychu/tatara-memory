@@ -187,6 +187,37 @@ const ExtractorAST = "ast"
 // ExtractorSemantic tags rows produced by the LLM semantic extraction stage.
 const ExtractorSemantic = "semantic"
 
+// RelatedResult is a semantic neighbor of an entity: the target entity plus the
+// semantic relation and confidence of the edge that reached it.
+type RelatedResult struct {
+	Entity
+	Relation        string  `json:"relation"`
+	ConfidenceScore float64 `json:"confidence_score"`
+	ConfidenceTier  string  `json:"confidence_tier"`
+}
+
+// CommunityRow is one detected community with its label, size, and cohesion.
+type CommunityRow struct {
+	Community int     `json:"community"`
+	Label     string  `json:"label"`
+	Size      int     `json:"size"`
+	Cohesion  float64 `json:"cohesion"`
+}
+
+// Bridge is a high-betweenness entity that connects more than one community.
+type Bridge struct {
+	Entity
+	Betweenness         float64 `json:"betweenness"`
+	Community           int     `json:"community"`
+	NeighborCommunities int     `json:"neighbor_communities"`
+}
+
+// ImportantBy is the ranking column for ImportantEntitiesBy.
+const (
+	ImportantByDegree      = "degree"
+	ImportantByBetweenness = "betweenness"
+)
+
 // PushResult summarises a completed reconciliation.
 type PushResult struct {
 	Repo             string `json:"repo"`

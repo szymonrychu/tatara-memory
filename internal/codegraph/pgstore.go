@@ -756,3 +756,272 @@ func nullTime(v string) any {
 	}
 	return v
 }
+
+// SemanticMisses returns the subset of files whose stored content_sha differs
+// from the supplied sha or is absent from the semantic_extractions cache.
+// These are the paths the ingester must re-extract with the LLM.
+func (s *PGStore) SemanticMisses(ctx context.Context, repo string, files []FileSHA) ([]string, error) {
+	var out []string
+	for _, f := range files {
+		var stored string
+		err := s.db.QueryRowContext(ctx,
+			`SELECT content_sha FROM semantic_extractions WHERE repo=$1 AND file_path=$2`,
+			repo, f.Path).Scan(&stored)
+		if errors.Is(err, sql.ErrNoRows) {
+			out = append(out, f.Path)
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if stored != f.ContentSHA {
+			out = append(out, f.Path)
+		}
+	}
+	return out, nil
+}
+
+// semanticRelations is the relation vocabulary served by Related when the caller
+// does not narrow it.
+var semanticRelations = []string{
+	RelConceptuallyRelated,
+	RelSemanticallySimilar,
+	RelRationaleFor,
+	RelSharesDataWith,
+	RelCites,
+}
+
+// Related returns the semantic-extractor neighbors of id: targets reached by a
+// semantic relation edge with confidence_score >= minConfidence. When relations
+// is empty the full semantic relation vocabulary is used.
+func (s *PGStore) Related(ctx context.Context, repo, id string, relations []string, minConfidence float64) ([]RelatedResult, error) {
+	rels := relations
+	if len(rels) == 0 {
+		rels = semanticRelations
+	}
+	relStr := strings.Join(rels, ",")
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT en.id, en.name, en.type, en.description, en.file_path, en.properties,
+		       e.relation, e.confidence_score, e.confidence_tier
+		FROM code_edges e
+		JOIN code_entities en ON en.repo=e.repo AND en.id=e.to_id
+		WHERE e.repo=$1 AND e.from_id=$2
+		  AND e.extractor='semantic'
+		  AND e.relation = ANY(string_to_array($3, ','))
+		  AND e.confidence_score >= $4
+		ORDER BY e.confidence_score DESC, en.id`,
+		repo, id, relStr, minConfidence)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []RelatedResult
+	for rows.Next() {
+		var r RelatedResult
+		var raw []byte
+		if err := rows.Scan(&r.ID, &r.Name, &r.Type, &r.Description, &r.FilePath, &raw,
+			&r.Relation, &r.ConfidenceScore, &r.ConfidenceTier); err != nil {
+			return nil, err
+		}
+		r.Properties = scanProps(raw)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// Hyperedges returns the hyperedges in repo. When entityID is non-empty only
+// hyperedges whose members include it are returned.
+func (s *PGStore) Hyperedges(ctx context.Context, repo, entityID string) ([]Hyperedge, error) {
+	var rows *sql.Rows
+	var err error
+	if entityID == "" {
+		rows, err = s.db.QueryContext(ctx, `
+			SELECT id, label, relation, confidence_score, src_file, properties
+			FROM code_hyperedges WHERE repo=$1 ORDER BY id`, repo)
+	} else {
+		rows, err = s.db.QueryContext(ctx, `
+			SELECT h.id, h.label, h.relation, h.confidence_score, h.src_file, h.properties
+			FROM code_hyperedges h
+			JOIN code_hyperedge_members m ON m.repo=h.repo AND m.hyperedge_id=h.id
+			WHERE h.repo=$1 AND m.entity_id=$2 ORDER BY h.id`, repo, entityID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Hyperedge
+	for rows.Next() {
+		h, err := s.scanHyperedge(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i := range out {
+		members, err := s.hyperedgeMembers(ctx, repo, out[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		out[i].Members = members
+	}
+	return out, nil
+}
+
+// Hyperedge returns a single hyperedge with its members, or ErrEntityNotFound.
+func (s *PGStore) Hyperedge(ctx context.Context, repo, id string) (Hyperedge, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, label, relation, confidence_score, src_file, properties
+		FROM code_hyperedges WHERE repo=$1 AND id=$2`, repo, id)
+	h, err := s.scanHyperedge(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Hyperedge{}, ErrEntityNotFound
+		}
+		return Hyperedge{}, err
+	}
+	members, err := s.hyperedgeMembers(ctx, repo, id)
+	if err != nil {
+		return Hyperedge{}, err
+	}
+	h.Members = members
+	return h, nil
+}
+
+func (s *PGStore) scanHyperedge(r rowScanner) (Hyperedge, error) {
+	var h Hyperedge
+	var raw []byte
+	if err := r.Scan(&h.ID, &h.Label, &h.Relation, &h.ConfidenceScore, &h.SrcFile, &raw); err != nil {
+		return Hyperedge{}, err
+	}
+	h.Properties = scanProps(raw)
+	return h, nil
+}
+
+func (s *PGStore) hyperedgeMembers(ctx context.Context, repo, id string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT entity_id FROM code_hyperedge_members WHERE repo=$1 AND hyperedge_id=$2 ORDER BY entity_id`, repo, id)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var m string
+		if err := rows.Scan(&m); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// Communities returns the detected communities for a repo, ordered by size DESC.
+func (s *PGStore) Communities(ctx context.Context, repo string) ([]CommunityRow, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT community, label, size, cohesion
+		FROM code_communities WHERE repo=$1 ORDER BY size DESC, community`, repo)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []CommunityRow
+	for rows.Next() {
+		var c CommunityRow
+		if err := rows.Scan(&c.Community, &c.Label, &c.Size, &c.Cohesion); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// Community returns the member entities of one community.
+func (s *PGStore) Community(ctx context.Context, repo string, community int) ([]Entity, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, name, type, description, file_path, properties
+		FROM code_entities WHERE repo=$1 AND community=$2 ORDER BY id`, repo, community)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Entity
+	for rows.Next() {
+		e, err := scanEntity(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// Bridges returns the highest-betweenness entities whose neighbors span more
+// than one community, ordered by betweenness DESC.
+func (s *PGStore) Bridges(ctx context.Context, repo string, limit int) ([]Bridge, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		WITH neighbor_comms AS (
+			SELECT en.id,
+			       count(DISTINCT nb.community) AS nc
+			FROM code_entities en
+			JOIN code_edges e ON e.repo=en.repo AND (e.from_id=en.id OR e.to_id=en.id)
+			JOIN code_entities nb ON nb.repo=en.repo
+			  AND nb.id = CASE WHEN e.from_id=en.id THEN e.to_id ELSE e.from_id END
+			WHERE en.repo=$1 AND nb.community IS NOT NULL
+			GROUP BY en.id
+		)
+		SELECT en.id, en.name, en.type, en.description, en.file_path, en.properties,
+		       COALESCE(en.betweenness, 0), COALESCE(en.community, 0), nc.nc
+		FROM code_entities en
+		JOIN neighbor_comms nc ON nc.id=en.id
+		WHERE en.repo=$1 AND nc.nc > 1
+		ORDER BY en.betweenness DESC NULLS LAST, en.id
+		LIMIT $2`, repo, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Bridge
+	for rows.Next() {
+		var b Bridge
+		var raw []byte
+		if err := rows.Scan(&b.ID, &b.Name, &b.Type, &b.Description, &b.FilePath, &raw,
+			&b.Betweenness, &b.Community, &b.NeighborCommunities); err != nil {
+			return nil, err
+		}
+		b.Properties = scanProps(raw)
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// ImportantEntitiesBy ranks entities by the chosen column. "betweenness" uses the
+// persisted analytics column; anything else falls back to live degree.
+func (s *PGStore) ImportantEntitiesBy(ctx context.Context, repo, by string, limit int) ([]EntityDegree, error) {
+	if by != ImportantByBetweenness {
+		return s.ImportantEntities(ctx, repo, limit)
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, name, type, description, file_path, properties, COALESCE(degree, 0)
+		FROM code_entities
+		WHERE repo=$1
+		ORDER BY betweenness DESC NULLS LAST, id
+		LIMIT $2`, repo, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []EntityDegree
+	for rows.Next() {
+		var ed EntityDegree
+		var raw []byte
+		if err := rows.Scan(&ed.ID, &ed.Name, &ed.Type, &ed.Description, &ed.FilePath, &raw, &ed.Degree); err != nil {
+			return nil, err
+		}
+		ed.Properties = scanProps(raw)
+		out = append(out, ed)
+	}
+	return out, rows.Err()
+}

@@ -54,6 +54,34 @@ func (f *fakeStore) AmbiguousEdges(_ context.Context, _ string, _ int) ([]codegr
 func (f *fakeStore) EntityExplain(_ context.Context, _, _ string) (codegraph.EntityExplain, error) {
 	return codegraph.EntityExplain{}, nil
 }
+func (f *fakeStore) SemanticMisses(_ context.Context, _ string, _ []codegraph.FileSHA) ([]string, error) {
+	return nil, nil
+}
+func (f *fakeStore) Related(_ context.Context, _, _ string, _ []string, _ float64) ([]codegraph.RelatedResult, error) {
+	return nil, nil
+}
+func (f *fakeStore) Hyperedges(_ context.Context, _, _ string) ([]codegraph.Hyperedge, error) {
+	return nil, nil
+}
+func (f *fakeStore) Hyperedge(_ context.Context, _, _ string) (codegraph.Hyperedge, error) {
+	return codegraph.Hyperedge{}, nil
+}
+func (f *fakeStore) Communities(_ context.Context, _ string) ([]codegraph.CommunityRow, error) {
+	return nil, nil
+}
+func (f *fakeStore) Community(_ context.Context, _ string, _ int) ([]codegraph.Entity, error) {
+	return nil, nil
+}
+func (f *fakeStore) Bridges(_ context.Context, _ string, _ int) ([]codegraph.Bridge, error) {
+	return nil, nil
+}
+func (f *fakeStore) ImportantEntitiesBy(_ context.Context, _, _ string, _ int) ([]codegraph.EntityDegree, error) {
+	return nil, nil
+}
+func (f *fakeStore) DirtyRepos(_ context.Context, _ int) ([]string, error) { return nil, nil }
+func (f *fakeStore) RecomputeAnalytics(_ context.Context, _ string, _ codegraph.CommunityLabeler) error {
+	return nil
+}
 
 func newSvc() (*codegraph.Service, *fakeStore) {
 	fs := &fakeStore{}
