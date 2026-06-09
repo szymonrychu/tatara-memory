@@ -430,7 +430,7 @@ func handleSemanticMisses(cfg Config) http.HandlerFunc {
 		if misses == nil {
 			misses = []string{}
 		}
-		WriteJSON(w, http.StatusOK, map[string]interface{}{"misses": misses})
+		WriteJSON(w, http.StatusOK, misses)
 	}
 }
 

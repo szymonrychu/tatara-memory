@@ -420,11 +420,9 @@ func TestRoute_SemanticMisses(t *testing.T) {
 	payload := `{"repo":"r","files":[{"path":"a.go","content_sha":"s1"},{"path":"b.go","content_sha":"s2"}]}`
 	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/code-graph/semantic-misses", strings.NewReader(payload)))
 	require.Equal(t, http.StatusOK, rec.Code)
-	var body struct {
-		Misses []string `json:"misses"`
-	}
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
-	require.ElementsMatch(t, []string{"a.go", "b.go"}, body.Misses)
+	var misses []string
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &misses))
+	require.ElementsMatch(t, []string{"a.go", "b.go"}, misses)
 }
 
 func TestRoute_Communities(t *testing.T) {
