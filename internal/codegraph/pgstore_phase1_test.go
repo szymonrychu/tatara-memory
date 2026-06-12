@@ -199,18 +199,18 @@ func TestConfidenceFilteredTraversal_DropsLowConfidence(t *testing.T) {
 	require.NoError(t, err)
 
 	// Without filter: both neighbors
-	all, err := s.Neighbors(ctx, "cf", "cf:a", []string{"calls"}, "out", 3, codegraph.ConfidenceFilter{})
+	all, err := s.Neighbors(ctx, "cf", "cf:a", []string{"calls"}, "out", 3, 1000, codegraph.ConfidenceFilter{})
 	require.NoError(t, err)
 	require.Len(t, all, 2)
 
 	// With min_confidence=0.9: only cf:b
-	filtered, err := s.Neighbors(ctx, "cf", "cf:a", []string{"calls"}, "out", 3, codegraph.ConfidenceFilter{MinConfidence: 0.9})
+	filtered, err := s.Neighbors(ctx, "cf", "cf:a", []string{"calls"}, "out", 3, 1000, codegraph.ConfidenceFilter{MinConfidence: 0.9})
 	require.NoError(t, err)
 	require.Len(t, filtered, 1)
 	require.Equal(t, "cf:b", filtered[0].ID)
 
 	// With tier=EXTRACTED: no edges qualify (both are INFERRED and AMBIGUOUS)
-	byTier, err := s.Neighbors(ctx, "cf", "cf:a", []string{"calls"}, "out", 3, codegraph.ConfidenceFilter{Tier: codegraph.TierExtracted})
+	byTier, err := s.Neighbors(ctx, "cf", "cf:a", []string{"calls"}, "out", 3, 1000, codegraph.ConfidenceFilter{Tier: codegraph.TierExtracted})
 	require.NoError(t, err)
 	require.Empty(t, byTier)
 }

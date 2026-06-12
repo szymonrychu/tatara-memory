@@ -15,6 +15,7 @@ type fakeStore struct {
 	lastRel []string
 	lastDir string
 	lastDep int
+	lastLim int
 	lastCF  codegraph.ConfidenceFilter
 }
 
@@ -28,8 +29,8 @@ func (f *fakeStore) SearchEntities(_ context.Context, _, _, _ string, _ int) ([]
 func (f *fakeStore) GetEntity(_ context.Context, _, _ string) (codegraph.EntityDetail, error) {
 	return codegraph.EntityDetail{}, nil
 }
-func (f *fakeStore) Neighbors(_ context.Context, _, _ string, relations []string, dir string, depth int, cf codegraph.ConfidenceFilter) ([]codegraph.PathNode, error) {
-	f.lastRel, f.lastDir, f.lastDep, f.lastCF = relations, dir, depth, cf
+func (f *fakeStore) Neighbors(_ context.Context, _, _ string, relations []string, dir string, depth, limit int, cf codegraph.ConfidenceFilter) ([]codegraph.PathNode, error) {
+	f.lastRel, f.lastDir, f.lastDep, f.lastLim, f.lastCF = relations, dir, depth, limit, cf
 	return nil, nil
 }
 func (f *fakeStore) FileImports(_ context.Context, _, _ string) ([]codegraph.Edge, error) {
@@ -207,6 +208,7 @@ func TestNamedTraversalsUseCorrectRelationSets(t *testing.T) {
 	require.Equal(t, []string{"calls"}, fs.lastRel)
 	require.Equal(t, "in", fs.lastDir)
 	require.Equal(t, 3, fs.lastDep)
+	require.Equal(t, 1000, fs.lastLim) // named traversals get the default breadth cap
 
 	_, _ = svc.Callees(ctx, "r", "id", 50, noCF)
 	require.Equal(t, "out", fs.lastDir)
@@ -219,6 +221,21 @@ func TestNamedTraversalsUseCorrectRelationSets(t *testing.T) {
 	_, _ = svc.ResourceGraph(ctx, "r", "id", 1, noCF)
 	require.Equal(t, []string{"depends_on", "references", "value_ref", "includes", "subchart", "module_source"}, fs.lastRel)
 	require.Equal(t, "out", fs.lastDir)
+}
+
+func TestNeighborsClampsBreadthLimit(t *testing.T) {
+	svc, fs := newSvc()
+	ctx := context.Background()
+	noCF := codegraph.ConfidenceFilter{}
+
+	_, _ = svc.Neighbors(ctx, "r", "id", []string{"calls"}, "out", 0, 0, noCF)
+	require.Equal(t, 1000, fs.lastLim) // zero -> default
+
+	_, _ = svc.Neighbors(ctx, "r", "id", []string{"calls"}, "out", 0, 999999, noCF)
+	require.Equal(t, 5000, fs.lastLim) // over max -> capped
+
+	_, _ = svc.Neighbors(ctx, "r", "id", []string{"calls"}, "out", 0, 42, noCF)
+	require.Equal(t, 42, fs.lastLim) // in range -> passed through
 }
 
 func TestConfidenceFilterPassedThrough(t *testing.T) {

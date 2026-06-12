@@ -83,34 +83,36 @@ func (s *Service) Entity(ctx context.Context, repo, id string) (EntityDetail, er
 	return s.store.GetEntity(ctx, repo, id)
 }
 
-// Neighbors walks the given relations from id with capped depth and normalized direction.
-func (s *Service) Neighbors(ctx context.Context, repo, id string, relations []string, dir string, depth int, cf ConfidenceFilter) ([]PathNode, error) {
-	return s.store.Neighbors(ctx, repo, id, relations, normalizeDir(dir), clampDepth(depth), cf)
+// Neighbors walks the given relations from id with capped depth and breadth and
+// normalized direction. limit bounds the number of distinct nodes returned;
+// zero applies the default cap.
+func (s *Service) Neighbors(ctx context.Context, repo, id string, relations []string, dir string, depth, limit int, cf ConfidenceFilter) ([]PathNode, error) {
+	return s.store.Neighbors(ctx, repo, id, relations, normalizeDir(dir), clampDepth(depth), clampNeighborLimit(limit), cf)
 }
 
 // Callers returns entities that call id (reverse "calls").
 func (s *Service) Callers(ctx context.Context, repo, id string, depth int, cf ConfidenceFilter) ([]PathNode, error) {
-	return s.Neighbors(ctx, repo, id, callRelations, "in", depth, cf)
+	return s.Neighbors(ctx, repo, id, callRelations, "in", depth, 0, cf)
 }
 
 // Callees returns entities that id calls (forward "calls").
 func (s *Service) Callees(ctx context.Context, repo, id string, depth int, cf ConfidenceFilter) ([]PathNode, error) {
-	return s.Neighbors(ctx, repo, id, callRelations, "out", depth, cf)
+	return s.Neighbors(ctx, repo, id, callRelations, "out", depth, 0, cf)
 }
 
 // Dependents returns entities that depend on id (reverse imports/references/depends_on).
 func (s *Service) Dependents(ctx context.Context, repo, id string, depth int, cf ConfidenceFilter) ([]PathNode, error) {
-	return s.Neighbors(ctx, repo, id, dependencyRelations, "in", depth, cf)
+	return s.Neighbors(ctx, repo, id, dependencyRelations, "in", depth, 0, cf)
 }
 
 // Dependencies returns entities that id depends on (forward imports/references/depends_on).
 func (s *Service) Dependencies(ctx context.Context, repo, id string, depth int, cf ConfidenceFilter) ([]PathNode, error) {
-	return s.Neighbors(ctx, repo, id, dependencyRelations, "out", depth, cf)
+	return s.Neighbors(ctx, repo, id, dependencyRelations, "out", depth, 0, cf)
 }
 
 // ResourceGraph returns the forward infra-dependency subgraph from id (tf/helm relations).
 func (s *Service) ResourceGraph(ctx context.Context, repo, id string, depth int, cf ConfidenceFilter) ([]PathNode, error) {
-	return s.Neighbors(ctx, repo, id, resourceRelations, "out", depth, cf)
+	return s.Neighbors(ctx, repo, id, resourceRelations, "out", depth, 0, cf)
 }
 
 // FileImports returns the import edges originating in path.

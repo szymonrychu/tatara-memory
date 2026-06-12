@@ -44,7 +44,7 @@ func TestReadMethods(t *testing.T) {
 	require.ErrorIs(t, err, codegraph.ErrEntityNotFound)
 
 	noCF := codegraph.ConfidenceFilter{}
-	out, err := s.Neighbors(ctx, "r", "go:func:r/a.A", []string{"calls"}, "out", 3, noCF)
+	out, err := s.Neighbors(ctx, "r", "go:func:r/a.A", []string{"calls"}, "out", 3, 1000, noCF)
 	require.NoError(t, err)
 	ids := map[string]int{}
 	for _, n := range out {
@@ -54,7 +54,7 @@ func TestReadMethods(t *testing.T) {
 	require.Equal(t, 2, ids["go:func:r/c.C"])
 	require.NotContains(t, ids, "go:func:r/d.D")
 
-	in, err := s.Neighbors(ctx, "r", "go:func:r/c.C", []string{"calls"}, "in", 3, noCF)
+	in, err := s.Neighbors(ctx, "r", "go:func:r/c.C", []string{"calls"}, "in", 3, 1000, noCF)
 	require.NoError(t, err)
 	inIDs := map[string]bool{}
 	for _, n := range in {
@@ -63,7 +63,7 @@ func TestReadMethods(t *testing.T) {
 	require.True(t, inIDs["go:func:r/b.B"])
 	require.True(t, inIDs["go:func:r/a.A"])
 
-	d1, err := s.Neighbors(ctx, "r", "go:func:r/a.A", []string{"calls"}, "out", 1, noCF)
+	d1, err := s.Neighbors(ctx, "r", "go:func:r/a.A", []string{"calls"}, "out", 1, 1000, noCF)
 	require.NoError(t, err)
 	require.Len(t, d1, 1)
 	require.Equal(t, "go:func:r/b.B", d1[0].ID)
