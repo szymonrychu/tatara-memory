@@ -218,6 +218,45 @@ func TestPoolResumeRunningOnStart(t *testing.T) {
 	}, "resumed job did not terminate")
 }
 
+// TestPoolResumeReclaimsOrphanedItem covers the crash-mid-item case: an item is
+// claimed (status 'running') but the worker dies before MarkItemDone. Because
+// ClaimNextItem only claims 'pending', a plain resume would drain the job to a
+// short count (Done=0) and report Succeeded. Resume must reset the orphan to
+// 'pending' so it is reprocessed.
+func TestPoolResumeReclaimsOrphanedItem(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	store := ingest.NewMemStore()
+	require.NoError(t, store.CreateJob(ctx, memory.IngestJob{
+		ID: "orphan1", Status: memory.JobStatusRunning, Total: 1, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}, []memory.IngestItem{{IdempotencyKey: "k", Text: "ok"}}))
+
+	// Simulate a worker that claimed the item (marking it 'running') then crashed
+	// before marking it done.
+	_, ok, err := store.ClaimNextItem(ctx, "orphan1")
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	svc := memory.NewService(fake.New(), nil)
+	pool := ingest.NewPool(store, svc, 1)
+	pool.Start(ctx)
+	defer pool.Stop()
+	n, err := pool.Resume(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+
+	waitFor(t, func() bool {
+		j, _ := store.GetJob(ctx, "orphan1")
+		return j.Status.Terminal()
+	}, "resumed job did not terminate")
+
+	j, _ := store.GetJob(ctx, "orphan1")
+	require.Equal(t, memory.JobStatusSucceeded, j.Status)
+	require.Equal(t, 1, j.Done)
+	require.Equal(t, 0, j.Failed)
+}
+
 type capturingSources struct {
 	mu    sync.Mutex
 	added []addedSource

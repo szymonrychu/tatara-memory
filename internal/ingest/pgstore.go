@@ -206,6 +206,22 @@ func (s *PGStore) ListUnfinishedJobs(ctx context.Context) ([]string, error) {
 	return ids, rows.Err()
 }
 
+// ResetRunningItems moves items stuck in 'running' back to 'pending' for every
+// queued or running job, in a single statement. A crash between ClaimNextItem
+// and MarkItemDone leaves an item 'running' forever; resetting it on resume
+// lets ClaimNextItem (which only claims 'pending') pick it up again.
+func (s *PGStore) ResetRunningItems(ctx context.Context) (int, error) {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE ingest_job_items SET status='pending'
+		WHERE status='running'
+		  AND job_id IN (SELECT id FROM ingest_jobs WHERE status IN ('queued','running'))`)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
 func isUniqueViolation(err error) bool {
 	if err == nil {
 		return false

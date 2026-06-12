@@ -27,4 +27,10 @@ type JobStore interface {
 	// the same job cannot clobber each other's counts.
 	IncrementJobProgress(ctx context.Context, jobID string, itemErr *memory.IngestItemError) error
 	ListUnfinishedJobs(ctx context.Context) ([]string, error)
+	// ResetRunningItems moves items stuck in 'running' (a worker crashed
+	// mid-item, before MarkItemDone) back to 'pending' for all unfinished
+	// jobs. ClaimNextItem only claims 'pending', so without this an orphaned
+	// item is never reprocessed and its job drains to a short count. Called on
+	// Resume before workers start claiming. Returns how many items were reset.
+	ResetRunningItems(ctx context.Context) (int, error)
 }
