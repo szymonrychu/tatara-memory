@@ -160,6 +160,23 @@ func (s *PGStore) ListUnfinishedJobs(ctx context.Context) ([]string, error) {
 	return ids, rows.Err()
 }
 
+// RequeueOrphanedItems resets items still marked 'running' in unfinished
+// (queued or running) jobs back to 'pending'. A worker that crashes after
+// claiming an item but before MarkItemDone leaves it stuck in 'running', where
+// ClaimNextItem never picks it up again; resetting it on Resume lets the item
+// be retried instead of silently dropped. Returns the number of items requeued.
+func (s *PGStore) RequeueOrphanedItems(ctx context.Context) (int, error) {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE ingest_job_items SET status='pending'
+		WHERE status='running'
+		  AND job_id IN (SELECT id FROM ingest_jobs WHERE status IN ('queued','running'))`)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
 func isUniqueViolation(err error) bool {
 	if err == nil {
 		return false

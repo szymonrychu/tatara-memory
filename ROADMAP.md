@@ -28,9 +28,11 @@ Pre-existing, not triggered by the single-notify-per-job invariant today:
       (`GetJob` -> `cur.Done++` -> `UpdateJob`). Make it an atomic SQL
       `UPDATE ... SET done = done + 1`, or guard `runJob` with an in-flight
       jobID set, so a future double-notify can't lose increments.
-- [ ] Crash mid-item leaves the item `running`; `ClaimNextItem` claims only
+- [x] Crash mid-item leaves the item `running`; `ClaimNextItem` claims only
       `pending`, so `Resume` re-runs the job but skips the orphan and drains to
       a wrong count. Reset `running` items to `pending` on resume.
+      Done: `JobStore.RequeueOrphanedItems` resets `running` items in unfinished
+      jobs to `pending`; `Pool.Resume` calls it before scheduling (issue #4).
 - [ ] No per-item timeout: `processItem` -> `CreateMemory` blocks a worker
       indefinitely on a hung LightRAG call. Add a deadline. (Pairs with the
       ingester-side chunk-poll timeout tracked in the parent ROADMAP.)

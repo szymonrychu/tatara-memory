@@ -92,8 +92,13 @@ func (p *Pool) Notify(jobID string) {
 
 // Resume re-queues every unfinished (queued or running) job found at startup
 // and returns how many it scheduled. This recovers jobs that were enqueued but
-// never notified (or whose notify was dropped) before a restart.
+// never notified (or whose notify was dropped) before a restart. It first
+// requeues items left 'running' by a crashed worker so they are retried by
+// ClaimNextItem rather than silently dropped from the job's count.
 func (p *Pool) Resume(ctx context.Context) (int, error) {
+	if _, err := p.store.RequeueOrphanedItems(ctx); err != nil {
+		return 0, err
+	}
 	ids, err := p.store.ListUnfinishedJobs(ctx)
 	if err != nil {
 		return 0, err

@@ -57,3 +57,45 @@ func TestPGStoreRoundTrip(t *testing.T) {
 
 	require.NoError(t, store.MarkItemDone(ctx, "pgjob1", "k", nil))
 }
+
+func TestPGStoreRequeueOrphanedItems(t *testing.T) {
+	ctx := context.Background()
+	db := openPG(t)
+	defer db.Close()
+	require.NoError(t, ingest.Migrate(ctx, db))
+
+	_, _ = db.ExecContext(ctx, `DELETE FROM ingest_job_items WHERE job_id IN ('pgrun','pgdone')`)
+	_, _ = db.ExecContext(ctx, `DELETE FROM ingest_jobs WHERE id IN ('pgrun','pgdone')`)
+
+	store := ingest.NewPGStore(db)
+
+	// Unfinished job whose only item was left 'running' by a crashed worker.
+	require.NoError(t, store.CreateJob(ctx,
+		memory.IngestJob{ID: "pgrun", Status: memory.JobStatusRunning, Total: 1, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		[]memory.IngestItem{{IdempotencyKey: "orphan", Text: "x"}}))
+	_, ok, err := store.ClaimNextItem(ctx, "pgrun")
+	require.NoError(t, err)
+	require.True(t, ok) // item is now 'running'
+
+	// Terminal job whose item is also 'running' must be left untouched.
+	require.NoError(t, store.CreateJob(ctx,
+		memory.IngestJob{ID: "pgdone", Status: memory.JobStatusSucceeded, Total: 1, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		[]memory.IngestItem{{IdempotencyKey: "k", Text: "y"}}))
+	_, ok, err = store.ClaimNextItem(ctx, "pgdone")
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	n, err := store.RequeueOrphanedItems(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+
+	// The orphan is claimable again; the terminal job's item is not.
+	item, ok, err := store.ClaimNextItem(ctx, "pgrun")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, "orphan", item.IdempotencyKey)
+
+	_, ok, err = store.ClaimNextItem(ctx, "pgdone")
+	require.NoError(t, err)
+	require.False(t, ok)
+}

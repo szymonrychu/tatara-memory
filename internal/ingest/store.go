@@ -22,4 +22,5 @@ type JobStore interface {
 	ClaimNextItem(ctx context.Context, jobID string) (memory.IngestItem, bool, error)
 	MarkItemDone(ctx context.Context, jobID, idemKey string, runErr error) error
 	ListUnfinishedJobs(ctx context.Context) ([]string, error)
+	RequeueOrphanedItems(ctx context.Context) (int, error)
 }

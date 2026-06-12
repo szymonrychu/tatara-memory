@@ -108,6 +108,27 @@ func (s *MemStore) MarkItemDone(_ context.Context, jobID, key string, runErr err
 	return nil
 }
 
+// RequeueOrphanedItems resets items still marked 'running' in unfinished jobs
+// back to 'pending' so a crash mid-item is retried rather than dropped. Returns
+// the number of items requeued.
+func (s *MemStore) RequeueOrphanedItems(_ context.Context) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, b := range s.jobs {
+		if b.job.Status != memory.JobStatusQueued && b.job.Status != memory.JobStatusRunning {
+			continue
+		}
+		for _, it := range b.items {
+			if it.status == "running" {
+				it.status = "pending"
+				n++
+			}
+		}
+	}
+	return n, nil
+}
+
 // ListUnfinishedJobs returns the IDs of all jobs that are queued or running.
 func (s *MemStore) ListUnfinishedJobs(_ context.Context) ([]string, error) {
 	s.mu.Lock()

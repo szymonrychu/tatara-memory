@@ -39,6 +39,40 @@ func TestMemStoreItemIdempotent(t *testing.T) {
 	require.ErrorIs(t, err, ingest.ErrJobExists)
 }
 
+func TestMemStoreRequeueOrphanedItems(t *testing.T) {
+	ctx := context.Background()
+	s := ingest.NewMemStore()
+
+	// Unfinished job with an item left 'running' by a crashed worker.
+	running := memory.IngestJob{ID: "run", Status: memory.JobStatusRunning, Total: 1, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	require.NoError(t, s.CreateJob(ctx, running, []memory.IngestItem{{IdempotencyKey: "orphan", Text: "x"}}))
+	_, ok, err := s.ClaimNextItem(ctx, "run")
+	require.NoError(t, err)
+	require.True(t, ok) // item is now 'running'
+
+	// Terminal job whose item is also 'running' must be left untouched.
+	done := memory.IngestJob{ID: "done", Status: memory.JobStatusSucceeded, Total: 1, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	require.NoError(t, s.CreateJob(ctx, done, []memory.IngestItem{{IdempotencyKey: "k", Text: "y"}}))
+	_, ok, err = s.ClaimNextItem(ctx, "done")
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	n, err := s.RequeueOrphanedItems(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+
+	// The orphan is claimable again.
+	item, ok, err := s.ClaimNextItem(ctx, "run")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, "orphan", item.IdempotencyKey)
+
+	// The terminal job's item stayed 'running' (not requeued).
+	_, ok, err = s.ClaimNextItem(ctx, "done")
+	require.NoError(t, err)
+	require.False(t, ok)
+}
+
 func TestMemStoreClaimNextItem(t *testing.T) {
 	ctx := context.Background()
 	s := ingest.NewMemStore()

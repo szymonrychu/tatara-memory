@@ -182,6 +182,41 @@ func TestPoolResumeRunningOnStart(t *testing.T) {
 	}, "resumed job did not terminate")
 }
 
+func TestPoolResumeRequeuesOrphanedItem(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	store := ingest.NewMemStore()
+	require.NoError(t, store.CreateJob(ctx, memory.IngestJob{
+		ID: "orphanjob", Status: memory.JobStatusRunning, Total: 1, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}, []memory.IngestItem{{IdempotencyKey: "k", Text: "ok"}}))
+
+	// Simulate a worker that claimed the item (status 'running') then crashed
+	// before MarkItemDone. Without requeue-on-Resume the item is never claimed
+	// again and the job never reaches its expected count.
+	_, ok, err := store.ClaimNextItem(ctx, "orphanjob")
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	svc := memory.NewService(fake.New(), nil)
+	pool := ingest.NewPool(store, svc, 1)
+	pool.Start(ctx)
+	defer pool.Stop()
+
+	n, err := pool.Resume(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+
+	waitFor(t, func() bool {
+		j, _ := store.GetJob(ctx, "orphanjob")
+		return j.Status == memory.JobStatusSucceeded
+	}, "orphaned running item was not reprocessed on resume")
+
+	j, _ := store.GetJob(ctx, "orphanjob")
+	require.Equal(t, 1, j.Done)
+	require.Equal(t, 0, j.Failed)
+}
+
 type capturingSources struct {
 	mu    sync.Mutex
 	added []addedSource
