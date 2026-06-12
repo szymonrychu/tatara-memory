@@ -21,5 +21,10 @@ type JobStore interface {
 	UpdateJob(ctx context.Context, job memory.IngestJob) error
 	ClaimNextItem(ctx context.Context, jobID string) (memory.IngestItem, bool, error)
 	MarkItemDone(ctx context.Context, jobID, idemKey string, runErr error) error
+	// IncrementJobProgress atomically records one processed item: it bumps done
+	// (itemErr == nil) or failed (itemErr != nil), appending the error up to
+	// maxErrors entries. The increment is atomic so concurrent workers draining
+	// the same job cannot clobber each other's counts.
+	IncrementJobProgress(ctx context.Context, jobID string, itemErr *memory.IngestItemError) error
 	ListUnfinishedJobs(ctx context.Context) ([]string, error)
 }

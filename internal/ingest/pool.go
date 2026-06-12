@@ -142,20 +142,14 @@ func (p *Pool) runJob(ctx context.Context, jobID string) {
 		runErr := p.processItem(ctx, item)
 		_ = p.store.MarkItemDone(ctx, jobID, item.IdempotencyKey, runErr)
 
-		cur, _ := p.store.GetJob(ctx, jobID)
+		var itemErr *memory.IngestItemError
 		if runErr != nil {
-			cur.Failed++
-			if len(cur.Errors) < maxErrors {
-				cur.Errors = append(cur.Errors, memory.IngestItemError{
-					IdempotencyKey: item.IdempotencyKey,
-					Error:          runErr.Error(),
-				})
+			itemErr = &memory.IngestItemError{
+				IdempotencyKey: item.IdempotencyKey,
+				Error:          runErr.Error(),
 			}
-		} else {
-			cur.Done++
 		}
-		cur.UpdatedAt = time.Now()
-		_ = p.store.UpdateJob(ctx, cur)
+		_ = p.store.IncrementJobProgress(ctx, jobID, itemErr)
 	}
 	final, err := p.store.GetJob(ctx, jobID)
 	if err != nil {
