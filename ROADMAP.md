@@ -24,10 +24,11 @@ Spec: parent-repo `docs/superpowers/specs/2026-06-05-tatara-code-ingestion-desig
 **Status:** planned. Found during the 0.2.2 pool-wiring fix (see MEMORY).
 Pre-existing, not triggered by the single-notify-per-job invariant today:
 
-- [ ] `runJob` Done/Failed counter is a non-atomic read-modify-write
-      (`GetJob` -> `cur.Done++` -> `UpdateJob`). Make it an atomic SQL
-      `UPDATE ... SET done = done + 1`, or guard `runJob` with an in-flight
-      jobID set, so a future double-notify can't lose increments.
+- [x] `runJob` Done/Failed counter is a non-atomic read-modify-write
+      (`GetJob` -> `cur.Done++` -> `UpdateJob`). Done: replaced with
+      `JobStore.IncrementJobProgress`, an atomic `UPDATE ... SET done = done + 1`
+      (failure path locks the row to bump `failed` and append the capped error
+      in one critical section). Closes szymonrychu/tatara-memory#2.
 - [ ] Crash mid-item leaves the item `running`; `ClaimNextItem` claims only
       `pending`, so `Resume` re-runs the job but skips the orphan and drains to
       a wrong count. Reset `running` items to `pending` on resume.

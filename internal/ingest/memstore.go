@@ -108,6 +108,26 @@ func (s *MemStore) MarkItemDone(_ context.Context, jobID, key string, runErr err
 	return nil
 }
 
+// IncrementJobProgress atomically bumps done or failed under the store lock.
+func (s *MemStore) IncrementJobProgress(_ context.Context, jobID string, itemErr *memory.IngestItemError) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, ok := s.jobs[jobID]
+	if !ok {
+		return ErrJobNotFound
+	}
+	if itemErr != nil {
+		b.job.Failed++
+		if len(b.job.Errors) < maxErrors {
+			b.job.Errors = append(b.job.Errors, *itemErr)
+		}
+	} else {
+		b.job.Done++
+	}
+	b.job.UpdatedAt = time.Now()
+	return nil
+}
+
 // ListUnfinishedJobs returns the IDs of all jobs that are queued or running.
 func (s *MemStore) ListUnfinishedJobs(_ context.Context) ([]string, error) {
 	s.mu.Lock()

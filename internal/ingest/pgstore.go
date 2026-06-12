@@ -140,6 +140,52 @@ func (s *PGStore) MarkItemDone(ctx context.Context, jobID, key string, runErr er
 	return err
 }
 
+// IncrementJobProgress atomically bumps done or failed for one processed item.
+// On success it is a single counter UPDATE. On failure it locks the job row so
+// the failed bump and the capped error append happen as one critical section,
+// preventing concurrent workers from losing increments via read-modify-write.
+func (s *PGStore) IncrementJobProgress(ctx context.Context, jobID string, itemErr *memory.IngestItemError) error {
+	if itemErr == nil {
+		res, err := s.db.ExecContext(ctx, `
+			UPDATE ingest_jobs SET done = done + 1, updated_at = $2 WHERE id = $1`,
+			jobID, time.Now())
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrJobNotFound
+		}
+		return nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	row := tx.QueryRowContext(ctx, `SELECT errors_json FROM ingest_jobs WHERE id = $1 FOR UPDATE`, jobID)
+	var errJSON string
+	if err := row.Scan(&errJSON); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrJobNotFound
+		}
+		return err
+	}
+	var errs []memory.IngestItemError
+	_ = json.Unmarshal([]byte(errJSON), &errs)
+	if len(errs) < maxErrors {
+		errs = append(errs, *itemErr)
+	}
+	out, _ := json.Marshal(errs)
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE ingest_jobs SET failed = failed + 1, errors_json = $2, updated_at = $3 WHERE id = $1`,
+		jobID, string(out), time.Now()); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // ListUnfinishedJobs returns the IDs of all jobs that are queued or running,
 // i.e. enqueued but not yet terminal. Used at startup to resume work that a
 // crash or restart left scheduled-but-undrained.

@@ -53,6 +53,42 @@ func TestPoolDrainsJob(t *testing.T) {
 	require.Equal(t, 0, j.Failed)
 }
 
+// TestPoolDrainsJobConcurrently runs many items through several workers on one
+// job. The old read-modify-write progress update (GetJob -> Done++ -> UpdateJob)
+// lost increments when two workers interleaved, so Done would fall short of the
+// item count and the job could report Succeeded with a wrong count. The atomic
+// IncrementJobProgress must keep every increment.
+func TestPoolDrainsJobConcurrently(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	store := ingest.NewMemStore()
+	svc := memory.NewService(fake.New(), nil)
+	pool := ingest.NewPool(store, svc, 8)
+	pool.Start(ctx)
+	defer pool.Stop()
+
+	const n = 200
+	items := make([]memory.IngestItem, n)
+	for i := range items {
+		items[i] = memory.IngestItem{Text: "item"}
+	}
+	e := ingest.NewEnqueuer(store, nil)
+	job, err := e.Enqueue(ctx, items)
+	require.NoError(t, err)
+	pool.Notify(job.ID)
+
+	waitFor(t, func() bool {
+		j, _ := store.GetJob(ctx, job.ID)
+		return j.Status.Terminal()
+	}, "job did not terminate")
+
+	j, _ := store.GetJob(ctx, job.ID)
+	require.Equal(t, memory.JobStatusSucceeded, j.Status)
+	require.Equal(t, n, j.Done)
+	require.Equal(t, 0, j.Failed)
+}
+
 type failingRunner struct {
 	fail map[string]bool
 }
