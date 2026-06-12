@@ -128,6 +128,26 @@ func (s *MemStore) IncrementJobProgress(_ context.Context, jobID string, itemErr
 	return nil
 }
 
+// ResetRunningItems moves items stuck in 'running' back to 'pending' for every
+// queued or running job, recovering orphans left by a mid-item crash.
+func (s *MemStore) ResetRunningItems(_ context.Context) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, b := range s.jobs {
+		if b.job.Status != memory.JobStatusQueued && b.job.Status != memory.JobStatusRunning {
+			continue
+		}
+		for _, it := range b.items {
+			if it.status == "running" {
+				it.status = "pending"
+				n++
+			}
+		}
+	}
+	return n, nil
+}
+
 // ListUnfinishedJobs returns the IDs of all jobs that are queued or running.
 func (s *MemStore) ListUnfinishedJobs(_ context.Context) ([]string, error) {
 	s.mu.Lock()

@@ -29,9 +29,11 @@ Pre-existing, not triggered by the single-notify-per-job invariant today:
       `JobStore.IncrementJobProgress`, an atomic `UPDATE ... SET done = done + 1`
       (failure path locks the row to bump `failed` and append the capped error
       in one critical section). Closes szymonrychu/tatara-memory#2.
-- [ ] Crash mid-item leaves the item `running`; `ClaimNextItem` claims only
+- [x] Crash mid-item leaves the item `running`; `ClaimNextItem` claims only
       `pending`, so `Resume` re-runs the job but skips the orphan and drains to
-      a wrong count. Reset `running` items to `pending` on resume.
+      a wrong count. Done: `JobStore.ResetRunningItems` resets `running` items
+      of unfinished jobs back to `pending`, called at the top of `Resume` before
+      workers claim. Closes szymonrychu/tatara-memory#4.
 - [ ] No per-item timeout: `processItem` -> `CreateMemory` blocks a worker
       indefinitely on a hung LightRAG call. Add a deadline. (Pairs with the
       ingester-side chunk-poll timeout tracked in the parent ROADMAP.)

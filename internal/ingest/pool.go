@@ -93,7 +93,15 @@ func (p *Pool) Notify(jobID string) {
 // Resume re-queues every unfinished (queued or running) job found at startup
 // and returns how many it scheduled. This recovers jobs that were enqueued but
 // never notified (or whose notify was dropped) before a restart.
+//
+// It first resets any items left 'running' by a mid-item crash back to
+// 'pending', so the orphans are reclaimed rather than skipped (ClaimNextItem
+// only claims 'pending'). This runs before notifying, and the resumed jobs are
+// not yet in the notify channel, so no worker is claiming them concurrently.
 func (p *Pool) Resume(ctx context.Context) (int, error) {
+	if _, err := p.store.ResetRunningItems(ctx); err != nil {
+		return 0, err
+	}
 	ids, err := p.store.ListUnfinishedJobs(ctx)
 	if err != nil {
 		return 0, err
