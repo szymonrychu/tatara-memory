@@ -13,6 +13,7 @@ lightragBaseUrl: "http://tatara-memory-lightrag:9621"
 oidcIssuer: "https://auth.szymonrichert.pl/realms/master"
 oidcAudience: "tatara-memory"
 workerPoolSize: 4
+ingestItemTimeout: "5m"
 logLevel: "info"
 otlpEndpoint: ""
 

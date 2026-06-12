@@ -32,8 +32,12 @@ Pre-existing, not triggered by the single-notify-per-job invariant today:
 - [ ] Crash mid-item leaves the item `running`; `ClaimNextItem` claims only
       `pending`, so `Resume` re-runs the job but skips the orphan and drains to
       a wrong count. Reset `running` items to `pending` on resume.
-- [ ] No per-item timeout: `processItem` -> `CreateMemory` blocks a worker
-      indefinitely on a hung LightRAG call. Add a deadline. (Pairs with the
+- [x] No per-item timeout: `processItem` -> `CreateMemory` blocks a worker
+      indefinitely on a hung LightRAG call. Add a deadline. Done:
+      `Pool.SetItemTimeout` wraps each `processItem` ctx in
+      `context.WithTimeout` (configurable via `INGEST_ITEM_TIMEOUT` /
+      `--ingest-item-timeout` / chart `ingestItemTimeout`, default 5m; 0
+      disables). Closes szymonrychu/tatara-memory#6. (Pairs with the
       ingester-side chunk-poll timeout tracked in the parent ROADMAP.)
 
 ## v1.0 - Phase 1 ship

@@ -12,6 +12,7 @@ tests:
       oidcIssuer: "https://auth.szymonrichert.pl/realms/master"
       oidcAudience: "tatara-memory"
       workerPoolSize: 4
+      ingestItemTimeout: "5m"
       logLevel: "info"
       otlpEndpoint: ""
     asserts:
@@ -30,6 +31,9 @@ tests:
       - equal:
           path: data.WORKER_POOL_SIZE
           value: "4"
+      - equal:
+          path: data.INGEST_ITEM_TIMEOUT
+          value: "5m"
       - equal:
           path: data.LOG_LEVEL
           value: "info"

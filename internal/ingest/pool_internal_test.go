@@ -16,6 +16,54 @@ func (slowRunner) CreateMemory(_ context.Context, m memory.Memory) (memory.Memor
 	return m, nil
 }
 
+type hangRunner struct{ started chan struct{} }
+
+func (h hangRunner) CreateMemory(ctx context.Context, _ memory.Memory) (memory.Memory, error) {
+	close(h.started)
+	<-ctx.Done()
+	return memory.Memory{}, ctx.Err()
+}
+
+// A hung CreateMemory must not block the worker forever: with an item timeout
+// the context is cancelled, the item is marked failed, and the job finishes.
+// Without the deadline this test would hang until the package timeout.
+func TestItemTimeoutFreesHungWorker(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	store := NewMemStore()
+	if err := store.CreateJob(ctx, memory.IngestJob{
+		ID: "j1", Status: memory.JobStatusQueued, Total: 1, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}, []memory.IngestItem{{IdempotencyKey: "j1-k", Text: "t"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := hangRunner{started: make(chan struct{})}
+	p := newPool(store, runner, 1, 1, nil)
+	p.SetItemTimeout(50 * time.Millisecond)
+	p.Start(ctx)
+	defer p.Stop()
+	p.Notify("j1")
+
+	select {
+	case <-runner.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker never picked up the item")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		j, _ := store.GetJob(ctx, "j1")
+		if j.Status == memory.JobStatusFailed {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("job did not fail after item timeout; status=%s (worker stayed blocked)", j.Status)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // Resume must schedule every unfinished job even when there are far more than
 // the notify buffer holds: dropping any leaves a job stuck queued forever,
 // defeating crash recovery. A single slow worker behind a buffer of 1 forces

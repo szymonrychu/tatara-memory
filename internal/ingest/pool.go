@@ -23,15 +23,16 @@ type SourceSink interface {
 
 // Pool is an async worker pool that processes queued ingest jobs.
 type Pool struct {
-	store   JobStore
-	runner  itemRunner
-	size    int
-	sources SourceSink
-	notify  chan string
-	stop    chan struct{}
-	wg      sync.WaitGroup
-	mu      sync.Mutex
-	started bool
+	store       JobStore
+	runner      itemRunner
+	size        int
+	sources     SourceSink
+	itemTimeout time.Duration
+	notify      chan string
+	stop        chan struct{}
+	wg          sync.WaitGroup
+	mu          sync.Mutex
+	started     bool
 }
 
 // NewPool returns a Pool backed by the given store and runner with size worker goroutines.
@@ -43,6 +44,14 @@ func NewPool(store JobStore, runner itemRunner, size int) *Pool {
 // track_id) after each successful CreateMemory. sources may be nil.
 func NewPoolWithSources(store JobStore, runner itemRunner, size int, sources SourceSink) *Pool {
 	return newPool(store, runner, size, 256, sources)
+}
+
+// SetItemTimeout bounds how long a single item may spend in CreateMemory (plus
+// source indexing) before its context is cancelled, freeing the worker for the
+// next item instead of blocking on a hung upstream call. A value <= 0 disables
+// the deadline. Must be called before Start.
+func (p *Pool) SetItemTimeout(d time.Duration) {
+	p.itemTimeout = d
 }
 
 func newPool(store JobStore, runner itemRunner, size, buf int, sources SourceSink) *Pool {
@@ -168,6 +177,11 @@ func (p *Pool) runJob(ctx context.Context, jobID string) {
 }
 
 func (p *Pool) processItem(ctx context.Context, it memory.IngestItem) error {
+	if p.itemTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, p.itemTimeout)
+		defer cancel()
+	}
 	created, err := p.runner.CreateMemory(ctx, memory.Memory{
 		ID:       it.IdempotencyKey,
 		Text:     it.Text,

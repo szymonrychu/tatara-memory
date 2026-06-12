@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 )
 
 type config struct {
@@ -14,6 +15,7 @@ type config struct {
 	OIDCIssuer      string
 	OIDCAudience    string
 	WorkerPoolSize  int
+	ItemTimeout     time.Duration
 	LogLevel        string
 	OTLPEndpoint    string
 }
@@ -37,8 +39,24 @@ func envIntOr(key string, def int) (int, error) {
 	return n, nil
 }
 
+func envDurationOr(key string, def time.Duration) (time.Duration, error) {
+	v, ok := os.LookupEnv(key)
+	if !ok {
+		return def, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("env %s: %w", key, err)
+	}
+	return d, nil
+}
+
 func loadConfig(args []string) (config, error) {
 	wp, err := envIntOr("WORKER_POOL_SIZE", 4)
+	if err != nil {
+		return config{}, err
+	}
+	it, err := envDurationOr("INGEST_ITEM_TIMEOUT", 5*time.Minute)
 	if err != nil {
 		return config{}, err
 	}
@@ -49,6 +67,7 @@ func loadConfig(args []string) (config, error) {
 		OIDCIssuer:      envOr("OIDC_ISSUER", "https://auth.szymonrichert.pl/realms/master"),
 		OIDCAudience:    envOr("OIDC_AUDIENCE", "tatara-memory"),
 		WorkerPoolSize:  wp,
+		ItemTimeout:     it,
 		LogLevel:        envOr("LOG_LEVEL", "info"),
 		OTLPEndpoint:    envOr("OTLP_ENDPOINT", ""),
 	}
@@ -60,6 +79,7 @@ func loadConfig(args []string) (config, error) {
 	fs.StringVar(&cfg.OIDCIssuer, "oidc-issuer", cfg.OIDCIssuer, "OIDC issuer URL")
 	fs.StringVar(&cfg.OIDCAudience, "oidc-audience", cfg.OIDCAudience, "OIDC audience")
 	fs.IntVar(&cfg.WorkerPoolSize, "worker-pool-size", cfg.WorkerPoolSize, "Ingest worker pool size")
+	fs.DurationVar(&cfg.ItemTimeout, "ingest-item-timeout", cfg.ItemTimeout, "Per-item ingest timeout; 0 disables")
 	fs.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "Log level (debug|info|warn|error)")
 	fs.StringVar(&cfg.OTLPEndpoint, "otlp-endpoint", cfg.OTLPEndpoint, "OTLP endpoint (empty disables tracing)")
 	if err := fs.Parse(args); err != nil {
@@ -77,6 +97,9 @@ func (c config) validate() error {
 	}
 	if c.WorkerPoolSize < 1 {
 		return fmt.Errorf("worker-pool-size must be >= 1")
+	}
+	if c.ItemTimeout < 0 {
+		return fmt.Errorf("ingest-item-timeout must be >= 0")
 	}
 	return nil
 }

@@ -165,6 +165,7 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 	srcStore := memory.NewSourceStore(db)
 	memSvc := memory.NewServiceWithSources(lrc, tomb, srcStore)
 	pool := ingest.NewPoolWithSources(store, memSvc, cfg.WorkerPoolSize, srcStore)
+	pool.SetItemTimeout(cfg.ItemTimeout)
 	pool.Start(ctx)
 	if n, err := pool.Resume(ctx); err != nil {
 		logger.Warn("ingest pool resume failed", "error", err)

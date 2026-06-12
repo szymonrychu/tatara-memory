@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -15,6 +16,7 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	require.Equal(t, "https://auth.szymonrichert.pl/realms/master", cfg.OIDCIssuer)
 	require.Equal(t, "tatara-memory", cfg.OIDCAudience)
 	require.Equal(t, 4, cfg.WorkerPoolSize)
+	require.Equal(t, 5*time.Minute, cfg.ItemTimeout)
 	require.Equal(t, "info", cfg.LogLevel)
 	require.Empty(t, cfg.OTLPEndpoint)
 }
@@ -27,6 +29,7 @@ func TestLoadConfig_EnvOverrides(t *testing.T) {
 	t.Setenv("OIDC_ISSUER", "https://idp.example/realms/r")
 	t.Setenv("OIDC_AUDIENCE", "svc")
 	t.Setenv("WORKER_POOL_SIZE", "8")
+	t.Setenv("INGEST_ITEM_TIMEOUT", "90s")
 	t.Setenv("LOG_LEVEL", "debug")
 	t.Setenv("OTLP_ENDPOINT", "otel:4317")
 	cfg, err := loadConfig([]string{})
@@ -37,6 +40,7 @@ func TestLoadConfig_EnvOverrides(t *testing.T) {
 	require.Equal(t, "https://idp.example/realms/r", cfg.OIDCIssuer)
 	require.Equal(t, "svc", cfg.OIDCAudience)
 	require.Equal(t, 8, cfg.WorkerPoolSize)
+	require.Equal(t, 90*time.Second, cfg.ItemTimeout)
 	require.Equal(t, "debug", cfg.LogLevel)
 	require.Equal(t, "otel:4317", cfg.OTLPEndpoint)
 }
@@ -63,6 +67,15 @@ func TestLoadConfig_ValidateRequired(t *testing.T) {
 func TestLoadConfig_ValidatePoolSize(t *testing.T) {
 	os.Clearenv()
 	cfg, err := loadConfig([]string{"--worker-pool-size", "0"})
+	require.NoError(t, err)
+	cfg.PGDSN = "x"
+	cfg.LightRAGBaseURL = "y"
+	require.Error(t, cfg.validate())
+}
+
+func TestLoadConfig_ValidateItemTimeout(t *testing.T) {
+	os.Clearenv()
+	cfg, err := loadConfig([]string{"--ingest-item-timeout", "-1s"})
 	require.NoError(t, err)
 	cfg.PGDSN = "x"
 	cfg.LightRAGBaseURL = "y"
