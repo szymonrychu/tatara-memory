@@ -279,7 +279,8 @@ const neighborsOutQuery = `
 	FROM walk w
 	JOIN code_entities en ON en.repo=$1 AND en.id=w.id
 	WHERE w.depth > 0
-	ORDER BY en.id, w.depth`
+	ORDER BY en.id, w.depth
+	LIMIT $5`
 
 const neighborsInQuery = `
 	WITH RECURSIVE walk(id, depth) AS (
@@ -295,7 +296,8 @@ const neighborsInQuery = `
 	FROM walk w
 	JOIN code_entities en ON en.repo=$1 AND en.id=w.id
 	WHERE w.depth > 0
-	ORDER BY en.id, w.depth`
+	ORDER BY en.id, w.depth
+	LIMIT $5`
 
 const neighborsOutCFQuery = `
 	WITH RECURSIVE walk(id, depth) AS (
@@ -313,7 +315,8 @@ const neighborsOutCFQuery = `
 	FROM walk w
 	JOIN code_entities en ON en.repo=$1 AND en.id=w.id
 	WHERE w.depth > 0
-	ORDER BY en.id, w.depth`
+	ORDER BY en.id, w.depth
+	LIMIT $7`
 
 const neighborsInCFQuery = `
 	WITH RECURSIVE walk(id, depth) AS (
@@ -331,12 +334,13 @@ const neighborsInCFQuery = `
 	FROM walk w
 	JOIN code_entities en ON en.repo=$1 AND en.id=w.id
 	WHERE w.depth > 0
-	ORDER BY en.id, w.depth`
+	ORDER BY en.id, w.depth
+	LIMIT $7`
 
 // Neighbors walks edges of the given relations from id, in the given direction
 // ("out" follows from->to, "in" follows to->from), up to depth hops.
 // cf is an optional confidence filter; zero value means no filtering.
-func (s *PGStore) Neighbors(ctx context.Context, repo, id string, relations []string, dir string, depth int, cf ConfidenceFilter) ([]PathNode, error) {
+func (s *PGStore) Neighbors(ctx context.Context, repo, id string, relations []string, dir string, depth, limit int, cf ConfidenceFilter) ([]PathNode, error) {
 	var rows *sql.Rows
 	var err error
 	relStr := strings.Join(relations, ",")
@@ -345,13 +349,13 @@ func (s *PGStore) Neighbors(ctx context.Context, repo, id string, relations []st
 		if dir == "in" {
 			query = neighborsInCFQuery
 		}
-		rows, err = s.db.QueryContext(ctx, query, repo, id, relStr, depth, cf.MinConfidence, cf.Tier)
+		rows, err = s.db.QueryContext(ctx, query, repo, id, relStr, depth, cf.MinConfidence, cf.Tier, limit)
 	} else {
 		query := neighborsOutQuery
 		if dir == "in" {
 			query = neighborsInQuery
 		}
-		rows, err = s.db.QueryContext(ctx, query, repo, id, relStr, depth)
+		rows, err = s.db.QueryContext(ctx, query, repo, id, relStr, depth, limit)
 	}
 	if err != nil {
 		return nil, err

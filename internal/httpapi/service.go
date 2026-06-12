@@ -37,7 +37,7 @@ type CodeGraphService interface {
 	Push(ctx context.Context, p codegraph.GraphPush) (codegraph.PushResult, error)
 	Search(ctx context.Context, repo, q, typ string, limit int) ([]codegraph.Entity, error)
 	Entity(ctx context.Context, repo, id string) (codegraph.EntityDetail, error)
-	Neighbors(ctx context.Context, repo, id string, relations []string, dir string, depth int, cf codegraph.ConfidenceFilter) ([]codegraph.PathNode, error)
+	Neighbors(ctx context.Context, repo, id string, relations []string, dir string, depth, limit int, cf codegraph.ConfidenceFilter) ([]codegraph.PathNode, error)
 	Callers(ctx context.Context, repo, id string, depth int, cf codegraph.ConfidenceFilter) ([]codegraph.PathNode, error)
 	Callees(ctx context.Context, repo, id string, depth int, cf codegraph.ConfidenceFilter) ([]codegraph.PathNode, error)
 	Dependents(ctx context.Context, repo, id string, depth int, cf codegraph.ConfidenceFilter) ([]codegraph.PathNode, error)

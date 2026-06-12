@@ -22,6 +22,7 @@ type stubCodeGraph struct {
 	entityErr  error
 	nodes      []codegraph.PathNode
 	lastCF     codegraph.ConfidenceFilter
+	lastLimit  int
 	explainErr error
 }
 
@@ -38,8 +39,9 @@ func (s *stubCodeGraph) Search(_ context.Context, _, _, _ string, _ int) ([]code
 func (s *stubCodeGraph) Entity(_ context.Context, _, _ string) (codegraph.EntityDetail, error) {
 	return s.entity, s.entityErr
 }
-func (s *stubCodeGraph) Neighbors(_ context.Context, _, _ string, _ []string, _ string, _ int, cf codegraph.ConfidenceFilter) ([]codegraph.PathNode, error) {
+func (s *stubCodeGraph) Neighbors(_ context.Context, _, _ string, _ []string, _ string, _, limit int, cf codegraph.ConfidenceFilter) ([]codegraph.PathNode, error) {
 	s.lastCF = cf
+	s.lastLimit = limit
 	return s.nodes, nil
 }
 func (s *stubCodeGraph) Callers(_ context.Context, _, _ string, _ int, cf codegraph.ConfidenceFilter) ([]codegraph.PathNode, error) {
@@ -176,6 +178,15 @@ func TestNeighbors_RequiresRelation(t *testing.T) {
 	w := httptest.NewRecorder()
 	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
 	require.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestNeighbors_PassesLimitParam(t *testing.T) {
+	cg := &stubCodeGraph{}
+	req := httptest.NewRequest(http.MethodGet, "/code/neighbors?repo=r&id=x&relation=calls&limit=42", nil)
+	w := httptest.NewRecorder()
+	cgRouter(cg).ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, 42, cg.lastLimit)
 }
 
 func TestFileImports_OK(t *testing.T) {

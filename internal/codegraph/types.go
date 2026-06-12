@@ -38,6 +38,11 @@ var (
 const (
 	defaultDepth = 3
 	maxDepth     = 10
+	// Traversal breadth caps. Depth bounds how far a walk goes; these bound how
+	// many distinct nodes it may return, so a dense graph cannot materialize an
+	// unbounded []PathNode in memory.
+	defaultNeighborLimit = 1000
+	maxNeighborLimit     = 5000
 )
 
 // Phase 0 entity-type constants (doc/concept/rationale nodes flow through
@@ -296,6 +301,16 @@ func clampDepth(d int) int {
 		return maxDepth
 	}
 	return d
+}
+
+func clampNeighborLimit(n int) int {
+	if n <= 0 {
+		return defaultNeighborLimit
+	}
+	if n > maxNeighborLimit {
+		return maxNeighborLimit
+	}
+	return n
 }
 
 func normalizeDir(dir string) string {

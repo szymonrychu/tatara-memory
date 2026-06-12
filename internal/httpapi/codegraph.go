@@ -48,6 +48,13 @@ func depthParam(r *http.Request) int {
 	return n
 }
 
+// limitParam reads the optional "limit" query param (breadth cap). Zero or
+// missing lets the service apply its default; the service also enforces a max.
+func limitParam(r *http.Request) int {
+	n, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	return n
+}
+
 // confidenceFilter parses optional min_confidence and tier query params.
 // Returns 400 and false if tier is present but not a valid tier value.
 func confidenceFilter(w http.ResponseWriter, r *http.Request) (codegraph.ConfidenceFilter, bool) {
@@ -136,7 +143,7 @@ func handleNeighbors(cfg Config) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		nodes, err := cfg.CodeGraph.Neighbors(r.Context(), repo, id, strings.Split(rel, ","), r.URL.Query().Get("direction"), depthParam(r), cf)
+		nodes, err := cfg.CodeGraph.Neighbors(r.Context(), repo, id, strings.Split(rel, ","), r.URL.Query().Get("direction"), depthParam(r), limitParam(r), cf)
 		writeNodes(w, r, nodes, err)
 	}
 }
