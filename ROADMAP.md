@@ -39,7 +39,8 @@ Pre-existing, not triggered by the single-notify-per-job invariant today:
       wraps each item in a `context.WithTimeout` (0 disables); config
       `IngestItemTimeout` (env `INGEST_ITEM_TIMEOUT` / `--ingest-item-timeout`,
       default 60s) wires it in `app.go`. A fired deadline fails the item with the
-      context error and the worker moves on. Closes szymonrychu/tatara-memory#25.
+      context error and the worker moves on. Closes szymonrychu/tatara-memory#25
+      and the duplicate szymonrychu/tatara-memory#27.
       (Pairs with the ingester-side chunk-poll timeout tracked in the parent ROADMAP.)
 
 ## v1.0 - Phase 1 ship
