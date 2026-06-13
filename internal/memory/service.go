@@ -178,17 +178,20 @@ func t(b bool) *bool { return &b }
 
 // Query retrieves context references for the given query.
 // LightRAG's /query returns references rather than ranked matches;
-// Match.Score is zero in this mapping.
+// Match.Score is zero in this mapping. include_references must be set
+// or LightRAG omits the reference list entirely and Matches comes back
+// empty even when only_need_context is true.
 func (s *Service) Query(ctx context.Context, q Query) (QueryResult, error) {
 	if !q.Mode.Valid() {
 		return QueryResult{}, fmt.Errorf("invalid query mode: %s", q.Mode)
 	}
 	resp, err := s.lr.Query(ctx, lightrag.QueryRequest{
-		Mode:            lightrag.QueryMode(q.Mode),
-		Query:           q.Text,
-		TopK:            q.TopK,
-		OnlyNeedContext: t(true),
-		Stream:          t(false),
+		Mode:              lightrag.QueryMode(q.Mode),
+		Query:             q.Text,
+		TopK:              q.TopK,
+		OnlyNeedContext:   t(true),
+		IncludeReferences: t(true),
+		Stream:            t(false),
 	})
 	if err != nil {
 		return QueryResult{}, wrapUpstream(err)

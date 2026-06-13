@@ -112,6 +112,12 @@ func TestServiceQuery(t *testing.T) {
 	require.Len(t, res.Matches, 1)
 	require.Equal(t, "r1", res.Matches[0].ID)
 
+	// include_references must be set or LightRAG omits the reference list and
+	// Matches comes back empty (see issue tatara-cli#21 symptom 2).
+	sent := f.LastQuery()
+	require.NotNil(t, sent.IncludeReferences)
+	require.True(t, *sent.IncludeReferences)
+
 	_, err = svc.Query(ctx, memory.Query{Mode: memory.QueryMode("nope"), Text: "x"})
 	require.Error(t, err)
 }
