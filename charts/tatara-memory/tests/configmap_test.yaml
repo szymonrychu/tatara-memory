@@ -23,6 +23,8 @@ tests:
       - isNotNullOrEmpty:
           path: data.WORKER_POOL_SIZE
       - isNotNullOrEmpty:
+          path: data.INGEST_ITEM_TIMEOUT
+      - isNotNullOrEmpty:
           path: data.LOG_LEVEL
   - it: rejects any kebab-case keys leaking through
     asserts:
