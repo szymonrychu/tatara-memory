@@ -110,6 +110,19 @@ func (blockingRunner) CreateMemory(ctx context.Context, _ memory.Memory) (memory
 	return memory.Memory{}, ctx.Err()
 }
 
+// hangOnRunner blocks until ctx cancellation only for items whose Text matches
+// hang; every other item returns immediately. It models a single pathological
+// item that must not stall the items queued behind it.
+type hangOnRunner struct{ hang string }
+
+func (r hangOnRunner) CreateMemory(ctx context.Context, m memory.Memory) (memory.Memory, error) {
+	if m.Text == r.hang {
+		<-ctx.Done()
+		return memory.Memory{}, ctx.Err()
+	}
+	return m, nil
+}
+
 func TestPoolItemTimeoutFailsHungItem(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -133,6 +146,39 @@ func TestPoolItemTimeoutFailsHungItem(t *testing.T) {
 	require.Equal(t, memory.JobStatusFailed, j.Status)
 	require.Equal(t, 1, j.Failed)
 	require.Len(t, j.Errors, 1)
+	require.Contains(t, j.Errors[0].Error, "deadline")
+}
+
+// TestPoolItemTimeoutDoesNotStallPool is the core guarantee of the per-item
+// timeout: a hung item must fail on its own deadline and the worker must go on
+// to process the items queued behind it. One worker, two items, the first
+// hangs: the timed-out item is recorded failed with a deadline error and the
+// second item still completes, finalizing the job Partial rather than stuck.
+func TestPoolItemTimeoutDoesNotStallPool(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	store := ingest.NewMemStore()
+	pool := ingest.NewPool(store, hangOnRunner{hang: "hang"}, 1, ingest.WithItemTimeout(50*time.Millisecond))
+	pool.Start(ctx)
+	defer pool.Stop()
+
+	e := ingest.NewEnqueuer(store, nil)
+	job, err := e.Enqueue(ctx, []memory.IngestItem{{Text: "hang"}, {Text: "ok"}})
+	require.NoError(t, err)
+	pool.Notify(job.ID)
+
+	waitFor(t, func() bool {
+		j, _ := store.GetJob(ctx, job.ID)
+		return j.Status.Terminal()
+	}, "job did not terminate; a timed-out item stalled the pool")
+
+	j, _ := store.GetJob(ctx, job.ID)
+	require.Equal(t, memory.JobStatusPartial, j.Status)
+	require.Equal(t, 1, j.Done)   // the second item still got processed
+	require.Equal(t, 1, j.Failed) // the hung item hit its per-item deadline
+	require.Len(t, j.Errors, 1)
+	require.Contains(t, j.Errors[0].Error, "deadline")
 }
 
 func TestPoolPartial(t *testing.T) {
