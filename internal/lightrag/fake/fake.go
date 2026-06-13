@@ -27,6 +27,7 @@ type Client struct {
 	labels   []string                  // for /graph/label/search
 	queryRes lightrag.QueryResponse
 	dataRes  lightrag.QueryDataResponse
+	lastReq  lightrag.QueryRequest // most recent Query request, for assertions
 	nextID   int
 }
 
@@ -169,10 +170,18 @@ func (c *Client) DeleteDocs(_ context.Context, req lightrag.DeleteDocRequest) (*
 	}, nil
 }
 
-// Query returns the seeded query response.
-func (c *Client) Query(_ context.Context, _ lightrag.QueryRequest) (*lightrag.QueryResponse, error) {
+// LastQuery returns the most recent QueryRequest passed to Query.
+func (c *Client) LastQuery() lightrag.QueryRequest {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.lastReq
+}
+
+// Query returns the seeded query response.
+func (c *Client) Query(_ context.Context, req lightrag.QueryRequest) (*lightrag.QueryResponse, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lastReq = req
 	cp := c.queryRes
 	if cp.References != nil {
 		cp.References = append([]lightrag.ReferenceItem(nil), cp.References...)
