@@ -13,6 +13,8 @@ lightragBaseUrl: "http://tatara-memory-lightrag:9621"
 oidcIssuer: "https://auth.szymonrichert.pl/realms/master"
 oidcAudience: "tatara-memory"
 workerPoolSize: 4
+# Per-item ingest timeout (Go duration). "0" disables the deadline.
+ingestItemTimeout: "60s"
 logLevel: "info"
 otlpEndpoint: ""
 

@@ -71,6 +71,7 @@ LIGHTRAG_BASE_URL: {{ .Values.lightragBaseUrl | quote }}
 OIDC_ISSUER: {{ .Values.oidcIssuer | quote }}
 OIDC_AUDIENCE: {{ .Values.oidcAudience | quote }}
 WORKER_POOL_SIZE: {{ .Values.workerPoolSize | quote }}
+INGEST_ITEM_TIMEOUT: {{ .Values.ingestItemTimeout | quote }}
 LOG_LEVEL: {{ .Values.logLevel | quote }}
 OTLP_ENDPOINT: {{ .Values.otlpEndpoint | quote }}
 {{- end -}}

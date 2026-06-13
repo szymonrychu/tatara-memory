@@ -100,6 +100,41 @@ func (f *failingRunner) CreateMemory(_ context.Context, m memory.Memory) (memory
 	return m, nil
 }
 
+// blockingRunner blocks until its context is cancelled, then returns the
+// context error. It models a hung CreateMemory call that only the per-item
+// timeout can unstick.
+type blockingRunner struct{}
+
+func (blockingRunner) CreateMemory(ctx context.Context, _ memory.Memory) (memory.Memory, error) {
+	<-ctx.Done()
+	return memory.Memory{}, ctx.Err()
+}
+
+func TestPoolItemTimeoutFailsHungItem(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	store := ingest.NewMemStore()
+	pool := ingest.NewPool(store, blockingRunner{}, 1, ingest.WithItemTimeout(50*time.Millisecond))
+	pool.Start(ctx)
+	defer pool.Stop()
+
+	e := ingest.NewEnqueuer(store, nil)
+	job, err := e.Enqueue(ctx, []memory.IngestItem{{Text: "hang"}})
+	require.NoError(t, err)
+	pool.Notify(job.ID)
+
+	waitFor(t, func() bool {
+		j, _ := store.GetJob(ctx, job.ID)
+		return j.Status.Terminal()
+	}, "hung job did not terminate under the per-item timeout")
+
+	j, _ := store.GetJob(ctx, job.ID)
+	require.Equal(t, memory.JobStatusFailed, j.Status)
+	require.Equal(t, 1, j.Failed)
+	require.Len(t, j.Errors, 1)
+}
+
 func TestPoolPartial(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -34,9 +34,13 @@ Pre-existing, not triggered by the single-notify-per-job invariant today:
       a wrong count. Done: `JobStore.ResetRunningItems` resets `running` items
       of unfinished jobs back to `pending`, called at the top of `Resume` before
       workers claim. Closes szymonrychu/tatara-memory#4.
-- [ ] No per-item timeout: `processItem` -> `CreateMemory` blocks a worker
-      indefinitely on a hung LightRAG call. Add a deadline. (Pairs with the
-      ingester-side chunk-poll timeout tracked in the parent ROADMAP.)
+- [x] No per-item timeout: `processItem` -> `CreateMemory` blocks a worker
+      indefinitely on a hung LightRAG call. Done: `Pool.WithItemTimeout` option
+      wraps each item in a `context.WithTimeout` (0 disables); config
+      `IngestItemTimeout` (env `INGEST_ITEM_TIMEOUT` / `--ingest-item-timeout`,
+      default 60s) wires it in `app.go`. A fired deadline fails the item with the
+      context error and the worker moves on. Closes szymonrychu/tatara-memory#25.
+      (Pairs with the ingester-side chunk-poll timeout tracked in the parent ROADMAP.)
 
 ## v1.0 - Phase 1 ship
 
