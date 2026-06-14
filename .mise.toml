@@ -1,9 +1,11 @@
+min_version = "2026.6.3"
+
 [tools]
-go = "1.25"
-helm = "4.1.4"
+go = "1.25.0"
+helm = "4.2.1"
 helmfile = "1.4.4"
 sops = "3.12.2"
-golangci-lint = "2.11"
+golangci-lint = "2.12.2"
 pre-commit = "4.6.0"
 kubectl = "1.36.0"
 stern = "1.31.0"
@@ -14,6 +16,15 @@ stern = "aqua:stern/stern"
 
 [env]
 GOFLAGS = "-count=1"
+
+[tasks.lint]
+run = "make lint"
+
+[tasks.test]
+run = "make test"
+
+[tasks.build]
+run = "make build"
 
 [hooks]
 postinstall = [
