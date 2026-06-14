@@ -33,4 +33,5 @@ postinstall = [
     "helm plugin install https://github.com/jkroepke/helm-secrets/releases/download/v4.7.4/secrets-post-renderer-4.7.4.tgz --verify=false 2> /dev/null || true",
     "helm plugin install https://github.com/databus23/helm-diff --verify=false 2> /dev/null || true",
     "helm plugin install https://github.com/helm-unittest/helm-unittest 2> /dev/null || true",
+    "pre-commit install --hook-type pre-commit --hook-type pre-push || true",
 ]
