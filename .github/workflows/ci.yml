@@ -25,8 +25,6 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: build tools
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential
       - name: gofmt
         run: test -z "$(gofmt -s -l .)" || { gofmt -s -l .; echo 'gofmt -s required'; exit 1; }
       - uses: golangci/golangci-lint-action@v8
@@ -41,6 +39,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      # build-essential is required only here: `make test` runs with -race,
+      # which needs cgo (a C toolchain). lint/build/smoke are pure Go
+      # (CGO_ENABLED=0, no cgo in the tree) and skip this step.
       - name: build tools
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential
       - name: test
@@ -55,8 +56,6 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: build tools
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential
       - name: build
         run: make build
 
@@ -69,8 +68,6 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: build tools
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential
       - name: smoke
         run: |
           make build
