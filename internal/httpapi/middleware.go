@@ -8,8 +8,22 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus"
 )
+
+// routeLabel returns the matched chi route pattern (e.g. "/memories/{id}") for
+// use as a bounded metric/log label. Unmatched requests (404s, or calls made
+// outside a chi router) collapse to a single "unmatched" value so arbitrary
+// paths cannot inflate label cardinality.
+func routeLabel(r *http.Request) string {
+	if rc := chi.RouteContext(r.Context()); rc != nil {
+		if p := rc.RoutePattern(); p != "" {
+			return p
+		}
+	}
+	return "unmatched"
+}
 
 type ctxKey int
 
@@ -68,7 +82,8 @@ func AccessLog(logger *slog.Logger) func(http.Handler) http.Handler {
 			next.ServeHTTP(rec, r)
 			logger.Info("http",
 				"request_id", RequestIDFromContext(r.Context()),
-				"route", r.URL.Path,
+				"route", routeLabel(r),
+				"path", r.URL.Path,
 				"method", r.Method,
 				"status", rec.status,
 				"duration_ms", time.Since(start).Milliseconds(),
@@ -113,7 +128,8 @@ func (m *Metrics) Middleware(next http.Handler) http.Handler {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: 200}
 		next.ServeHTTP(rec, r)
-		m.reqTotal.WithLabelValues(r.URL.Path, r.Method, http.StatusText(rec.status)).Inc()
-		m.reqDur.WithLabelValues(r.URL.Path).Observe(time.Since(start).Seconds())
+		route := routeLabel(r)
+		m.reqTotal.WithLabelValues(route, r.Method, http.StatusText(rec.status)).Inc()
+		m.reqDur.WithLabelValues(route).Observe(time.Since(start).Seconds())
 	})
 }
