@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
 
 	"github.com/szymonrychu/tatara-memory/internal/httpapi"
@@ -77,4 +78,83 @@ func TestMetricsMiddlewareCountsRequest(t *testing.T) {
 		}
 	}
 	require.True(t, found, "http_requests_total not registered")
+}
+
+// TestMetricsUsesRoutePattern verifies that two requests to the same
+// parameterised route with different ids collapse to a single time series
+// labelled with the chi route pattern, carrying a combined count of 2.
+func TestMetricsUsesRoutePattern(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	r := httpapi.NewRouter(httpapi.Config{Service: &stubService{}, Registry: reg})
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	for _, id := range []string{"abc", "def"} {
+		resp, err := http.Get(srv.URL + "/memories/" + id)
+		require.NoError(t, err)
+		_ = resp.Body.Close()
+	}
+
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+
+	var series int
+	var count float64
+	for _, mf := range mfs {
+		if mf.GetName() != "http_requests_total" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			route := labelValue(m, "route")
+			if route == "/memories/{id}" {
+				series++
+				count = m.GetCounter().GetValue()
+			}
+			require.NotContains(t, route, "abc", "raw id leaked into route label")
+			require.NotContains(t, route, "def", "raw id leaked into route label")
+		}
+	}
+	require.Equal(t, 1, series, "expected a single /memories/{id} series")
+	require.Equal(t, float64(2), count, "expected combined count of 2")
+}
+
+// TestMetricsUnmatchedCollapses verifies that requests to non-existent paths
+// share a single bounded "unmatched" label value rather than minting a series
+// per probed path.
+func TestMetricsUnmatchedCollapses(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	r := httpapi.NewRouter(httpapi.Config{Service: &stubService{}, Registry: reg})
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	for _, p := range []string{"/does-not-exist", "/also/missing"} {
+		resp, err := http.Get(srv.URL + p)
+		require.NoError(t, err)
+		_ = resp.Body.Close()
+	}
+
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+
+	var unmatched float64
+	for _, mf := range mfs {
+		if mf.GetName() != "http_requests_total" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			if labelValue(m, "route") == "unmatched" {
+				unmatched += m.GetCounter().GetValue()
+			}
+		}
+	}
+	require.Equal(t, float64(2), unmatched, "expected both 404s under the unmatched label")
+}
+
+func labelValue(m *dto.Metric, name string) string {
+	for _, l := range m.GetLabel() {
+		if l.GetName() == name {
+			return l.GetValue()
+		}
+	}
+	return ""
 }
