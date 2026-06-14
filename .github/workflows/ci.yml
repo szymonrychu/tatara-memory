@@ -39,9 +39,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      # build-essential is required only here: `make test` runs with -race,
-      # which needs cgo (a C toolchain). lint/build/smoke are pure Go
-      # (CGO_ENABLED=0, no cgo in the tree) and skip this step.
+      # full build-essential is required only here: `make test` runs with
+      # -race, which needs cgo (a C toolchain). build/smoke are pure Go
+      # (CGO_ENABLED=0) and install just make; lint runs no Makefile target.
       - name: build tools
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential
       - name: test
@@ -56,6 +56,11 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      # make is needed to run the Makefile targets; the self-hosted runner
+      # ships neither make nor a C toolchain. build/smoke are pure Go
+      # (CGO_ENABLED=0), so they install only make, not build-essential.
+      - name: build tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends make
       - name: build
         run: make build
 
@@ -68,6 +73,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: build tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends make
       - name: smoke
         run: |
           make build
