@@ -2,8 +2,11 @@ package ingest
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/szymonrychu/tatara-memory/internal/memory"
 )
@@ -28,6 +31,7 @@ type Pool struct {
 	size        int
 	sources     SourceSink
 	itemTimeout time.Duration
+	metrics     *metrics
 	notify      chan string
 	stop        chan struct{}
 	wg          sync.WaitGroup
@@ -44,6 +48,14 @@ type Option func(*Pool)
 // marked failed with the context error and the worker moves on.
 func WithItemTimeout(d time.Duration) Option {
 	return func(p *Pool) { p.itemTimeout = d }
+}
+
+// WithMetrics wires the pool's Prometheus instruments into reg, mirroring the
+// LightRAG client's WithMetrics/Registry convention. A nil reg disables
+// registration (the metrics still exist but are never gathered), so call sites
+// that omit this option stay unchanged.
+func WithMetrics(reg prometheus.Registerer) Option {
+	return func(p *Pool) { p.metrics = newMetrics(reg) }
 }
 
 // NewPool returns a Pool backed by the given store and runner with size worker goroutines.
@@ -69,6 +81,7 @@ func newPool(store JobStore, runner itemRunner, size, buf int, sources SourceSin
 		runner:  runner,
 		size:    size,
 		sources: sources,
+		metrics: newMetrics(nil),
 		notify:  make(chan string, buf),
 		stop:    make(chan struct{}),
 	}
@@ -98,11 +111,15 @@ func (p *Pool) Stop() {
 	p.wg.Wait()
 }
 
-// Notify queues the given job ID for processing. Drops silently if the channel is full.
+// Notify queues the given job ID for processing. When the notify channel is
+// full the job ID is dropped and counted in ingest_notify_dropped_total; Resume
+// re-queues any such jobs at startup, so the drop is recoverable but must stay
+// observable (the silent loss class that caused the 0.2.2 stuck-queue incident).
 func (p *Pool) Notify(jobID string) {
 	select {
 	case p.notify <- jobID:
 	default:
+		p.metrics.incNotifyDropped()
 	}
 }
 
@@ -163,8 +180,13 @@ func (p *Pool) runJob(ctx context.Context, jobID string) {
 		if err != nil || !ok {
 			break
 		}
+		p.metrics.incInFlight()
+		start := time.Now()
 		runErr := p.runItem(ctx, item)
+		dur := time.Since(start).Seconds()
 		_ = p.store.MarkItemDone(ctx, jobID, item.IdempotencyKey, runErr)
+		p.metrics.decInFlight()
+		p.metrics.observeItem(dur, itemResult(runErr))
 
 		var itemErr *memory.IngestItemError
 		if runErr != nil {
@@ -182,13 +204,30 @@ func (p *Pool) runJob(ctx context.Context, jobID string) {
 	switch {
 	case final.Failed == 0:
 		final.Status = memory.JobStatusSucceeded
+		p.metrics.incJob(jobSucceeded)
 	case final.Done == 0:
 		final.Status = memory.JobStatusFailed
+		p.metrics.incJob(jobFailed)
 	default:
 		final.Status = memory.JobStatusPartial
+		p.metrics.incJob(jobPartial)
 	}
 	final.UpdatedAt = time.Now()
 	_ = p.store.UpdateJob(ctx, final)
+}
+
+// itemResult classifies a per-item run error for ingest_items_total: a fired
+// per-item deadline (context.DeadlineExceeded) is reported as timeout, any
+// other error as error, and a nil error as success.
+func itemResult(err error) string {
+	switch {
+	case err == nil:
+		return resultSuccess
+	case errors.Is(err, context.DeadlineExceeded):
+		return resultTimeout
+	default:
+		return resultError
+	}
 }
 
 // runItem processes a single item, applying the per-item timeout when one is
