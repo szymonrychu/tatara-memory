@@ -29,25 +29,32 @@ func (s *PGStore) DirtyRepos(ctx context.Context, debounceSecs int) ([]string, e
 	return out, rows.Err()
 }
 
+// RecomputeResult summarizes a completed recompute for the worker's INFO log
+// and metrics. Counts reflect what was persisted in this run.
+type RecomputeResult struct {
+	Entities    int
+	Communities int
+}
+
 // RecomputeAnalytics loads the repo's graph, computes signals via gonum, persists
 // them to code_entities + code_communities, labels communities (via labeler or
 // first non-empty member name (deterministic, Louvain order; not degree-sorted)
 // when labeler is nil), and clears the dirty flag.
-func (s *PGStore) RecomputeAnalytics(ctx context.Context, repo string, labeler CommunityLabeler) error {
+func (s *PGStore) RecomputeAnalytics(ctx context.Context, repo string, labeler CommunityLabeler) (RecomputeResult, error) {
 	ids, names, err := s.loadEntityIDs(ctx, repo)
 	if err != nil {
-		return err
+		return RecomputeResult{}, err
 	}
 	edges, err := s.loadEdgePairs(ctx, repo)
 	if err != nil {
-		return err
+		return RecomputeResult{}, err
 	}
 
 	res := analytics.Compute(ids, edges)
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return RecomputeResult{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -56,12 +63,12 @@ func (s *PGStore) RecomputeAnalytics(ctx context.Context, repo string, labeler C
 			UPDATE code_entities SET community=$3, degree=$4, betweenness=$5
 			WHERE repo=$1 AND id=$2`,
 			repo, n.ID, n.Community, n.Degree, n.Betweenness); err != nil {
-			return err
+			return RecomputeResult{}, err
 		}
 	}
 
 	if _, err := tx.ExecContext(ctx, `DELETE FROM code_communities WHERE repo=$1`, repo); err != nil {
-		return err
+		return RecomputeResult{}, err
 	}
 	for _, c := range res.Communities {
 		label := labelCommunity(ctx, labeler, c, names)
@@ -69,7 +76,7 @@ func (s *PGStore) RecomputeAnalytics(ctx context.Context, repo string, labeler C
 			INSERT INTO code_communities(repo, community, label, cohesion, size)
 			VALUES ($1,$2,$3,$4,$5)`,
 			repo, c.Community, label, c.Cohesion, c.Size); err != nil {
-			return err
+			return RecomputeResult{}, err
 		}
 	}
 
@@ -77,10 +84,13 @@ func (s *PGStore) RecomputeAnalytics(ctx context.Context, repo string, labeler C
 		INSERT INTO repo_analytics_state(repo, dirty, computed_at)
 		VALUES ($1, false, now())
 		ON CONFLICT (repo) DO UPDATE SET dirty=false, computed_at=now()`, repo); err != nil {
-		return err
+		return RecomputeResult{}, err
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return RecomputeResult{}, err
+	}
+	return RecomputeResult{Entities: len(res.Nodes), Communities: len(res.Communities)}, nil
 }
 
 // labelCommunity returns an LLM label when a labeler is set and succeeds,

@@ -27,5 +27,5 @@ type Store interface {
 	Bridges(ctx context.Context, repo string, limit int) ([]Bridge, error)
 	ImportantEntitiesBy(ctx context.Context, repo, by string, limit int) ([]EntityDegree, error)
 	DirtyRepos(ctx context.Context, debounceSecs int) ([]string, error)
-	RecomputeAnalytics(ctx context.Context, repo string, labeler CommunityLabeler) error
+	RecomputeAnalytics(ctx context.Context, repo string, labeler CommunityLabeler) (RecomputeResult, error)
 }
