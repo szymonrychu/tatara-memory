@@ -1,7 +1,10 @@
 package auth_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -170,4 +173,97 @@ func TestMiddlewareWithMetrics_InvalidScheme(t *testing.T) {
 	r.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusUnauthorized, rec.Code)
 	require.InDelta(t, 1.0, authCounterFor(t, reg, "invalid_scheme"), 0.0001)
+}
+
+// logEntry is used to decode JSON log lines in logger-injection tests.
+type logEntry struct {
+	Level string `json:"level"`
+	Msg   string `json:"msg"`
+	User  string `json:"user"`
+}
+
+// TestMiddlewareWithLogger_UsesInjectedLogger verifies that the injected logger
+// receives rejection WARNs and success INFOs (finding 2: rule-11 JSON logger; finding 1: success log).
+func TestMiddlewareWithLogger_UsesInjectedLogger(t *testing.T) {
+	srv := testjwks.NewServer(t)
+	v, err := auth.NewVerifier(context.Background(), auth.Config{
+		Issuer: srv.Issuer(), Audience: "tatara-memory",
+	})
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	r := chi.NewRouter()
+	r.Use(auth.MiddlewareWithLogger(v, logger))
+	r.Get("/me", func(w http.ResponseWriter, req *http.Request) {
+		c, ok := auth.ClaimsFromContext(req.Context())
+		require.True(t, ok)
+		_, _ = w.Write([]byte(c.Subject))
+	})
+
+	// rejection -> WARN in injected logger
+	buf.Reset()
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/me", nil))
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	var warnEntry logEntry
+	require.NoError(t, json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &warnEntry))
+	require.Equal(t, "WARN", warnEntry.Level)
+	require.Equal(t, "auth: rejected", warnEntry.Msg)
+
+	// success -> INFO in injected logger with user field
+	buf.Reset()
+	tok := srv.SignToken(map[string]interface{}{
+		"sub": "alice", "aud": "tatara-memory",
+	})
+	req := httptest.NewRequest(http.MethodGet, "/me", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var infoEntry logEntry
+	require.NoError(t, json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &infoEntry))
+	require.Equal(t, "INFO", infoEntry.Level)
+	require.Equal(t, "auth: accepted", infoEntry.Msg)
+	require.Equal(t, "alice", infoEntry.User)
+}
+
+// TestMiddlewareWithMetricsAndLogger_CountsAndLogs is the production-path test:
+// both metrics and the injected logger fire correctly.
+func TestMiddlewareWithMetricsAndLogger_CountsAndLogs(t *testing.T) {
+	srv := testjwks.NewServer(t)
+	v, err := auth.NewVerifier(context.Background(), auth.Config{
+		Issuer: srv.Issuer(), Audience: "tatara-memory",
+	})
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	reg := prometheus.NewRegistry()
+
+	r := chi.NewRouter()
+	r.Use(auth.MiddlewareWithMetricsAndLogger(v, reg, logger))
+	r.Get("/me", func(w http.ResponseWriter, req *http.Request) {
+		c, ok := auth.ClaimsFromContext(req.Context())
+		require.True(t, ok)
+		_, _ = w.Write([]byte(c.Subject))
+	})
+
+	// valid token -> success counter + INFO log
+	tok := srv.SignToken(map[string]interface{}{
+		"sub": "bob", "aud": "tatara-memory",
+	})
+	req := httptest.NewRequest(http.MethodGet, "/me", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.InDelta(t, 1.0, authCounterFor(t, reg, "success"), 0.0001)
+
+	var entry logEntry
+	require.NoError(t, json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &entry))
+	require.Equal(t, "INFO", entry.Level)
+	require.Equal(t, "auth: accepted", entry.Msg)
+	require.Equal(t, "bob", entry.User)
 }

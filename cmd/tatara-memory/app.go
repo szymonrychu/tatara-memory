@@ -204,7 +204,7 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 		Service:    memSvc,
 		Ingest:     enqueuer,
 		CodeGraph:  cgSvc,
-		Verify:     auth.MiddlewareWithMetrics(verifier, reg),
+		Verify:     auth.MiddlewareWithMetricsAndLogger(verifier, reg, logger),
 		Logger:     logger,
 		Registry:   reg,
 		ReadyCheck: readyFn,

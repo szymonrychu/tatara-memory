@@ -44,26 +44,36 @@ func (a *authAttempts) inc(result string) { a.total.WithLabelValues(result).Inc(
 
 // Middleware returns a chi-compatible middleware that verifies the Bearer token
 // and injects parsed Claims into the request context.
-// Uses the package-global slog for rejection logs; call MiddlewareWithMetrics to
-// also count auth outcomes in Prometheus.
+// Uses slog.Default() for logs. Prefer MiddlewareWithMetricsAndLogger in production.
 func Middleware(v *Verifier) func(http.Handler) http.Handler {
-	return middleware(v, newAuthAttempts(nil))
+	return middleware(v, newAuthAttempts(nil), slog.Default())
 }
 
 // MiddlewareWithMetrics is Middleware plus an auth_attempts_total counter registered
-// in reg. Use this in production; Middleware is kept for test helpers that do not
-// supply a registry.
+// in reg. Uses slog.Default() for logs. Prefer MiddlewareWithMetricsAndLogger in production.
 func MiddlewareWithMetrics(v *Verifier, reg prometheus.Registerer) func(http.Handler) http.Handler {
-	return middleware(v, newAuthAttempts(reg))
+	return middleware(v, newAuthAttempts(reg), slog.Default())
 }
 
-func middleware(v *Verifier, attempts *authAttempts) func(http.Handler) http.Handler {
+// MiddlewareWithLogger is Middleware with an explicitly injected logger, satisfying
+// rule 11 (JSON logs, same logger structure everywhere).
+func MiddlewareWithLogger(v *Verifier, logger *slog.Logger) func(http.Handler) http.Handler {
+	return middleware(v, newAuthAttempts(nil), logger)
+}
+
+// MiddlewareWithMetricsAndLogger is the production entry point: metrics in reg and
+// logs through the service's configured logger.
+func MiddlewareWithMetricsAndLogger(v *Verifier, reg prometheus.Registerer, logger *slog.Logger) func(http.Handler) http.Handler {
+	return middleware(v, newAuthAttempts(reg), logger)
+}
+
+func middleware(v *Verifier, attempts *authAttempts, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			raw, reason := bearerToken(r)
 			if raw == "" {
 				attempts.inc(reason)
-				slog.WarnContext(r.Context(), "auth: rejected", "reason", reason)
+				logger.WarnContext(r.Context(), "auth: rejected", "reason", reason)
 				w.Header().Set("WWW-Authenticate", wwwAuthenticate)
 				http.Error(w, "missing bearer token", http.StatusUnauthorized)
 				return
@@ -71,12 +81,13 @@ func middleware(v *Verifier, attempts *authAttempts) func(http.Handler) http.Han
 			claims, err := v.Verify(r.Context(), raw)
 			if err != nil {
 				attempts.inc("invalid_token")
-				slog.WarnContext(r.Context(), "auth: rejected", "reason", "invalid_token")
+				logger.WarnContext(r.Context(), "auth: rejected", "reason", "invalid_token")
 				w.Header().Set("WWW-Authenticate", wwwAuthenticate)
 				http.Error(w, "invalid token", http.StatusUnauthorized)
 				return
 			}
 			attempts.inc("success")
+			logger.InfoContext(r.Context(), "auth: accepted", "user", claims.Subject)
 			ctx := context.WithValue(r.Context(), ctxKey{}, claims)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
