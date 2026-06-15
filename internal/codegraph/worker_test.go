@@ -2,10 +2,12 @@ package codegraph
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 )
 
@@ -28,14 +30,14 @@ func (f *fakeAnalyticsStore) DirtyRepos(_ context.Context, debounceSecs int) ([]
 	return out, nil
 }
 
-func (f *fakeAnalyticsStore) RecomputeAnalytics(_ context.Context, repo string, _ CommunityLabeler) error {
+func (f *fakeAnalyticsStore) RecomputeAnalytics(_ context.Context, repo string, _ CommunityLabeler) (RecomputeResult, error) {
 	if f.blockCh != nil {
 		<-f.blockCh
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.recomputed = append(f.recomputed, repo)
-	return nil
+	return RecomputeResult{}, nil
 }
 
 func (f *fakeAnalyticsStore) recomputedRepos() []string {
@@ -88,13 +90,13 @@ type blockingAnalyticsStore struct {
 	blockCh     chan struct{}
 }
 
-func (b *blockingAnalyticsStore) RecomputeAnalytics(_ context.Context, repo string, _ CommunityLabeler) error {
+func (b *blockingAnalyticsStore) RecomputeAnalytics(_ context.Context, repo string, _ CommunityLabeler) (RecomputeResult, error) {
 	b.inRecompute <- struct{}{}
 	<-b.blockCh
 	b.mu.Lock()
 	b.recomputed = append(b.recomputed, repo)
 	b.mu.Unlock()
-	return nil
+	return RecomputeResult{}, nil
 }
 
 func TestWorker_SingleFlightPerRepo(t *testing.T) {
@@ -139,4 +141,131 @@ func TestWorker_SingleFlightPerRepo(t *testing.T) {
 
 	// Exactly 1 call even though two ticks fired while the first was in-flight.
 	require.Equal(t, 1, len(bs.recomputedRepos()))
+}
+
+// metricsStore returns a fixed RecomputeResult and optional error, and reports a
+// fixed dirty list, so the metrics test can drive both outcomes deterministically.
+type metricsStore struct {
+	dirty []string
+	res   RecomputeResult
+	err   error
+}
+
+func (m *metricsStore) DirtyRepos(context.Context, int) ([]string, error) {
+	return m.dirty, nil
+}
+
+func (m *metricsStore) RecomputeAnalytics(context.Context, string, CommunityLabeler) (RecomputeResult, error) {
+	return m.res, m.err
+}
+
+func gatherGauge(t *testing.T, reg *prometheus.Registry, name string) float64 {
+	t.Helper()
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+	for _, mf := range mfs {
+		if mf.GetName() == name {
+			return mf.Metric[0].GetGauge().GetValue()
+		}
+	}
+	t.Fatalf("gauge %s not found", name)
+	return 0
+}
+
+func gatherRunCounter(t *testing.T, reg *prometheus.Registry, result string) float64 {
+	t.Helper()
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+	for _, mf := range mfs {
+		if mf.GetName() != "code_graph_analytics_runs_total" {
+			continue
+		}
+		for _, m := range mf.Metric {
+			for _, lp := range m.GetLabel() {
+				if lp.GetName() == "result" && lp.GetValue() == result {
+					return m.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	t.Fatalf("counter code_graph_analytics_runs_total{result=%q} not found", result)
+	return 0
+}
+
+func gatherHistogramCount(t *testing.T, reg *prometheus.Registry, name string) uint64 {
+	t.Helper()
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+	for _, mf := range mfs {
+		if mf.GetName() == name {
+			return mf.Metric[0].GetHistogram().GetSampleCount()
+		}
+	}
+	t.Fatalf("histogram %s not found", name)
+	return 0
+}
+
+func TestAnalyticsMetrics_RegisteredAtZero(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	_ = NewAnalyticsMetrics(reg)
+
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+	names := map[string]bool{}
+	for _, mf := range mfs {
+		names[mf.GetName()] = true
+	}
+	for _, want := range []string{
+		"code_graph_analytics_runs_total",
+		"code_graph_analytics_duration_seconds",
+		"code_graph_analytics_in_flight",
+		"code_graph_analytics_dirty_repos",
+	} {
+		require.Truef(t, names[want], "metric family %s not registered at construction", want)
+	}
+	// Both result labels pre-initialized at zero.
+	require.Equal(t, 0.0, gatherRunCounter(t, reg, analyticsResultSuccess))
+	require.Equal(t, 0.0, gatherRunCounter(t, reg, analyticsResultError))
+}
+
+func TestWorker_MetricsSuccessAndError(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		reg := prometheus.NewRegistry()
+		tickC := make(chan time.Time, 1)
+		store := &metricsStore{dirty: []string{"repo/a"}, res: RecomputeResult{Entities: 3, Communities: 1}}
+		w := NewAnalyticsWorker(store, nil, AnalyticsWorkerConfig{Registerer: reg, tickC: tickC})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go w.Run(ctx)
+
+		tickC <- time.Now()
+		require.Eventually(t, func() bool {
+			return gatherRunCounter(t, reg, analyticsResultSuccess) == 1
+		}, 2*time.Second, 10*time.Millisecond)
+
+		require.Equal(t, 0.0, gatherRunCounter(t, reg, analyticsResultError))
+		require.Equal(t, 1.0, gatherGauge(t, reg, "code_graph_analytics_dirty_repos"))
+		require.Equal(t, 0.0, gatherGauge(t, reg, "code_graph_analytics_in_flight"))
+		require.Equal(t, uint64(1), gatherHistogramCount(t, reg, "code_graph_analytics_duration_seconds"))
+	})
+
+	t.Run("error", func(t *testing.T) {
+		reg := prometheus.NewRegistry()
+		tickC := make(chan time.Time, 1)
+		store := &metricsStore{dirty: []string{"repo/a"}, err: errors.New("boom")}
+		w := NewAnalyticsWorker(store, nil, AnalyticsWorkerConfig{Registerer: reg, tickC: tickC})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go w.Run(ctx)
+
+		tickC <- time.Now()
+		require.Eventually(t, func() bool {
+			return gatherRunCounter(t, reg, analyticsResultError) == 1
+		}, 2*time.Second, 10*time.Millisecond)
+
+		require.Equal(t, 0.0, gatherRunCounter(t, reg, analyticsResultSuccess))
+		require.Equal(t, uint64(1), gatherHistogramCount(t, reg, "code_graph_analytics_duration_seconds"))
+	})
 }

@@ -31,7 +31,8 @@ func TestCommunitiesAndBridgesAndImportantBy(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	require.NoError(t, s.RecomputeAnalytics(ctx, "cm", nil))
+	_, err = s.RecomputeAnalytics(ctx, "cm", nil)
+	require.NoError(t, err)
 
 	// Communities list.
 	comms, err := s.Communities(ctx, "cm")

@@ -34,7 +34,10 @@ func TestAnalytics_ComputeAndPersist(t *testing.T) {
 	require.NoError(t, err)
 
 	// nil labeler -> label = top-degree member name.
-	require.NoError(t, s.RecomputeAnalytics(ctx, "an", nil))
+	res, err := s.RecomputeAnalytics(ctx, "an", nil)
+	require.NoError(t, err)
+	require.Equal(t, 2, res.Communities)
+	require.Greater(t, res.Entities, 0)
 
 	// Entity columns persisted.
 	var community, degree int
@@ -76,7 +79,8 @@ func TestAnalytics_DirtyReposListing(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, repos, "dr")
 
-	require.NoError(t, s.RecomputeAnalytics(ctx, "dr", nil))
+	_, err = s.RecomputeAnalytics(ctx, "dr", nil)
+	require.NoError(t, err)
 	repos2, err := s.DirtyRepos(ctx, 60)
 	require.NoError(t, err)
 	require.NotContains(t, repos2, "dr")

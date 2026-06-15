@@ -80,8 +80,8 @@ func (f *fakeStore) ImportantEntitiesBy(_ context.Context, _, _ string, _ int) (
 	return nil, nil
 }
 func (f *fakeStore) DirtyRepos(_ context.Context, _ int) ([]string, error) { return nil, nil }
-func (f *fakeStore) RecomputeAnalytics(_ context.Context, _ string, _ codegraph.CommunityLabeler) error {
-	return nil
+func (f *fakeStore) RecomputeAnalytics(_ context.Context, _ string, _ codegraph.CommunityLabeler) (codegraph.RecomputeResult, error) {
+	return codegraph.RecomputeResult{}, nil
 }
 
 func newSvc() (*codegraph.Service, *fakeStore) {

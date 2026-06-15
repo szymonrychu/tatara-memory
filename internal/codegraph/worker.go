@@ -5,13 +5,15 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // AnalyticsStore is the subset of the store the worker needs. Implemented by
 // *PGStore.
 type AnalyticsStore interface {
 	DirtyRepos(ctx context.Context, debounceSecs int) ([]string, error)
-	RecomputeAnalytics(ctx context.Context, repo string, labeler CommunityLabeler) error
+	RecomputeAnalytics(ctx context.Context, repo string, labeler CommunityLabeler) (RecomputeResult, error)
 }
 
 // AnalyticsWorkerConfig configures the debounced recompute worker.
@@ -23,6 +25,9 @@ type AnalyticsWorkerConfig struct {
 	DebounceSecs int
 	// Logger; defaults to slog.Default().
 	Logger *slog.Logger
+	// Registerer for the worker's Prometheus instruments. nil registers nothing
+	// (the metrics struct stays a usable no-op).
+	Registerer prometheus.Registerer
 	// tickC, when non-nil, replaces the internal ticker (tests inject ticks).
 	tickC <-chan time.Time
 }
@@ -35,6 +40,7 @@ type AnalyticsWorker struct {
 	interval     time.Duration
 	debounceSecs int
 	log          *slog.Logger
+	metrics      *AnalyticsMetrics
 	tickC        <-chan time.Time
 
 	mu       sync.Mutex
@@ -58,6 +64,7 @@ func NewAnalyticsWorker(store AnalyticsStore, labeler CommunityLabeler, cfg Anal
 		interval:     cfg.Interval,
 		debounceSecs: cfg.DebounceSecs,
 		log:          cfg.Logger,
+		metrics:      NewAnalyticsMetrics(cfg.Registerer),
 		tickC:        cfg.tickC,
 		inflight:     map[string]bool{},
 	}
@@ -87,6 +94,7 @@ func (w *AnalyticsWorker) processOnce(ctx context.Context) {
 		w.log.Error("analytics dirty repos", "err", err)
 		return
 	}
+	w.metrics.setDirtyRepos(len(repos))
 	for _, repo := range repos {
 		repo := repo
 		go func() {
@@ -112,5 +120,24 @@ func (w *AnalyticsWorker) recompute(ctx context.Context, repo string) error {
 		delete(w.inflight, repo)
 		w.mu.Unlock()
 	}()
-	return w.store.RecomputeAnalytics(ctx, repo, w.labeler)
+
+	w.metrics.incInFlight()
+	defer w.metrics.decInFlight()
+
+	start := time.Now()
+	res, err := w.store.RecomputeAnalytics(ctx, repo, w.labeler)
+	dur := time.Since(start)
+	w.metrics.observeDuration(dur.Seconds())
+	if err != nil {
+		w.metrics.incRun(analyticsResultError)
+		return err
+	}
+	w.metrics.incRun(analyticsResultSuccess)
+	w.log.Info("analytics recompute",
+		"repo", repo,
+		"entities", res.Entities,
+		"communities", res.Communities,
+		"duration_ms", dur.Milliseconds(),
+	)
+	return nil
 }
