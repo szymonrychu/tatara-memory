@@ -54,6 +54,7 @@ func run(ctx context.Context, args []string) error {
 
 	select {
 	case err := <-errCh:
+		_ = a.shutdown(context.Background())
 		return err
 	case <-done:
 	}

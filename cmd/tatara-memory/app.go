@@ -74,8 +74,6 @@ func (a *app) migrate(ctx context.Context) error {
 }
 
 // buildObs initialises the logger and Prometheus registry.
-// Tracing is intentionally omitted: no spans are produced anywhere yet.
-// Add otelhttp instrumentation first, then wire a TracerProvider here.
 func buildObs(_ context.Context, cfg config) (*slog.Logger, *prometheus.Registry, error) {
 	level := slog.LevelInfo
 	switch cfg.LogLevel {

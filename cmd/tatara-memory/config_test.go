@@ -18,7 +18,6 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	require.Equal(t, 4, cfg.WorkerPoolSize)
 	require.Equal(t, 60*time.Second, cfg.IngestItemTimeout)
 	require.Equal(t, "info", cfg.LogLevel)
-	require.Empty(t, cfg.OTLPEndpoint)
 }
 
 func TestLoadConfig_EnvOverrides(t *testing.T) {
@@ -31,7 +30,6 @@ func TestLoadConfig_EnvOverrides(t *testing.T) {
 	t.Setenv("WORKER_POOL_SIZE", "8")
 	t.Setenv("INGEST_ITEM_TIMEOUT", "90s")
 	t.Setenv("LOG_LEVEL", "debug")
-	t.Setenv("OTLP_ENDPOINT", "otel:4317")
 	cfg, err := loadConfig([]string{})
 	require.NoError(t, err)
 	require.Equal(t, ":9090", cfg.HTTPAddr)
@@ -42,7 +40,6 @@ func TestLoadConfig_EnvOverrides(t *testing.T) {
 	require.Equal(t, 8, cfg.WorkerPoolSize)
 	require.Equal(t, 90*time.Second, cfg.IngestItemTimeout)
 	require.Equal(t, "debug", cfg.LogLevel)
-	require.Equal(t, "otel:4317", cfg.OTLPEndpoint)
 }
 
 func TestLoadConfig_FlagsBeatEnv(t *testing.T) {
