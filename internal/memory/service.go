@@ -206,6 +206,22 @@ func (s *Service) DeleteMemory(ctx context.Context, trackID string) error {
 	return nil
 }
 
+// DeleteMemoriesBySources purges every memory produced from each file in files
+// for the given repo, calling DeleteMemoriesBySource once per file. Returns the
+// total count of track_ids purged across all files. A nil sources index is a
+// no-op returning 0.
+func (s *Service) DeleteMemoriesBySources(ctx context.Context, repo string, files []string) (int, error) {
+	total := 0
+	for _, f := range files {
+		n, err := s.DeleteMemoriesBySource(ctx, repo, f)
+		if err != nil {
+			return total, err
+		}
+		total += n
+	}
+	return total, nil
+}
+
 // DeleteMemoriesBySource purges every memory produced from (repo, filePath):
 // it deletes each indexed track_id via DeleteMemory (lightrag DeleteDocs +
 // tombstone), then clears the source-index rows. Idempotent; returns the count

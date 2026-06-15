@@ -89,6 +89,15 @@ func (s *reconcileSpyService) DeleteMemoriesBySource(_ context.Context, repo, fi
 	return 0, nil
 }
 
+func (s *reconcileSpyService) DeleteMemoriesBySources(_ context.Context, repo string, files []string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, f := range files {
+		s.deleted = append(s.deleted, [2]string{repo, f})
+	}
+	return 0, nil
+}
+
 func (s *reconcileSpyService) snapshot() [][2]string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -179,6 +188,56 @@ func TestBulkIngestReconcileFilesNoRepoReturns400(t *testing.T) {
 	require.Empty(t, spy.snapshot())
 }
 
+// batchCallSpy tracks whether the batch DeleteMemoriesBySources was used vs
+// per-file DeleteMemoriesBySource to verify finding 1 (N+1 elimination).
+type batchCallSpy struct {
+	stubService
+	mu           sync.Mutex
+	batchCalls   int
+	perFileCalls int
+	batchFiles   []string
+}
+
+func (s *batchCallSpy) DeleteMemoriesBySources(_ context.Context, _ string, files []string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.batchCalls++
+	s.batchFiles = append(s.batchFiles, files...)
+	return 0, nil
+}
+
+func (s *batchCallSpy) DeleteMemoriesBySource(_ context.Context, _, _ string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.perFileCalls++
+	return 0, nil
+}
+
+// TestBulkIngestReconcileUsesBatchPurge verifies that the handler calls
+// DeleteMemoriesBySources once (not DeleteMemoriesBySource N times) for N files.
+// This demonstrates finding 1 (N+1 elimination).
+func TestBulkIngestReconcileUsesBatchPurge(t *testing.T) {
+	spy := &batchCallSpy{}
+	ing := &ingestStub{enq: memory.IngestJob{ID: "jobBatch", Status: memory.JobStatusQueued}}
+	srv := newSrvIngest(t, spy, ing)
+	defer srv.Close()
+
+	body := `{"repo":"repoZ","reconcile_files":["x.go","y.go","z.go"],
+		"items":[{"text":"new","metadata":{"repo":"repoZ","file_path":"x.go"}}]}`
+	resp, err := http.Post(srv.URL+"/memories:bulk", "application/json", bytes.NewReader([]byte(body)))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
+
+	spy.mu.Lock()
+	bc := spy.batchCalls
+	pfc := spy.perFileCalls
+	spy.mu.Unlock()
+
+	require.Equal(t, 1, bc, "handler must call DeleteMemoriesBySources exactly once")
+	require.Equal(t, 0, pfc, "handler must not call per-file DeleteMemoriesBySource")
+}
+
 // countingReconcileSvc returns a configurable purge count for DeleteMemoriesBySource.
 type countingReconcileSvc struct {
 	stubService
@@ -195,6 +254,18 @@ func (s *countingReconcileSvc) DeleteMemoriesBySource(_ context.Context, repo, f
 		return s.counts[file], nil
 	}
 	return 3, nil // default: 3 memories purged
+}
+
+func (s *countingReconcileSvc) DeleteMemoriesBySources(_ context.Context, repo string, files []string) (int, error) {
+	total := 0
+	for _, f := range files {
+		n, err := s.DeleteMemoriesBySource(context.Background(), repo, f)
+		if err != nil {
+			return total, err
+		}
+		total += n
+	}
+	return total, nil
 }
 
 // TestBulkIngestReconcile_LogsActor verifies that the reconcile purge INFO log

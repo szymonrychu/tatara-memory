@@ -31,6 +31,10 @@ func (s *stubService) DeleteMemoriesBySource(_ context.Context, _, _ string) (in
 	return 0, nil
 }
 
+func (s *stubService) DeleteMemoriesBySources(_ context.Context, _ string, _ []string) (int, error) {
+	return 0, nil
+}
+
 func (s *stubService) Query(_ context.Context, _ memory.Query) (memory.QueryResult, error) {
 	return memory.QueryResult{}, nil
 }

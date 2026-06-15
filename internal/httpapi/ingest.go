@@ -86,14 +86,10 @@ func handleBulkIngest(cfg Config) http.HandlerFunc {
 				WriteError(w, http.StatusBadRequest, "repo is required when reconcile_files is set", RequestIDFromContext(r.Context()))
 				return
 			}
-			var totalPurged int
-			for _, f := range req.ReconcileFiles {
-				n, err := cfg.Service.DeleteMemoriesBySource(r.Context(), repo, f)
-				if err != nil {
-					mapServiceError(w, r, err)
-					return
-				}
-				totalPurged += n
+			totalPurged, err := cfg.Service.DeleteMemoriesBySources(r.Context(), repo, req.ReconcileFiles)
+			if err != nil {
+				mapServiceError(w, r, err)
+				return
 			}
 			cfg.Logger.InfoContext(r.Context(), "memories.reconcile.purge",
 				"action", "reconcile_purge",
