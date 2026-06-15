@@ -23,18 +23,20 @@ spec:
       protocol: TCP
   egress:
   # PostgreSQL (cnpg-cluster in-namespace).
+  # networkPolicy.postgresClusterName must be set by the deploying helmfile.
   - to:
     - podSelector:
         matchLabels:
-          cnpg.io/cluster: tatara-lightrag-database-cluster
+          cnpg.io/cluster: {{ .Values.networkPolicy.postgresClusterName | quote }}
     ports:
     - port: {{ .Values.networkPolicy.postgresPort }}
       protocol: TCP
   # Neo4j in-namespace.
+  # networkPolicy.neo4jName must be set by the deploying helmfile.
   - to:
     - podSelector:
         matchLabels:
-          app.kubernetes.io/name: neo4j
+          helm.neo4j.com/neo4j.name: {{ .Values.networkPolicy.neo4jName | quote }}
     ports:
     - port: {{ .Values.networkPolicy.neo4jPort }}
       protocol: TCP

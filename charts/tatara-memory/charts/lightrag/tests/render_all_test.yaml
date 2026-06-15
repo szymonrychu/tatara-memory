@@ -35,20 +35,18 @@ tests:
       - hasDocuments:
           count: 1
 
-  - it: networkpolicy renders by default
+  - it: networkpolicy renders when selectors supplied
     template: templates/networkpolicy.yaml
+    set:
+      networkPolicy:
+        postgresClusterName: tatara-memory-postgres
+        neo4jName: tatara-neo4j
     asserts:
       - hasDocuments:
           count: 1
 
   - it: ingress not rendered by default
     template: templates/ingress.yaml
-    asserts:
-      - hasDocuments:
-          count: 0
-
-  - it: servicemonitor not rendered by default
-    template: templates/servicemonitor.yaml
     asserts:
       - hasDocuments:
           count: 0

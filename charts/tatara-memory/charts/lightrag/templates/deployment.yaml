@@ -26,9 +26,17 @@ spec:
       imagePullSecrets:
       - name: {{ .Values.image.pullSecretName }}
       {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
       - name: lightrag
         image: {{ include "lightrag.image" . | quote }}
+        {{- with .Values.containerSecurityContext }}
+        securityContext:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         ports:
         - name: http

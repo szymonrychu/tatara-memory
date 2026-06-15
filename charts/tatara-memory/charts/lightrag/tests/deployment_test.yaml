@@ -102,3 +102,24 @@ tests:
       - notMatchRegex:
           path: spec.template.spec.containers[0].image
           pattern: "sk-leak-canary"
+
+  - it: pod securityContext runs non-root with fsGroup
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: true
+      - equal:
+          path: spec.template.spec.securityContext.runAsUser
+          value: 65532
+      - equal:
+          path: spec.template.spec.securityContext.fsGroup
+          value: 65532
+
+  - it: container securityContext drops all caps and no privilege escalation
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation
+          value: false
+      - contains:
+          path: spec.template.spec.containers[0].securityContext.capabilities.drop
+          content: ALL
