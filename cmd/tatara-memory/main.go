@@ -37,7 +37,7 @@ func run(ctx context.Context, args []string) error {
 	if err := a.migrate(ctx); err != nil {
 		return err
 	}
-	a.log.Info("starting", "version", version.Version, "addr", cfg.HTTPAddr)
+	a.log.Info("starting", "action", "service_start", "version", version.Version, "addr", cfg.HTTPAddr)
 
 	ln, err := newListener(cfg.HTTPAddr)
 	if err != nil {
@@ -54,11 +54,12 @@ func run(ctx context.Context, args []string) error {
 
 	select {
 	case err := <-errCh:
+		_ = a.shutdown(context.Background())
 		return err
 	case <-done:
 	}
 
-	a.log.Info("shutdown signal received")
+	a.log.Info("shutdown signal received", "action", "service_shutdown")
 	return a.shutdown(context.Background())
 }
 

@@ -2,7 +2,7 @@ suite: pvc
 templates:
   - templates/pvc.yaml
 tests:
-  - it: renders by default
+  - it: renders by default without storageClassName (uses cluster default)
     asserts:
       - isKind:
           of: PersistentVolumeClaim
@@ -15,9 +15,18 @@ tests:
       - equal:
           path: spec.resources.requests.storage
           value: 10Gi
+      - isNull:
+          path: spec.storageClassName
+
+  - it: storageClassName rendered when supplied by helmfile
+    set:
+      persistence:
+        storageClass: rook-ceph
+    asserts:
       - equal:
           path: spec.storageClassName
           value: rook-ceph
+
   - it: skipped when persistence.enabled=false
     set:
       persistence:
@@ -25,6 +34,7 @@ tests:
     asserts:
       - hasDocuments:
           count: 0
+
   - it: skipped when persistence.existingClaim is set
     set:
       persistence:

@@ -117,6 +117,11 @@ lightrag:
   postgresDatabase: tatara_memory
   postgresUser: tatara_memory
   neo4jUri: bolt://tatara-neo4j-lb-neo4j:7687
+  networkPolicy:
+    # Match the cnpg.io/cluster label on the postgres pods (parent pgHost prefix).
+    postgresClusterName: tatara-memory-postgres
+    # Match the helm.neo4j.com/neo4j.name label on the neo4j pod.
+    neo4jName: tatara-neo4j
   secrets:
     openai:
       existingSecret: ""

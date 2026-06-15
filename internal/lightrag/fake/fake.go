@@ -29,16 +29,47 @@ type Client struct {
 	dataRes  lightrag.QueryDataResponse
 	lastReq  lightrag.QueryRequest // most recent Query request, for assertions
 	nextID   int
+
+	// insertStatus controls what DocStatus InsertText assigns to new documents.
+	// Defaults to DocStatusProcessed (eager). Set to DocStatusPending or
+	// DocStatusProcessing via SetInsertStatus to exercise the polling lifecycle.
+	insertStatus lightrag.DocStatus
+
+	// leaveEdgesOnDelete disables the fake's eager incident-edge cascade in
+	// DeleteEntity, mirroring the real backend's async/eventual behaviour.
+	// When true, dangling edges survive the entity deletion.
+	leaveEdgesOnDelete bool
 }
 
 // New returns a ready-to-use fake Client.
+// By default InsertText returns documents in DocStatusProcessed state and
+// DeleteEntity eagerly removes incident edges (eager/synchronous semantics).
+// Use SetInsertStatus and SetLeaveEdgesOnDelete to exercise async/eventual paths.
 func New() *Client {
 	return &Client{
-		docs:     map[string]docState{},
-		tracks:   map[string][]string{},
-		entities: map[string]map[string]any{},
-		edges:    map[string]map[string]any{},
+		docs:         map[string]docState{},
+		tracks:       map[string][]string{},
+		entities:     map[string]map[string]any{},
+		edges:        map[string]map[string]any{},
+		insertStatus: lightrag.DocStatusProcessed,
 	}
+}
+
+// SetInsertStatus controls the DocStatus assigned to documents created by InsertText.
+// Pass DocStatusPending or DocStatusProcessing to exercise polling/lifecycle code paths.
+func (c *Client) SetInsertStatus(s lightrag.DocStatus) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.insertStatus = s
+}
+
+// SetLeaveEdgesOnDelete controls whether DeleteEntity removes incident edges.
+// When true the fake mirrors real LightRAG async behaviour: edges are left
+// in place after entity deletion so callers must tolerate dangling references.
+func (c *Client) SetLeaveEdgesOnDelete(v bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.leaveEdgesOnDelete = v
 }
 
 func (c *Client) nextStr(prefix string) string {
@@ -85,19 +116,25 @@ func (c *Client) SeedLabels(labels []string) {
 	c.labels = append([]string(nil), labels...)
 }
 
-// InsertText accepts a text submission and produces a track_id with one processed doc.
+// InsertText accepts a text submission and produces a track_id with one doc.
+// The doc's initial status is controlled by SetInsertStatus (default: DocStatusProcessed).
+// Use SetInsertStatus(DocStatusPending) to exercise polling/lifecycle code paths.
 func (c *Client) InsertText(_ context.Context, req lightrag.InsertTextRequest) (*lightrag.InsertResponse, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	trackID := c.nextStr("track")
 	docID := c.nextStr("doc")
 	now := time.Now().UTC().Format(time.RFC3339)
+	status := c.insertStatus
+	if status == "" {
+		status = lightrag.DocStatusProcessed
+	}
 	c.docs[docID] = docState{
 		doc: lightrag.DocStatusResponse{
 			ID:             docID,
 			ContentSummary: req.Text,
 			ContentLength:  len(req.Text),
-			Status:         lightrag.DocStatusProcessed,
+			Status:         status,
 			CreatedAt:      now,
 			UpdatedAt:      now,
 			TrackID:        trackID,
@@ -254,7 +291,10 @@ func (c *Client) UpdateEntity(_ context.Context, req lightrag.EntityUpdateReques
 	return &lightrag.EntityResponse{Status: "success", Message: "updated", Data: copyMap(cur)}, nil
 }
 
-// DeleteEntity removes an entity (and any incident edges).
+// DeleteEntity removes an entity.
+// By default (leaveEdgesOnDelete==false) incident edges are also removed for test convenience.
+// Set SetLeaveEdgesOnDelete(true) to mirror real LightRAG async semantics where edges may
+// survive the deletion and callers must tolerate dangling references.
 func (c *Client) DeleteEntity(_ context.Context, req lightrag.DeleteEntityRequest) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -263,10 +303,12 @@ func (c *Client) DeleteEntity(_ context.Context, req lightrag.DeleteEntityReques
 	}
 	delete(c.entities, req.EntityName)
 	c.labels = removeLabel(c.labels, req.EntityName)
-	for k := range c.edges {
-		src, tgt := parseEdgeKey(k)
-		if src == req.EntityName || tgt == req.EntityName {
-			delete(c.edges, k)
+	if !c.leaveEdgesOnDelete {
+		for k := range c.edges {
+			src, tgt := parseEdgeKey(k)
+			if src == req.EntityName || tgt == req.EntityName {
+				delete(c.edges, k)
+			}
 		}
 	}
 	return nil

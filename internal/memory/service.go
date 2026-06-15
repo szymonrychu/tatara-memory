@@ -2,12 +2,13 @@ package memory
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/szymonrychu/tatara-memory/internal/lightrag"
 )
@@ -44,24 +45,53 @@ type Service struct {
 	tomb    tombstoner
 	sources sourceIndex
 	now     func() time.Time
+	log     *slog.Logger
+	ops     *prometheus.CounterVec
 }
 
 // NewService returns a Service backed by the given LightRAG client.
 // tomb may be nil; if nil, tombstone checks are skipped (no-op).
 func NewService(lr lightrag.Client, tomb tombstoner) *Service {
-	return &Service{lr: lr, tomb: tomb, now: time.Now}
+	return &Service{lr: lr, tomb: tomb, now: time.Now, log: slog.Default(), ops: newServiceOps(nil)}
 }
 
 // NewServiceWithSources is NewService plus a sources index that backs
 // DeleteMemoriesBySource. sources may be nil (delete-by-source is a no-op).
 func NewServiceWithSources(lr lightrag.Client, tomb tombstoner, sources sourceIndex) *Service {
-	return &Service{lr: lr, tomb: tomb, sources: sources, now: time.Now}
+	return &Service{lr: lr, tomb: tomb, sources: sources, now: time.Now, log: slog.Default(), ops: newServiceOps(nil)}
 }
 
-func newID(prefix string) string {
-	var b [12]byte
-	_, _ = rand.Read(b[:])
-	return prefix + "_" + hex.EncodeToString(b[:])
+// WithLogger sets the logger on the service (functional option on the pointer).
+func (s *Service) WithLogger(l *slog.Logger) *Service { s.log = l; return s }
+
+// WithMetrics registers tatara_memory_op_total{op,result} in reg.
+func (s *Service) WithMetrics(reg prometheus.Registerer) *Service {
+	s.ops = newServiceOps(reg)
+	return s
+}
+
+func newServiceOps(reg prometheus.Registerer) *prometheus.CounterVec {
+	c := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "tatara_memory_op_total",
+		Help: "Count of memory service operations by op and result.",
+	}, []string{"op", "result"})
+	if reg != nil {
+		reg.MustRegister(c)
+	}
+	for _, op := range []string{"create", "delete", "delete_by_source"} {
+		for _, r := range []string{"success", "error"} {
+			c.WithLabelValues(op, r)
+		}
+	}
+	return c
+}
+
+func (s *Service) incOp(op string, err error) {
+	result := "success"
+	if err != nil {
+		result = "error"
+	}
+	s.ops.WithLabelValues(op, result).Inc()
 }
 
 func wrapUpstream(err error) error {
@@ -89,15 +119,20 @@ func wrapUpstream(err error) error {
 // Ingest is asynchronous; the returned Memory's Text is what was submitted,
 // not what LightRAG will eventually summarise.
 func (s *Service) CreateMemory(ctx context.Context, m Memory) (Memory, error) {
-	if m.ID == "" {
-		m.ID = newID("mem")
-	}
+	start := time.Now()
 	resp, err := s.lr.InsertText(ctx, ToInsertText(m))
 	if err != nil {
+		s.incOp("create", err)
 		return Memory{}, wrapUpstream(err)
 	}
 	m.ID = resp.TrackID
 	m.CreatedAt = s.now()
+	s.incOp("create", nil)
+	s.log.InfoContext(ctx, "memory.create",
+		"action", "create_memory",
+		"resource_id", m.ID,
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
 	return m, nil
 }
 
@@ -126,8 +161,10 @@ func (s *Service) GetMemory(ctx context.Context, trackID string) (Memory, error)
 
 // DeleteMemory removes all documents associated with the given track_id.
 func (s *Service) DeleteMemory(ctx context.Context, trackID string) error {
+	start := time.Now()
 	ts, err := s.lr.TrackStatus(ctx, trackID)
 	if err != nil {
+		s.incOp("delete", err)
 		return wrapUpstream(err)
 	}
 	docIDs := make([]string, 0, len(ts.Documents))
@@ -135,17 +172,47 @@ func (s *Service) DeleteMemory(ctx context.Context, trackID string) error {
 		docIDs = append(docIDs, d.ID)
 	}
 	if len(docIDs) == 0 {
-		return fmt.Errorf("%w: track %s has no documents", ErrNotFound, trackID)
+		err := fmt.Errorf("%w: track %s has no documents", ErrNotFound, trackID)
+		s.incOp("delete", err)
+		return err
 	}
-	if _, err := s.lr.DeleteDocs(ctx, lightrag.DeleteDocRequest{DocIDs: docIDs}); err != nil {
-		return wrapUpstream(err)
-	}
+	// Mark tombstone BEFORE the upstream delete so GET-after-DELETE returns
+	// ErrNotFound immediately even if DeleteDocs succeeds but the caller retries.
+	// If DeleteDocs subsequently fails the tombstone is still valid (logically
+	// deleted) and the reaper's 24h TTL reconciles it.
 	if s.tomb != nil {
 		if err := s.tomb.Mark(ctx, trackID); err != nil {
+			s.incOp("delete", err)
 			return fmt.Errorf("tombstone: %w", err)
 		}
 	}
+	if _, err := s.lr.DeleteDocs(ctx, lightrag.DeleteDocRequest{DocIDs: docIDs}); err != nil {
+		s.incOp("delete", err)
+		return wrapUpstream(err)
+	}
+	s.incOp("delete", nil)
+	s.log.InfoContext(ctx, "memory.delete",
+		"action", "delete_memory",
+		"resource_id", trackID,
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
 	return nil
+}
+
+// DeleteMemoriesBySources purges every memory produced from each file in files
+// for the given repo, calling DeleteMemoriesBySource once per file. Returns the
+// total count of track_ids purged across all files. A nil sources index is a
+// no-op returning 0.
+func (s *Service) DeleteMemoriesBySources(ctx context.Context, repo string, files []string) (int, error) {
+	total := 0
+	for _, f := range files {
+		n, err := s.DeleteMemoriesBySource(ctx, repo, f)
+		if err != nil {
+			return total, err
+		}
+		total += n
+	}
+	return total, nil
 }
 
 // DeleteMemoriesBySource purges every memory produced from (repo, filePath):
@@ -153,25 +220,39 @@ func (s *Service) DeleteMemory(ctx context.Context, trackID string) error {
 // tombstone), then clears the source-index rows. Idempotent; returns the count
 // of track_ids purged. A nil sources index is a no-op returning 0.
 func (s *Service) DeleteMemoriesBySource(ctx context.Context, repo, filePath string) (int, error) {
+	start := time.Now()
 	if s.sources == nil {
 		return 0, nil
 	}
 	ids, err := s.sources.TrackIDs(ctx, repo, filePath)
 	if err != nil {
+		s.incOp("delete_by_source", err)
 		return 0, fmt.Errorf("source track_ids: %w", err)
 	}
+	purged := 0
 	for _, id := range ids {
 		if err := s.DeleteMemory(ctx, id); err != nil {
 			if errors.Is(err, ErrNotFound) {
 				continue // already gone upstream; index cleanup below still runs
 			}
+			s.incOp("delete_by_source", err)
 			return 0, fmt.Errorf("delete memory %s for %s/%s: %w", id, repo, filePath, err)
 		}
+		purged++
 	}
 	if _, err := s.sources.DeleteByFile(ctx, repo, filePath); err != nil {
+		s.incOp("delete_by_source", err)
 		return 0, fmt.Errorf("purge source index %s/%s: %w", repo, filePath, err)
 	}
-	return len(ids), nil
+	s.incOp("delete_by_source", nil)
+	s.log.InfoContext(ctx, "memory.delete_by_source",
+		"action", "delete_memories_by_source",
+		"repo", repo,
+		"file_path", filePath,
+		"count", purged,
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
+	return purged, nil
 }
 
 func t(b bool) *bool { return &b }
@@ -283,12 +364,10 @@ func (s *Service) ListEdges(ctx context.Context) ([]Edge, error) {
 			return nil, wrapUpstream(err)
 		}
 		for _, e := range g.Edges {
+			// Edges are directed: deduplicate only on (source, target) so that
+			// A->B and B->A (distinct relations) both surface.
 			id := EncodeEdgeID(e.Source, e.Target)
-			rev := EncodeEdgeID(e.Target, e.Source)
 			if _, ok := seen[id]; ok {
-				continue
-			}
-			if _, ok := seen[rev]; ok {
 				continue
 			}
 			seen[id] = struct{}{}

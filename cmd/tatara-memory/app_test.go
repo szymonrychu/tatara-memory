@@ -52,12 +52,10 @@ func TestBuildObsAndDB(t *testing.T) {
 		WorkerPoolSize:  1,
 		LogLevel:        "info",
 	}
-	logger, reg, stop, err := buildObs(context.Background(), cfg)
+	logger, reg, err := buildObs(context.Background(), cfg)
 	require.NoError(t, err)
 	require.NotNil(t, logger)
 	require.NotNil(t, reg)
-	require.NotNil(t, stop)
-	require.NoError(t, stop(context.Background()))
 }
 
 func TestNewApp_WithFakes(t *testing.T) {

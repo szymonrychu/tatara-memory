@@ -17,7 +17,6 @@ type config struct {
 	WorkerPoolSize    int
 	IngestItemTimeout time.Duration
 	LogLevel          string
-	OTLPEndpoint      string
 }
 
 func envOr(key, def string) string {
@@ -69,7 +68,6 @@ func loadConfig(args []string) (config, error) {
 		WorkerPoolSize:    wp,
 		IngestItemTimeout: itemTimeout,
 		LogLevel:          envOr("LOG_LEVEL", "info"),
-		OTLPEndpoint:      envOr("OTLP_ENDPOINT", ""),
 	}
 
 	fs := flag.NewFlagSet("tatara-memory", flag.ContinueOnError)
@@ -81,7 +79,6 @@ func loadConfig(args []string) (config, error) {
 	fs.IntVar(&cfg.WorkerPoolSize, "worker-pool-size", cfg.WorkerPoolSize, "Ingest worker pool size")
 	fs.DurationVar(&cfg.IngestItemTimeout, "ingest-item-timeout", cfg.IngestItemTimeout, "Per-item ingest timeout (0 disables)")
 	fs.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "Log level (debug|info|warn|error)")
-	fs.StringVar(&cfg.OTLPEndpoint, "otlp-endpoint", cfg.OTLPEndpoint, "OTLP endpoint (empty disables tracing)")
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
 	}

@@ -40,11 +40,13 @@ secrets:
     existingSecretKey: api-key
     value: ""
   postgres:
-    existingSecret: tatara-lightrag-database-cluster-app
+    # existingSecret must be supplied by the deploying helmfile (cluster-specific).
+    existingSecret: ""
     existingSecretKey: password
     value: ""
   neo4j:
-    existingSecret: tatara-neo4j-password
+    # existingSecret must be supplied by the deploying helmfile (cluster-specific).
+    existingSecret: ""
     existingSecretKey: password
     value: ""
 
@@ -63,7 +65,9 @@ ingress:
 
 persistence:
   enabled: true
-  storageClass: rook-ceph
+  # storageClass: "" uses the cluster default. The deploying helmfile supplies
+  # the cluster-specific class (e.g. rook-ceph) per hard rule 14.
+  storageClass: ""
   accessMode: ReadWriteOnce
   size: 10Gi
   existingClaim: ""
@@ -81,9 +85,24 @@ networkPolicy:
   enabled: true
   postgresPort: 5432
   neo4jPort: 7687
+  # postgresClusterName is the value of the cnpg.io/cluster label on the cnpg pods.
+  # Must be supplied by the deploying helmfile; there is no safe default.
+  postgresClusterName: ""
+  # neo4jName is the value of the helm.neo4j.com/neo4j.name label on the neo4j pod.
+  # Must be supplied by the deploying helmfile; there is no safe default.
+  neo4jName: ""
 
-serviceMonitor:
-  enabled: false
-  path: /metrics
-  interval: 30s
-  scrapeTimeout: 10s
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
+
+# serviceMonitor removed: upstream LightRAG (FastAPI) does not expose a
+# Prometheus /metrics endpoint. Add it back when/if a prometheus exporter
+# is integrated into the LightRAG deployment.

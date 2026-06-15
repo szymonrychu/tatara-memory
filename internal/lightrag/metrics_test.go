@@ -1,7 +1,10 @@
 package lightrag_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -137,4 +140,48 @@ func TestHTTPClient_QueryDataInvalidMode_IncrementsErrorCounter(t *testing.T) {
 	require.NoError(t, err)
 
 	require.InDelta(t, 1.0, counterFor(t, mfs, "query_data", "error"), 0.0001)
+}
+
+// TestHealth_LoggedAtDebug verifies that a successful Health() call logs at
+// DEBUG (not INFO) so readiness probe noise does not drown business logs
+// (finding 10).
+func TestHealth_LoggedAtDebug(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	c, err := lightrag.NewHTTPClient(lightrag.HTTPConfig{BaseURL: srv.URL, Logger: logger})
+	require.NoError(t, err)
+
+	require.NoError(t, c.Health(context.Background()))
+
+	var logLine map[string]any
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &logLine))
+	require.Equal(t, "DEBUG", logLine["level"], "successful Health() must log at DEBUG, not INFO")
+}
+
+// TestHealth_ErrorNotLogged_SuccessHasNoErrorAttr verifies that a successful
+// call does not include an "error" attribute in the log line (finding 10).
+func TestHealth_Success_NoErrorAttr(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	c, err := lightrag.NewHTTPClient(lightrag.HTTPConfig{BaseURL: srv.URL, Logger: logger})
+	require.NoError(t, err)
+
+	require.NoError(t, c.Health(context.Background()))
+
+	var logLine map[string]any
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &logLine))
+	_, hasError := logLine["error"]
+	require.False(t, hasError, "successful call must not include an 'error' attribute in the log line")
 }

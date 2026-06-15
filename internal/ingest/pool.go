@@ -3,6 +3,7 @@ package ingest
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -32,6 +33,7 @@ type Pool struct {
 	sources     SourceSink
 	itemTimeout time.Duration
 	metrics     *metrics
+	log         *slog.Logger
 	notify      chan string
 	stop        chan struct{}
 	wg          sync.WaitGroup
@@ -69,6 +71,12 @@ func NewPoolWithSources(store JobStore, runner itemRunner, size int, sources Sou
 	return newPool(store, runner, size, 256, sources, opts...)
 }
 
+// WithLogger injects a structured logger into the pool for job start/finish and
+// item-failure log lines. Defaults to slog.Default() when not set.
+func WithLogger(l *slog.Logger) Option {
+	return func(p *Pool) { p.log = l }
+}
+
 func newPool(store JobStore, runner itemRunner, size, buf int, sources SourceSink, opts ...Option) *Pool {
 	if size < 1 {
 		size = 1
@@ -82,6 +90,7 @@ func newPool(store JobStore, runner itemRunner, size, buf int, sources SourceSin
 		size:    size,
 		sources: sources,
 		metrics: newMetrics(nil),
+		log:     slog.Default(),
 		notify:  make(chan string, buf),
 		stop:    make(chan struct{}),
 	}
@@ -112,9 +121,10 @@ func (p *Pool) Stop() {
 }
 
 // Notify queues the given job ID for processing. When the notify channel is
-// full the job ID is dropped and counted in ingest_notify_dropped_total; Resume
-// re-queues any such jobs at startup, so the drop is recoverable but must stay
-// observable (the silent loss class that caused the 0.2.2 stuck-queue incident).
+// full the job ID is dropped and counted in ingest_notify_dropped_total.
+// Dropped jobs are NOT recovered in-process: they remain 'queued' until the
+// next process start, when Resume re-queues all unfinished jobs. The metric is
+// the only signal that a drop occurred; alert on it so starvation is visible.
 func (p *Pool) Notify(jobID string) {
 	select {
 	case p.notify <- jobID:
@@ -166,25 +176,57 @@ func (p *Pool) worker(ctx context.Context) {
 }
 
 func (p *Pool) runJob(ctx context.Context, jobID string) {
+	jobStart := time.Now()
 	j, err := p.store.GetJob(ctx, jobID)
 	if err != nil {
+		p.log.ErrorContext(ctx, "ingest.job.get_failed",
+			"job_id", jobID,
+			"err", err,
+		)
 		return
 	}
+	p.log.InfoContext(ctx, "ingest.job.start",
+		"action", "ingest_job_start",
+		"job_id", jobID,
+	)
 	if j.Status == memory.JobStatusQueued {
 		j.Status = memory.JobStatusRunning
 		j.UpdatedAt = time.Now()
-		_ = p.store.UpdateJob(ctx, j)
+		if err := p.store.UpdateJob(ctx, j); err != nil {
+			p.log.ErrorContext(ctx, "ingest.job.update_failed",
+				"job_id", jobID,
+				"err", err,
+			)
+			p.metrics.incStoreOpError()
+		}
 	}
 	for {
+		// Respect shutdown between items so the context cancel is not the only
+		// exit path inside the drain loop.
+		select {
+		case <-p.stop:
+			return
+		case <-ctx.Done():
+			return
+		default:
+		}
+
 		item, ok, err := p.store.ClaimNextItem(ctx, jobID)
 		if err != nil || !ok {
 			break
 		}
 		p.metrics.incInFlight()
 		start := time.Now()
-		runErr := p.runItem(ctx, item)
+		runErr := p.runItem(ctx, jobID, item)
 		dur := time.Since(start).Seconds()
-		_ = p.store.MarkItemDone(ctx, jobID, item.IdempotencyKey, runErr)
+		if err := p.store.MarkItemDone(ctx, jobID, item.IdempotencyKey, runErr); err != nil {
+			p.log.ErrorContext(ctx, "ingest.item.mark_done_failed",
+				"job_id", jobID,
+				"idempotency_key", item.IdempotencyKey,
+				"err", err,
+			)
+			p.metrics.incStoreOpError()
+		}
 		p.metrics.decInFlight()
 		p.metrics.observeItem(dur, itemResult(runErr))
 
@@ -194,11 +236,27 @@ func (p *Pool) runJob(ctx context.Context, jobID string) {
 				IdempotencyKey: item.IdempotencyKey,
 				Error:          runErr.Error(),
 			}
+			p.log.WarnContext(ctx, "ingest.item.error",
+				"job_id", jobID,
+				"idempotency_key", item.IdempotencyKey,
+				"err", runErr,
+			)
 		}
-		_ = p.store.IncrementJobProgress(ctx, jobID, itemErr)
+		if err := p.store.IncrementJobProgress(ctx, jobID, itemErr); err != nil {
+			p.log.ErrorContext(ctx, "ingest.item.progress_failed",
+				"job_id", jobID,
+				"idempotency_key", item.IdempotencyKey,
+				"err", err,
+			)
+			p.metrics.incStoreOpError()
+		}
 	}
 	final, err := p.store.GetJob(ctx, jobID)
 	if err != nil {
+		p.log.ErrorContext(ctx, "ingest.job.finalize_get_failed",
+			"job_id", jobID,
+			"err", err,
+		)
 		return
 	}
 	switch {
@@ -213,7 +271,23 @@ func (p *Pool) runJob(ctx context.Context, jobID string) {
 		p.metrics.incJob(jobPartial)
 	}
 	final.UpdatedAt = time.Now()
-	_ = p.store.UpdateJob(ctx, final)
+	if err := p.store.UpdateJob(ctx, final); err != nil {
+		p.log.ErrorContext(ctx, "ingest.job.finalize_update_failed",
+			"job_id", jobID,
+			"status", string(final.Status),
+			"err", err,
+		)
+		p.metrics.incStoreOpError()
+	}
+	p.log.InfoContext(ctx, "ingest.job.done",
+		"action", "ingest_job_done",
+		"job_id", jobID,
+		"status", string(final.Status),
+		"done", final.Done,
+		"failed", final.Failed,
+		"total", final.Total,
+		"duration_ms", time.Since(jobStart).Milliseconds(),
+	)
 }
 
 // itemResult classifies a per-item run error for ingest_items_total: a fired
@@ -233,30 +307,55 @@ func itemResult(err error) string {
 // runItem processes a single item, applying the per-item timeout when one is
 // configured. MarkItemDone/IncrementJobProgress use the parent ctx so progress
 // is recorded even when the item's own deadline fired.
-func (p *Pool) runItem(ctx context.Context, it memory.IngestItem) error {
+func (p *Pool) runItem(ctx context.Context, jobID string, it memory.IngestItem) error {
 	if p.itemTimeout <= 0 {
-		return p.processItem(ctx, it)
+		return p.processItem(ctx, jobID, it)
 	}
 	ctx, cancel := context.WithTimeout(ctx, p.itemTimeout)
 	defer cancel()
-	return p.processItem(ctx, it)
+	return p.processItem(ctx, jobID, it)
 }
 
-func (p *Pool) processItem(ctx context.Context, it memory.IngestItem) error {
-	created, err := p.runner.CreateMemory(ctx, memory.Memory{
-		ID:       it.IdempotencyKey,
-		Text:     it.Text,
-		Metadata: it.Metadata,
-	})
-	if err != nil {
-		return err
+func (p *Pool) processItem(ctx context.Context, jobID string, it memory.IngestItem) error {
+	// If TrackID is already set, CreateMemory succeeded on a prior attempt.
+	// Skip re-insertion to avoid duplicate LightRAG documents on retry.
+	if it.TrackID == "" {
+		created, err := p.runner.CreateMemory(ctx, memory.Memory{
+			ID:       it.IdempotencyKey,
+			Text:     it.Text,
+			Metadata: it.Metadata,
+		})
+		if err != nil {
+			return err
+		}
+		it.TrackID = created.ID
+		// Persist the track_id so a retry of this item (e.g. crash between here
+		// and MarkItemDone) sees TrackID != "" and skips re-insertion.
+		if err := p.store.SetItemTrackID(ctx, jobID, it.IdempotencyKey, it.TrackID); err != nil {
+			// Non-fatal: the idempotency guard is best-effort. Log and continue.
+			p.log.WarnContext(ctx, "ingest.item.set_track_id_failed",
+				"job_id", jobID,
+				"idempotency_key", it.IdempotencyKey,
+				"err", err,
+			)
+		}
 	}
 	if p.sources != nil {
 		repo := it.Metadata["repo"]
 		file := it.Metadata["file_path"]
-		if repo != "" && file != "" && created.ID != "" {
-			if err := p.sources.Add(ctx, repo, file, created.ID); err != nil {
-				return err
+		if repo != "" && file != "" && it.TrackID != "" {
+			if err := p.sources.Add(ctx, repo, file, it.TrackID); err != nil {
+				// Source indexing is a secondary projection. Its failure does not
+				// invalidate the primary CreateMemory, so the item is still
+				// counted as done. Log at WARN and count for observability.
+				p.log.WarnContext(ctx, "ingest.item.source_index_failed",
+					"job_id", jobID,
+					"idempotency_key", it.IdempotencyKey,
+					"repo", repo,
+					"file_path", file,
+					"err", err,
+				)
+				p.metrics.incSourceIndexError()
 			}
 		}
 	}

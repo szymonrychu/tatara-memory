@@ -2,6 +2,7 @@ package memory
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -18,7 +19,18 @@ func ToInsertText(m Memory) lightrag.InsertTextRequest {
 // metadata values are heterogeneous; non-strings are rendered via fmt.Sprint
 // into the string-valued domain map.
 func FromDocStatus(trackID string, d lightrag.DocStatusResponse) Memory {
-	createdAt, _ := time.Parse(time.RFC3339, d.CreatedAt)
+	var createdAt time.Time
+	if d.CreatedAt != "" {
+		var err error
+		createdAt, err = time.Parse(time.RFC3339, d.CreatedAt)
+		if err != nil {
+			// Try RFC3339Nano before giving up.
+			createdAt, err = time.Parse(time.RFC3339Nano, d.CreatedAt)
+			if err != nil {
+				slog.Warn("memory: unparseable created_at", "track_id", trackID, "raw", d.CreatedAt)
+			}
+		}
+	}
 	var md map[string]string
 	if len(d.Metadata) > 0 {
 		md = make(map[string]string, len(d.Metadata))
@@ -112,17 +124,24 @@ func EntityUpdatePayload(patch Entity) map[string]any {
 }
 
 // EdgeFromGraphEdge maps a graph edge into a domain Edge.
+// Relation is read from relation_data["keywords"] as the primary source (symmetric
+// with RelationCreatePayload which writes the relation into keywords), with e.Type
+// as the fallback for edges created by external tooling.
 func EdgeFromGraphEdge(e lightrag.GraphEdge) Edge {
 	out := Edge{
-		ID:       EncodeEdgeID(e.Source, e.Target),
-		From:     e.Source,
-		To:       e.Target,
-		Relation: e.Type,
+		ID:   EncodeEdgeID(e.Source, e.Target),
+		From: e.Source,
+		To:   e.Target,
 	}
 	if e.Properties != nil {
-		if r, ok := stringProp(e.Properties, "keywords"); ok && out.Relation == "" {
+		if r, ok := stringProp(e.Properties, "keywords"); ok {
 			out.Relation = r
 		}
+	}
+	if out.Relation == "" {
+		out.Relation = e.Type
+	}
+	if e.Properties != nil {
 		props := make(map[string]string, len(e.Properties))
 		for k, v := range e.Properties {
 			if s, ok := v.(string); ok {

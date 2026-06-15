@@ -10,8 +10,9 @@ import (
 
 type memItem struct {
 	memory.IngestItem
-	status string
-	err    string
+	status  string
+	err     string
+	trackID string
 }
 
 type memJobBundle struct {
@@ -69,7 +70,8 @@ func (s *MemStore) UpdateJob(_ context.Context, j memory.IngestJob) error {
 	return nil
 }
 
-// ClaimNextItem atomically marks the next pending item as running and returns it.
+// ClaimNextItem atomically marks the next pending item as running and returns it,
+// including any previously persisted TrackID so processItem can skip re-insertion.
 func (s *MemStore) ClaimNextItem(_ context.Context, jobID string) (memory.IngestItem, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -80,10 +82,30 @@ func (s *MemStore) ClaimNextItem(_ context.Context, jobID string) (memory.Ingest
 	for _, it := range b.items {
 		if it.status == "pending" {
 			it.status = "running"
-			return it.IngestItem, true, nil
+			item := it.IngestItem
+			item.TrackID = it.trackID
+			return item, true, nil
 		}
 	}
 	return memory.IngestItem{}, false, nil
+}
+
+// SetItemTrackID persists the LightRAG track_id for an item so retries can
+// detect that CreateMemory already succeeded and skip re-insertion.
+func (s *MemStore) SetItemTrackID(_ context.Context, jobID, key, trackID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, ok := s.jobs[jobID]
+	if !ok {
+		return ErrJobNotFound
+	}
+	for _, it := range b.items {
+		if it.IdempotencyKey == key {
+			it.trackID = trackID
+			return nil
+		}
+	}
+	return nil
 }
 
 // MarkItemDone records the outcome of a processed item.

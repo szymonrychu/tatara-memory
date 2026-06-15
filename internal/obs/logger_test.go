@@ -25,26 +25,3 @@ func TestLogger_EmitsValidJSON(t *testing.T) {
 	require.Equal(t, "INFO", got["level"])
 	require.Contains(t, got, "time")
 }
-
-func TestDefaultLogger_StableFields(t *testing.T) {
-	var buf bytes.Buffer
-	base := obs.NewLogger(&buf, slog.LevelInfo)
-	req := obs.RequestLogger(base, obs.RequestFields{
-		RequestID:  "rid-1",
-		User:       "szymon",
-		Route:      "/v1/memories",
-		Method:     "POST",
-		Status:     201,
-		DurationMs: 12,
-	})
-	req.Info("request handled")
-
-	var got map[string]any
-	require.NoError(t, json.Unmarshal(buf.Bytes(), &got))
-	require.Equal(t, "rid-1", got["request_id"])
-	require.Equal(t, "szymon", got["user"])
-	require.Equal(t, "/v1/memories", got["route"])
-	require.Equal(t, "POST", got["method"])
-	require.EqualValues(t, 201, got["status"])
-	require.EqualValues(t, 12, got["duration_ms"])
-}

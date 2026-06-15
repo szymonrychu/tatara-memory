@@ -16,6 +16,17 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+const (
+	// maxBodyBytes caps error and success body reads to prevent OOM from a misbehaving server.
+	maxBodyBytes = 4 * 1024 * 1024 // 4 MiB
+	// maxErrBodyDisplay caps the Body string stored in HTTPError (and thus log lines).
+	maxErrBodyDisplay = 512
+	// retryMax is the maximum number of retry attempts after the initial request.
+	retryMax = 3
+	// retryBaseDelay is the initial backoff delay before the first retry.
+	retryBaseDelay = 200 * time.Millisecond
+)
+
 // HTTPConfig holds constructor parameters for HTTPClient.
 type HTTPConfig struct {
 	BaseURL    string
@@ -62,54 +73,153 @@ func (e *HTTPError) Error() string {
 	return fmt.Sprintf("lightrag: %s -> %d: %s", e.Path, e.Status, e.Body)
 }
 
+// LogicalError is returned when LightRAG responds HTTP 200 but the response
+// envelope Status field indicates a logical failure (e.g. "failure").
+type LogicalError struct {
+	Op      string
+	Status  string
+	Message string
+}
+
+func (e *LogicalError) Error() string {
+	return fmt.Sprintf("lightrag: %s: logical failure: status=%q message=%q", e.Op, e.Status, e.Message)
+}
+
 func (c *HTTPClient) do(ctx context.Context, op, method, path string, body io.Reader, out any) error {
 	start := time.Now()
 	err := c.roundTrip(ctx, method, path, body, out)
 	dur := time.Since(start).Seconds()
 	c.metrics.observe(op, dur, err)
-	c.log.LogAttrs(ctx, levelFor(err), "lightrag_call",
+	attrs := []slog.Attr{
 		slog.String("op", op),
 		slog.String("method", method),
 		slog.String("path", path),
 		slog.Float64("duration_s", dur),
-		slog.Any("error", err),
-	)
+	}
+	if err != nil {
+		attrs = append(attrs, slog.Any("error", err))
+	}
+	c.log.LogAttrs(ctx, levelFor(op, err), "lightrag_call", attrs...)
 	return err
 }
 
-func levelFor(err error) slog.Level {
+func levelFor(op string, err error) slog.Level {
 	if err != nil {
 		return slog.LevelWarn
+	}
+	if op == OpHealth {
+		return slog.LevelDebug
 	}
 	return slog.LevelInfo
 }
 
+// isRetryable returns true for transport errors and 5xx/429 responses that
+// are safe to retry (the caller ensures the body is re-readable per attempt).
+func isRetryable(statusCode int, transportErr error) bool {
+	if transportErr != nil {
+		return true
+	}
+	return statusCode == http.StatusTooManyRequests || statusCode >= 500
+}
+
 func (c *HTTPClient) roundTrip(ctx context.Context, method, path string, body io.Reader, out any) error {
-	req, err := http.NewRequestWithContext(ctx, method, c.base+path, body)
-	if err != nil {
-		return fmt.Errorf("lightrag: build request: %w", err)
-	}
-	req.Header.Set("Accept", "application/json")
+	// Capture body bytes once so each retry attempt can rebuild the reader.
+	var bodyBytes []byte
 	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+		var err error
+		bodyBytes, err = io.ReadAll(body)
+		if err != nil {
+			return fmt.Errorf("lightrag: read body: %w", err)
+		}
 	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("lightrag: do request: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode >= 400 {
-		buf, _ := io.ReadAll(resp.Body)
-		return &HTTPError{Status: resp.StatusCode, Body: string(buf), Path: path}
-	}
-	if out == nil || resp.StatusCode == http.StatusNoContent {
-		_, _ = io.Copy(io.Discard, resp.Body)
+
+	var lastErr error
+	// skipBackoff is set when the previous iteration already slept (Retry-After),
+	// so the exponential backoff is not stacked on top of the server-directed wait.
+	skipBackoff := false
+	for attempt := 0; attempt <= retryMax; attempt++ {
+		if attempt > 0 && !skipBackoff {
+			delay := retryBaseDelay * (1 << (attempt - 1)) // 200ms, 400ms, 800ms
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+		skipBackoff = false
+
+		var reqBody io.Reader
+		if bodyBytes != nil {
+			reqBody = bytes.NewReader(bodyBytes)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, method, c.base+path, reqBody)
+		if err != nil {
+			return fmt.Errorf("lightrag: build request: %w", err)
+		}
+		req.Header.Set("Accept", "application/json")
+		if reqBody != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+
+		resp, err := c.http.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("lightrag: do request: %w", err)
+			if isRetryable(0, err) {
+				c.log.LogAttrs(ctx, slog.LevelDebug, "lightrag_retry",
+					slog.String("path", path),
+					slog.Int("attempt", attempt+1),
+					slog.Any("error", err),
+				)
+				continue
+			}
+			return lastErr
+		}
+
+		if resp.StatusCode >= 400 {
+			buf, _ := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
+			_ = resp.Body.Close()
+			body := string(buf)
+			if len(body) > maxErrBodyDisplay {
+				body = body[:maxErrBodyDisplay] + "...(truncated)"
+			}
+			httpErr := &HTTPError{Status: resp.StatusCode, Body: body, Path: path}
+			if isRetryable(resp.StatusCode, nil) && attempt < retryMax {
+				lastErr = httpErr
+				// Honour Retry-After if present: sleep the server-directed
+				// duration now and skip the next iteration's exponential
+				// backoff (do not stack the two waits, do not burn an attempt).
+				if ra := resp.Header.Get("Retry-After"); ra != "" {
+					if secs, parseErr := strconv.Atoi(ra); parseErr == nil {
+						select {
+						case <-ctx.Done():
+							return ctx.Err()
+						case <-time.After(time.Duration(secs) * time.Second):
+						}
+						skipBackoff = true
+					}
+				}
+				c.log.LogAttrs(ctx, slog.LevelDebug, "lightrag_retry",
+					slog.String("path", path),
+					slog.Int("attempt", attempt+1),
+					slog.Int("status", resp.StatusCode),
+				)
+				continue
+			}
+			return httpErr
+		}
+
+		defer func() { _ = resp.Body.Close() }()
+		if out == nil || resp.StatusCode == http.StatusNoContent {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			return nil
+		}
+		if err := json.NewDecoder(io.LimitReader(resp.Body, maxBodyBytes)).Decode(out); err != nil {
+			return fmt.Errorf("lightrag: decode response: %w", err)
+		}
 		return nil
 	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-		return fmt.Errorf("lightrag: decode response: %w", err)
-	}
-	return nil
+	return lastErr
 }
 
 func encodeJSON(v any) (*bytes.Buffer, error) {
@@ -174,6 +284,7 @@ func (c *HTTPClient) Query(ctx context.Context, req QueryRequest) (*QueryRespons
 }
 
 // QueryData executes a structured query and returns entities, relationships, and chunks.
+// A HTTP-200 response with a non-success Status envelope is treated as a LogicalError.
 func (c *HTTPClient) QueryData(ctx context.Context, req QueryRequest) (*QueryDataResponse, error) {
 	if req.Mode != "" && !req.Mode.Valid() {
 		c.metrics.incError(OpQueryData)
@@ -186,6 +297,9 @@ func (c *HTTPClient) QueryData(ctx context.Context, req QueryRequest) (*QueryDat
 	var out QueryDataResponse
 	if err := c.do(ctx, OpQueryData, http.MethodPost, "/query/data", body, &out); err != nil {
 		return nil, err
+	}
+	if out.Status != "" && out.Status != "success" {
+		return nil, &LogicalError{Op: OpQueryData, Status: out.Status, Message: out.Message}
 	}
 	return &out, nil
 }

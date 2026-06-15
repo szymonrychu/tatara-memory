@@ -18,8 +18,7 @@ type CommunityLabeler interface {
 
 // OpenAILabeler is a minimal chat/completions client used to name communities.
 // Gated on OPENAI_API_KEY; NewOpenAILabelerFromEnv returns nil when unset, in
-// which case callers fall back to the first non-empty member name (deterministic,
-// Louvain order; not degree-sorted).
+// which case callers fall back to the first non-empty member name.
 type OpenAILabeler struct {
 	apiKey  string
 	model   string

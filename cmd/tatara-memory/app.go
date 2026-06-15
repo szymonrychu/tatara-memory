@@ -33,11 +33,10 @@ type app struct {
 	reaper          *memory.Reaper
 	reaperCancel    context.CancelFunc
 	analyticsCancel context.CancelFunc
-	stopOTL         func(context.Context) error
 }
 
-// shutdown drains the HTTP server, stops the ingest pool, closes the DB, and
-// flushes OTLP spans. It caps the total wait at 30 s.
+// shutdown drains the HTTP server, stops the ingest pool, and closes the DB.
+// Caps the total wait at 30 s.
 func (a *app) shutdown(ctx context.Context) error {
 	shutdownCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -55,9 +54,6 @@ func (a *app) shutdown(ctx context.Context) error {
 	}
 	if a.db != nil {
 		_ = a.db.Close()
-	}
-	if a.stopOTL != nil {
-		_ = a.stopOTL(shutdownCtx)
 	}
 	return nil
 }
@@ -77,9 +73,8 @@ func (a *app) migrate(ctx context.Context) error {
 	return nil
 }
 
-// buildObs initialises the logger, Prometheus registry, and tracer provider.
-// When cfg.OTLPEndpoint is empty, a noop tracer is used.
-func buildObs(ctx context.Context, cfg config) (*slog.Logger, *prometheus.Registry, func(context.Context) error, error) {
+// buildObs initialises the logger and Prometheus registry.
+func buildObs(_ context.Context, cfg config) (*slog.Logger, *prometheus.Registry, error) {
 	level := slog.LevelInfo
 	switch cfg.LogLevel {
 	case "debug":
@@ -90,12 +85,9 @@ func buildObs(ctx context.Context, cfg config) (*slog.Logger, *prometheus.Regist
 		level = slog.LevelError
 	}
 	logger := obs.NewLogger(os.Stdout, level)
+	slog.SetDefault(logger)
 	reg := obs.PromRegistry()
-	_, stop, err := obs.TracerProvider(ctx, cfg.OTLPEndpoint, "tatara-memory")
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	return logger, reg, stop, nil
+	return logger, reg, nil
 }
 
 // openDB opens a pgx-backed *sql.DB with conservative connection limits.
@@ -136,7 +128,7 @@ type dbOpener interface {
 // newAppWithDeps wires all layers and returns a ready-to-serve app. deps is
 // injectable so tests can substitute a fake DB without a real Postgres.
 func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
-	logger, reg, stop, err := buildObs(ctx, cfg)
+	logger, reg, err := buildObs(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -163,8 +155,8 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 	store := ingest.NewPGStore(db)
 	tomb := memory.NewTombstoneStore(db)
 	srcStore := memory.NewSourceStore(db)
-	memSvc := memory.NewServiceWithSources(lrc, tomb, srcStore)
-	pool := ingest.NewPoolWithSources(store, memSvc, cfg.WorkerPoolSize, srcStore, ingest.WithItemTimeout(cfg.IngestItemTimeout), ingest.WithMetrics(reg))
+	memSvc := memory.NewServiceWithSources(lrc, tomb, srcStore).WithLogger(logger).WithMetrics(reg)
+	pool := ingest.NewPoolWithSources(store, memSvc, cfg.WorkerPoolSize, srcStore, ingest.WithItemTimeout(cfg.IngestItemTimeout), ingest.WithMetrics(reg), ingest.WithLogger(logger))
 	pool.Start(ctx)
 	if n, err := pool.Resume(ctx); err != nil {
 		logger.Warn("ingest pool resume failed", "error", err)
@@ -210,7 +202,7 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 		Service:    memSvc,
 		Ingest:     enqueuer,
 		CodeGraph:  cgSvc,
-		Verify:     auth.Middleware(verifier),
+		Verify:     auth.MiddlewareWithMetricsAndLogger(verifier, reg, logger),
 		Logger:     logger,
 		Registry:   reg,
 		ReadyCheck: readyFn,
@@ -232,7 +224,6 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 		reaper:          reaper,
 		reaperCancel:    reaperCancel,
 		analyticsCancel: analyticsCancel,
-		stopOTL:         stop,
 	}, nil
 }
 

@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 type ctxKey struct{}
@@ -17,25 +19,75 @@ func ClaimsFromContext(ctx context.Context) (*Claims, bool) {
 
 const wwwAuthenticate = `Bearer realm="tatara-memory"`
 
+// authAttempts holds the auth_attempts_total counter. It is constructed by
+// newAuthAttempts and kept as a package-private struct so the nil-registry path
+// stays a no-op without nil checks at every call site.
+type authAttempts struct {
+	total *prometheus.CounterVec
+}
+
+func newAuthAttempts(reg prometheus.Registerer) *authAttempts {
+	c := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "auth_attempts_total",
+		Help: "Count of auth middleware decisions by result.",
+	}, []string{"result"})
+	if reg != nil {
+		reg.MustRegister(c)
+	}
+	for _, r := range []string{"success", "missing_token", "invalid_scheme", "invalid_token"} {
+		c.WithLabelValues(r)
+	}
+	return &authAttempts{total: c}
+}
+
+func (a *authAttempts) inc(result string) { a.total.WithLabelValues(result).Inc() }
+
 // Middleware returns a chi-compatible middleware that verifies the Bearer token
 // and injects parsed Claims into the request context.
+// Uses slog.Default() for logs. Prefer MiddlewareWithMetricsAndLogger in production.
 func Middleware(v *Verifier) func(http.Handler) http.Handler {
+	return middleware(v, newAuthAttempts(nil), slog.Default())
+}
+
+// MiddlewareWithMetrics is Middleware plus an auth_attempts_total counter registered
+// in reg. Uses slog.Default() for logs. Prefer MiddlewareWithMetricsAndLogger in production.
+func MiddlewareWithMetrics(v *Verifier, reg prometheus.Registerer) func(http.Handler) http.Handler {
+	return middleware(v, newAuthAttempts(reg), slog.Default())
+}
+
+// MiddlewareWithLogger is Middleware with an explicitly injected logger, satisfying
+// rule 11 (JSON logs, same logger structure everywhere).
+func MiddlewareWithLogger(v *Verifier, logger *slog.Logger) func(http.Handler) http.Handler {
+	return middleware(v, newAuthAttempts(nil), logger)
+}
+
+// MiddlewareWithMetricsAndLogger is the production entry point: metrics in reg and
+// logs through the service's configured logger.
+func MiddlewareWithMetricsAndLogger(v *Verifier, reg prometheus.Registerer, logger *slog.Logger) func(http.Handler) http.Handler {
+	return middleware(v, newAuthAttempts(reg), logger)
+}
+
+func middleware(v *Verifier, attempts *authAttempts, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			raw, reason := bearerToken(r)
 			if raw == "" {
-				slog.WarnContext(r.Context(), "auth: rejected", "reason", reason)
+				attempts.inc(reason)
+				logger.WarnContext(r.Context(), "auth: rejected", "reason", reason)
 				w.Header().Set("WWW-Authenticate", wwwAuthenticate)
 				http.Error(w, "missing bearer token", http.StatusUnauthorized)
 				return
 			}
 			claims, err := v.Verify(r.Context(), raw)
 			if err != nil {
-				slog.WarnContext(r.Context(), "auth: rejected", "reason", "invalid_token")
+				attempts.inc("invalid_token")
+				logger.WarnContext(r.Context(), "auth: rejected", "reason", "invalid_token")
 				w.Header().Set("WWW-Authenticate", wwwAuthenticate)
 				http.Error(w, "invalid token", http.StatusUnauthorized)
 				return
 			}
+			attempts.inc("success")
+			logger.InfoContext(r.Context(), "auth: accepted", "user", claims.Subject)
 			ctx := context.WithValue(r.Context(), ctxKey{}, claims)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})

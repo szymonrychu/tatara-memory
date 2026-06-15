@@ -1,8 +1,8 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -38,16 +38,24 @@ func handleSearchEntities(cfg Config) http.HandlerFunc {
 
 func handlePatchEntity(cfg Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
 		var patch memory.Entity
-		if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
-			WriteError(w, http.StatusBadRequest, "invalid json", RequestIDFromContext(r.Context()))
+		if !decodeStrict(w, r, &patch) {
 			return
 		}
-		e, err := cfg.Service.PatchEntity(r.Context(), chi.URLParam(r, "id"), patch)
+		id := chi.URLParam(r, "id")
+		e, err := cfg.Service.PatchEntity(r.Context(), id, patch)
 		if err != nil {
 			mapServiceError(w, r, err)
 			return
 		}
+		cfg.Logger.InfoContext(r.Context(), "entity.patch",
+			"action", "patch_entity",
+			"request_id", RequestIDFromContext(r.Context()),
+			"user", claimSubject(r),
+			"resource_id", id,
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
 		WriteJSON(w, http.StatusOK, e)
 	}
 }
