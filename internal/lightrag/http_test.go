@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -338,4 +339,82 @@ func TestHTTPClient_AcceptHeader(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 	require.NoError(t, c.Health(context.Background()))
+}
+
+// Finding 1: retry on transient 5xx.
+func TestHTTPClient_Retry_On5xx(t *testing.T) {
+	var calls atomic.Int32
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		if n < 3 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(lightrag.InsertResponse{Status: "success", TrackID: "t-1"})
+	})
+	resp, err := c.InsertText(context.Background(), lightrag.InsertTextRequest{Text: "x"})
+	require.NoError(t, err)
+	require.Equal(t, "t-1", resp.TrackID)
+	require.GreaterOrEqual(t, calls.Load(), int32(3))
+}
+
+// Finding 1: 4xx is terminal (no retry).
+func TestHTTPClient_NoRetry_On4xx(t *testing.T) {
+	var calls atomic.Int32
+	c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`bad`))
+	})
+	_, err := c.TrackStatus(context.Background(), "x")
+	require.Error(t, err)
+	var he *lightrag.HTTPError
+	require.ErrorAs(t, err, &he)
+	require.Equal(t, 400, he.Status)
+	require.Equal(t, int32(1), calls.Load(), "4xx must not be retried")
+}
+
+// Finding 2: oversized error body is capped in HTTPError.Body.
+func TestHTTPClient_LimitReader_OversizedErrorBody(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		// Write 1 MiB of 'x' - well above maxErrBodyDisplay but below maxBodyBytes.
+		// We just want to confirm the stored body is truncated and the call returns.
+		_, _ = w.Write([]byte(strings.Repeat("x", 1024*1024)))
+	})
+	_, err := c.TrackStatus(context.Background(), "z")
+	require.Error(t, err)
+	var he *lightrag.HTTPError
+	require.ErrorAs(t, err, &he)
+	// Body must be capped - not the full 1 MiB.
+	require.Less(t, len(he.Body), 1024*1024, "error body must be truncated")
+}
+
+// Finding 6: QueryData HTTP-200 with failure status returns LogicalError.
+func TestHTTPClient_QueryData_LogicalFailureIsError(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(lightrag.QueryDataResponse{
+			Status:  "failure",
+			Message: "backend processing error",
+		})
+	})
+	_, err := c.QueryData(context.Background(), lightrag.QueryRequest{Query: "x"})
+	require.Error(t, err)
+	var le *lightrag.LogicalError
+	require.ErrorAs(t, err, &le)
+	require.Equal(t, "failure", le.Status)
+}
+
+// Finding 6: QueryData HTTP-200 with success status is not an error.
+func TestHTTPClient_QueryData_SuccessStatusOK(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(lightrag.QueryDataResponse{
+			Status:  "success",
+			Message: "ok",
+			Data:    map[string]any{},
+		})
+	})
+	resp, err := c.QueryData(context.Background(), lightrag.QueryRequest{Query: "x"})
+	require.NoError(t, err)
+	require.Equal(t, "success", resp.Status)
 }
