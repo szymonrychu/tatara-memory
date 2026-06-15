@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -42,10 +43,19 @@ func handleCreateEdge(cfg Config) http.HandlerFunc {
 
 func handleDeleteEdge(cfg Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if err := cfg.Service.DeleteEdge(r.Context(), chi.URLParam(r, "id")); err != nil {
+		start := time.Now()
+		id := chi.URLParam(r, "id")
+		if err := cfg.Service.DeleteEdge(r.Context(), id); err != nil {
 			mapServiceError(w, r, err)
 			return
 		}
+		cfg.Logger.InfoContext(r.Context(), "edge.delete",
+			"action", "delete_edge",
+			"request_id", RequestIDFromContext(r.Context()),
+			"user", claimSubject(r),
+			"resource_id", id,
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }

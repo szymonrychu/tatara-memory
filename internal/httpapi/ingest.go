@@ -98,6 +98,7 @@ func handleBulkIngest(cfg Config) http.HandlerFunc {
 			cfg.Logger.InfoContext(r.Context(), "memories.reconcile.purge",
 				"action", "reconcile_purge",
 				"request_id", RequestIDFromContext(r.Context()),
+				"user", claimSubject(r),
 				"repo", repo,
 				"files", len(req.ReconcileFiles),
 				"deleted", totalPurged,

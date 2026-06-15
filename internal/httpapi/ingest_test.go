@@ -197,6 +197,40 @@ func (s *countingReconcileSvc) DeleteMemoriesBySource(_ context.Context, repo, f
 	return 3, nil // default: 3 memories purged
 }
 
+// TestBulkIngestReconcile_LogsActor verifies that the reconcile purge INFO log
+// includes a user field so the actor is recorded on write operations.
+func TestBulkIngestReconcile_LogsActor(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	spy := &countingReconcileSvc{}
+	ing := &ingestStub{enq: memory.IngestJob{ID: "j-actor", Status: memory.JobStatusQueued}}
+	r := httpapi.NewRouter(httpapi.Config{Service: spy, Ingest: ing, Logger: logger})
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	body := `{"repo":"myrepo","reconcile_files":["a.go"],"items":[{"text":"x","metadata":{"repo":"myrepo","file_path":"a.go"}}]}`
+	resp, err := http.Post(srv.URL+"/memories:bulk", "application/json", bytes.NewReader([]byte(body)))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
+
+	var purgeLine map[string]any
+	for _, line := range bytes.Split(bytes.TrimSpace(buf.Bytes()), []byte("\n")) {
+		var m map[string]any
+		if err := json.Unmarshal(line, &m); err != nil {
+			continue
+		}
+		if m["msg"] == "memories.reconcile.purge" {
+			purgeLine = m
+			break
+		}
+	}
+	require.NotNil(t, purgeLine, "reconcile purge INFO log not emitted")
+	_, hasUser := purgeLine["user"]
+	require.True(t, hasUser, "reconcile purge log must include user field")
+}
+
 // TestBulkIngestReconcile_LogsPurgeCount verifies that the reconcile purge INFO
 // log captures the deleted count (finding 2). A non-zero count must be accepted
 // and the request must still return 202.
