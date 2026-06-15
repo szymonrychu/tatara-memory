@@ -2,8 +2,6 @@ package memory
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -96,12 +94,6 @@ func (s *Service) incOp(op string, err error) {
 	s.ops.WithLabelValues(op, result).Inc()
 }
 
-func newID(prefix string) string {
-	var b [12]byte
-	_, _ = rand.Read(b[:])
-	return prefix + "_" + hex.EncodeToString(b[:])
-}
-
 func wrapUpstream(err error) error {
 	if err == nil {
 		return nil
@@ -128,9 +120,6 @@ func wrapUpstream(err error) error {
 // not what LightRAG will eventually summarise.
 func (s *Service) CreateMemory(ctx context.Context, m Memory) (Memory, error) {
 	start := time.Now()
-	if m.ID == "" {
-		m.ID = newID("mem")
-	}
 	resp, err := s.lr.InsertText(ctx, ToInsertText(m))
 	if err != nil {
 		s.incOp("create", err)
@@ -187,15 +176,19 @@ func (s *Service) DeleteMemory(ctx context.Context, trackID string) error {
 		s.incOp("delete", err)
 		return err
 	}
-	if _, err := s.lr.DeleteDocs(ctx, lightrag.DeleteDocRequest{DocIDs: docIDs}); err != nil {
-		s.incOp("delete", err)
-		return wrapUpstream(err)
-	}
+	// Mark tombstone BEFORE the upstream delete so GET-after-DELETE returns
+	// ErrNotFound immediately even if DeleteDocs succeeds but the caller retries.
+	// If DeleteDocs subsequently fails the tombstone is still valid (logically
+	// deleted) and the reaper's 24h TTL reconciles it.
 	if s.tomb != nil {
 		if err := s.tomb.Mark(ctx, trackID); err != nil {
 			s.incOp("delete", err)
 			return fmt.Errorf("tombstone: %w", err)
 		}
+	}
+	if _, err := s.lr.DeleteDocs(ctx, lightrag.DeleteDocRequest{DocIDs: docIDs}); err != nil {
+		s.incOp("delete", err)
+		return wrapUpstream(err)
 	}
 	s.incOp("delete", nil)
 	s.log.InfoContext(ctx, "memory.delete",
@@ -236,6 +229,7 @@ func (s *Service) DeleteMemoriesBySource(ctx context.Context, repo, filePath str
 		s.incOp("delete_by_source", err)
 		return 0, fmt.Errorf("source track_ids: %w", err)
 	}
+	purged := 0
 	for _, id := range ids {
 		if err := s.DeleteMemory(ctx, id); err != nil {
 			if errors.Is(err, ErrNotFound) {
@@ -244,6 +238,7 @@ func (s *Service) DeleteMemoriesBySource(ctx context.Context, repo, filePath str
 			s.incOp("delete_by_source", err)
 			return 0, fmt.Errorf("delete memory %s for %s/%s: %w", id, repo, filePath, err)
 		}
+		purged++
 	}
 	if _, err := s.sources.DeleteByFile(ctx, repo, filePath); err != nil {
 		s.incOp("delete_by_source", err)
@@ -254,10 +249,10 @@ func (s *Service) DeleteMemoriesBySource(ctx context.Context, repo, filePath str
 		"action", "delete_memories_by_source",
 		"repo", repo,
 		"file_path", filePath,
-		"count", len(ids),
+		"count", purged,
 		"duration_ms", time.Since(start).Milliseconds(),
 	)
-	return len(ids), nil
+	return purged, nil
 }
 
 func t(b bool) *bool { return &b }
@@ -369,12 +364,10 @@ func (s *Service) ListEdges(ctx context.Context) ([]Edge, error) {
 			return nil, wrapUpstream(err)
 		}
 		for _, e := range g.Edges {
+			// Edges are directed: deduplicate only on (source, target) so that
+			// A->B and B->A (distinct relations) both surface.
 			id := EncodeEdgeID(e.Source, e.Target)
-			rev := EncodeEdgeID(e.Target, e.Source)
 			if _, ok := seen[id]; ok {
-				continue
-			}
-			if _, ok := seen[rev]; ok {
 				continue
 			}
 			seen[id] = struct{}{}

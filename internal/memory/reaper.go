@@ -12,6 +12,12 @@ import (
 	"github.com/szymonrychu/tatara-memory/internal/lightrag"
 )
 
+// TombstoneReapBatchSize is the maximum number of tombstones processed per tick
+// via the confirm (TrackStatus 404) path. A 24h forced-TTL backstop handles any
+// backlog beyond this limit. 1000 is chosen to keep each tick well under 5 min
+// even at the upstream's slowest observed response time (~200ms/id).
+const TombstoneReapBatchSize = 1000
+
 // trackStatuser is the subset of the lightrag client used by the reaper.
 // Defining it here keeps the package boundary narrow and the reaper testable
 // with a fake.
@@ -88,7 +94,7 @@ func (r *Reaper) Run(ctx context.Context) {
 }
 
 func (r *Reaper) tick(ctx context.Context) {
-	ids, err := r.store.List(ctx, 1000)
+	ids, err := r.store.List(ctx, TombstoneReapBatchSize)
 	if err != nil {
 		r.logger.Error("tombstone list", "err", err)
 		return
