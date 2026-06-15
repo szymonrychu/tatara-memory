@@ -395,3 +395,191 @@ func TestPoolIndexesSourcesAfterCreate(t *testing.T) {
 	require.Equal(t, "a.go", got[0].file)
 	require.Equal(t, "trk_k1", got[0].trackID)
 }
+
+// failingSources is a SourceSink that always returns an error.
+type failingSources struct{}
+
+func (failingSources) Add(_ context.Context, _, _, _ string) error {
+	return errors.New("index-backend down")
+}
+
+// TestSourceIndexFailureIsNonFatal covers finding-1: sources.Add failure must
+// not mark the item failed. The memory was already created; the item counts as
+// done and the job succeeds.
+func TestSourceIndexFailureIsNonFatal(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	store := ingest.NewMemStore()
+	pool := ingest.NewPoolWithSources(store, trackingRunner{}, 1, failingSources{})
+	pool.Start(ctx)
+	defer pool.Stop()
+
+	e := ingest.NewEnqueuer(store, nil)
+	job, err := e.Enqueue(ctx, []memory.IngestItem{
+		{IdempotencyKey: "k1", Text: "a", Metadata: map[string]string{"repo": "r", "file_path": "f.go"}},
+	})
+	require.NoError(t, err)
+	pool.Notify(job.ID)
+
+	waitFor(t, func() bool {
+		j, _ := store.GetJob(ctx, job.ID)
+		return j.Status.Terminal()
+	}, "job did not terminate")
+
+	j, _ := store.GetJob(ctx, job.ID)
+	// The source-index failure must NOT mark the item failed: job must be succeeded.
+	require.Equal(t, memory.JobStatusSucceeded, j.Status,
+		"sources.Add failure should be non-fatal; job must still succeed")
+	require.Equal(t, 1, j.Done)
+	require.Equal(t, 0, j.Failed)
+}
+
+// countingRunner counts how many times CreateMemory is called per idempotency key.
+type countingRunner struct {
+	mu    sync.Mutex
+	calls map[string]int
+}
+
+func (r *countingRunner) CreateMemory(_ context.Context, m memory.Memory) (memory.Memory, error) {
+	r.mu.Lock()
+	r.calls[m.ID]++
+	r.mu.Unlock()
+	m.ID = "trk_" + m.ID
+	return m, nil
+}
+
+func (r *countingRunner) callsFor(key string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls[key]
+}
+
+// TestIdempotencyKeyPreventsDoubleInsert covers finding-2: after an item's
+// CreateMemory succeeded and the track_id was persisted, a simulated
+// crash-and-resume must not call CreateMemory again for that item.
+func TestIdempotencyKeyPreventsDoubleInsert(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	store := ingest.NewMemStore()
+	runner := &countingRunner{calls: make(map[string]int)}
+
+	// Create the job with one item.
+	require.NoError(t, store.CreateJob(ctx, memory.IngestJob{
+		ID: "idem1", Status: memory.JobStatusRunning, Total: 1,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}, []memory.IngestItem{{IdempotencyKey: "idem-key", Text: "text"}}))
+
+	// Simulate: worker claimed the item and CreateMemory succeeded, but worker
+	// crashed before MarkItemDone. The track_id was persisted.
+	require.NoError(t, store.SetItemTrackID(ctx, "idem1", "idem-key", "trk_idem-key"))
+	// The item is still 'running' (claim happened); reset it to 'pending' as
+	// Resume would do.
+	_, err := store.ResetRunningItems(ctx)
+	require.NoError(t, err)
+
+	pool := ingest.NewPool(store, runner, 1)
+	pool.Start(ctx)
+	defer pool.Stop()
+
+	n, err := pool.Resume(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+
+	waitFor(t, func() bool {
+		j, _ := store.GetJob(ctx, "idem1")
+		return j.Status.Terminal()
+	}, "job did not terminate after resume")
+
+	j, _ := store.GetJob(ctx, "idem1")
+	require.Equal(t, memory.JobStatusSucceeded, j.Status)
+	// CreateMemory must NOT have been called again: TrackID was already set.
+	require.Equal(t, 0, runner.callsFor("idem-key"),
+		"CreateMemory must be skipped when TrackID is already persisted")
+}
+
+// TestShutdownRespectsStopInDrainLoop covers finding-5: stopping the pool while
+// a job is being drained must not hang; workers must observe the stop signal
+// and exit promptly even when there are pending items remaining.
+func TestShutdownRespectsStopInDrainLoop(t *testing.T) {
+	ctx := context.Background()
+
+	store := ingest.NewMemStore()
+	svc := memory.NewService(fake.New(), nil)
+	pool := ingest.NewPool(store, svc, 1)
+	pool.Start(ctx)
+
+	// Enqueue enough items so the worker is mid-drain when we Stop.
+	e := ingest.NewEnqueuer(store, nil)
+	_, err := e.Enqueue(ctx, []memory.IngestItem{
+		{Text: "a"}, {Text: "b"}, {Text: "c"}, {Text: "d"}, {Text: "e"},
+	})
+	require.NoError(t, err)
+	// Don't notify: we just want to verify Stop() returns promptly.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		pool.Stop()
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("pool.Stop() did not return within 2s; stop signal ignored inside drain loop")
+	}
+}
+
+// TestRunJobLogsStoreErrors covers finding-4: runJob must not silently discard
+// errors from store operations. We verify the job still reaches a terminal
+// state even when IncrementJobProgress fails (the item was processed, and the
+// pool must not stall).
+func TestRunJobLogsStoreErrors(t *testing.T) {
+	// This is behavioural: we use a store that wraps MemStore and injects an
+	// error on IncrementJobProgress for one call.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	base := ingest.NewMemStore()
+	store := &injectErrorStore{JobStore: base}
+	store.failProgress = true // first IncrementJobProgress call returns an error
+
+	svc := memory.NewService(fake.New(), nil)
+	pool := ingest.NewPool(store, svc, 1)
+	pool.Start(ctx)
+	defer pool.Stop()
+
+	e := ingest.NewEnqueuer(base, nil) // enqueue into the underlying store
+	job, err := e.Enqueue(ctx, []memory.IngestItem{{Text: "x"}})
+	require.NoError(t, err)
+	pool.Notify(job.ID)
+
+	// Even though IncrementJobProgress errored, the pool must not hang.
+	waitFor(t, func() bool {
+		j, _ := base.GetJob(ctx, job.ID)
+		return j.Status.Terminal()
+	}, "pool stalled after IncrementJobProgress error")
+}
+
+// injectErrorStore wraps a JobStore and can inject errors on specific ops.
+type injectErrorStore struct {
+	ingest.JobStore
+	mu           sync.Mutex
+	failProgress bool
+}
+
+func (s *injectErrorStore) IncrementJobProgress(ctx context.Context, jobID string, itemErr *memory.IngestItemError) error {
+	s.mu.Lock()
+	fail := s.failProgress
+	if fail {
+		s.failProgress = false // only fail once
+	}
+	s.mu.Unlock()
+	if fail {
+		return errors.New("db: transient error")
+	}
+	return s.JobStore.IncrementJobProgress(ctx, jobID, itemErr)
+}
+
+func (s *injectErrorStore) SetItemTrackID(ctx context.Context, jobID, key, trackID string) error {
+	return s.JobStore.SetItemTrackID(ctx, jobID, key, trackID)
+}

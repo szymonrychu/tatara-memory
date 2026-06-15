@@ -23,11 +23,13 @@ const (
 // zero, and a nil registry making registration a no-op. The struct is always
 // constructed (see newPool), so call sites never need a nil check.
 type metrics struct {
-	items         *prometheus.CounterVec
-	itemDuration  prometheus.Histogram
-	jobs          *prometheus.CounterVec
-	inFlight      prometheus.Gauge
-	notifyDropped prometheus.Counter
+	items            *prometheus.CounterVec
+	itemDuration     prometheus.Histogram
+	jobs             *prometheus.CounterVec
+	inFlight         prometheus.Gauge
+	notifyDropped    prometheus.Counter
+	sourceIndexError prometheus.Counter
+	storeOpError     prometheus.Counter
 }
 
 func newMetrics(reg prometheus.Registerer) *metrics {
@@ -53,9 +55,20 @@ func newMetrics(reg prometheus.Registerer) *metrics {
 			Name: "ingest_notify_dropped_total",
 			Help: "Count of job IDs dropped by Notify because the notify channel was full.",
 		}),
+		sourceIndexError: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "ingest_source_index_errors_total",
+			Help: "Count of non-fatal source-index (SourceSink.Add) failures after a successful CreateMemory.",
+		}),
+		storeOpError: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "ingest_store_op_errors_total",
+			Help: "Count of JobStore operation failures in runJob (progress, finalize). Silent loss is observable.",
+		}),
 	}
 	if reg != nil {
-		reg.MustRegister(m.items, m.itemDuration, m.jobs, m.inFlight, m.notifyDropped)
+		reg.MustRegister(
+			m.items, m.itemDuration, m.jobs, m.inFlight,
+			m.notifyDropped, m.sourceIndexError, m.storeOpError,
+		)
 	}
 	for _, result := range []string{resultSuccess, resultError, resultTimeout} {
 		m.items.WithLabelValues(result)
@@ -88,4 +101,12 @@ func (m *metrics) decInFlight() {
 
 func (m *metrics) incNotifyDropped() {
 	m.notifyDropped.Inc()
+}
+
+func (m *metrics) incSourceIndexError() {
+	m.sourceIndexError.Inc()
+}
+
+func (m *metrics) incStoreOpError() {
+	m.storeOpError.Inc()
 }

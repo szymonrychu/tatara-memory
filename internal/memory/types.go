@@ -118,4 +118,8 @@ type IngestItem struct {
 	IdempotencyKey string            `json:"idempotency_key"`
 	Text           string            `json:"text"`
 	Metadata       map[string]string `json:"metadata,omitempty"`
+	// TrackID is the LightRAG track_id assigned when CreateMemory succeeded. A
+	// non-empty value means the primary insert already happened; processItem
+	// short-circuits to skip re-insertion on retry (idempotency guard).
+	TrackID string `json:"track_id,omitempty"`
 }

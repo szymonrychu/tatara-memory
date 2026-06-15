@@ -20,6 +20,12 @@ type JobStore interface {
 	GetJob(ctx context.Context, id string) (memory.IngestJob, error)
 	UpdateJob(ctx context.Context, job memory.IngestJob) error
 	ClaimNextItem(ctx context.Context, jobID string) (memory.IngestItem, bool, error)
+	// SetItemTrackID persists the LightRAG track_id that was returned by
+	// CreateMemory. It must be called immediately after a successful
+	// CreateMemory so that a retry of the same item (after a crash between
+	// CreateMemory and MarkItemDone) can detect the already-created document
+	// via IngestItem.TrackID and skip re-insertion.
+	SetItemTrackID(ctx context.Context, jobID, idemKey, trackID string) error
 	MarkItemDone(ctx context.Context, jobID, idemKey string, runErr error) error
 	// IncrementJobProgress atomically records one processed item: it bumps done
 	// (itemErr == nil) or failed (itemErr != nil), appending the error up to
