@@ -497,3 +497,119 @@ func TestConfidenceFilter_MinConfidenceBoundary(t *testing.T) {
 		require.Equal(t, http.StatusOK, w.Code, "min_confidence=%s should be accepted", v)
 	}
 }
+
+// --- Finding 2: empty q on code entity search should 400 ---
+
+func TestSearchCodeEntities_EmptyQ_Returns400(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/code/entities?repo=r&q=", nil)
+	w := httptest.NewRecorder()
+	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
+	require.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestSearchCodeEntities_MissingQ_Returns400(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/code/entities?repo=r", nil)
+	w := httptest.NewRecorder()
+	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
+	require.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+// --- Finding 3: non-parseable depth/limit should 400, negative should 400 ---
+
+func TestDepthParam_NonParseable_Returns400(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/code/callers?repo=r&id=x&depth=abc", nil)
+	w := httptest.NewRecorder()
+	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
+	require.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestDepthParam_Negative_Returns400(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/code/callers?repo=r&id=x&depth=-1", nil)
+	w := httptest.NewRecorder()
+	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
+	require.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestLimitParam_NonParseable_Returns400(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/code/neighbors?repo=r&id=x&relation=calls&limit=abc", nil)
+	w := httptest.NewRecorder()
+	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
+	require.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestLimitParam_Negative_Returns400(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/code/neighbors?repo=r&id=x&relation=calls&limit=-5", nil)
+	w := httptest.NewRecorder()
+	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
+	require.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestImportantEntities_NegativeLimit_Returns400(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/code-graph/important?repo=r&limit=-1", nil)
+	w := httptest.NewRecorder()
+	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
+	require.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestImportantEntities_BadLimit_Returns400(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/code-graph/important?repo=r&limit=notanumber", nil)
+	w := httptest.NewRecorder()
+	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
+	require.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+// --- Finding 4: parseMinConfidence DRY - tested via both callers ---
+
+func TestRelated_MinConfidence_InvalidNotNumber_Returns400(t *testing.T) {
+	r := newCodeGraphRouter(t)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/code-graph/related?repo=r&id=x&min_confidence=notanumber", nil))
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestRelated_MinConfidence_BelowZero_Returns400(t *testing.T) {
+	r := newCodeGraphRouter(t)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/code-graph/related?repo=r&id=x&min_confidence=-0.1", nil))
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// --- Finding 5: SemanticMisses empty files list should 400 ---
+
+func TestSemanticMisses_EmptyFiles_Returns400(t *testing.T) {
+	r := newCodeGraphRouter(t)
+	rec := httptest.NewRecorder()
+	payload := `{"repo":"r","files":[]}`
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/code-graph/semantic-misses", strings.NewReader(payload)))
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestSemanticMisses_MissingFiles_Returns400(t *testing.T) {
+	r := newCodeGraphRouter(t)
+	rec := httptest.NewRecorder()
+	payload := `{"repo":"r"}`
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/code-graph/semantic-misses", strings.NewReader(payload)))
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// --- Finding 1: unbounded list endpoints should honour ?limit cap ---
+
+func TestRelated_LimitCaps_Results(t *testing.T) {
+	// stub returns 1 result; ?limit=0 (missing/zero) returns up to default max
+	r := newCodeGraphRouter(t)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/code-graph/related?repo=r&id=x&limit=1", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestCommunities_LimitCaps_Results(t *testing.T) {
+	r := newCodeGraphRouter(t)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/code-graph/communities?repo=r&limit=1", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	var body struct {
+		Communities []codegraph.CommunityRow `json:"communities"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	require.Len(t, body.Communities, 1) // stub returns 1; limit=1 keeps it
+}
