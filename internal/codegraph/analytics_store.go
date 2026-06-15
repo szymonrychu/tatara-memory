@@ -38,8 +38,7 @@ type RecomputeResult struct {
 
 // RecomputeAnalytics loads the repo's graph, computes signals via gonum, persists
 // them to code_entities + code_communities, labels communities (via labeler or
-// first non-empty member name (deterministic, Louvain order; not degree-sorted)
-// when labeler is nil), and clears the dirty flag.
+// first non-empty member name when labeler is nil), and clears the dirty flag.
 func (s *PGStore) RecomputeAnalytics(ctx context.Context, repo string, labeler CommunityLabeler) (RecomputeResult, error) {
 	ids, names, err := s.loadEntityIDs(ctx, repo)
 	if err != nil {
@@ -50,7 +49,7 @@ func (s *PGStore) RecomputeAnalytics(ctx context.Context, repo string, labeler C
 		return RecomputeResult{}, err
 	}
 
-	res := analytics.Compute(ids, edges)
+	res := analytics.Compute(ids, edges, analytics.Config{})
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -58,11 +57,28 @@ func (s *PGStore) RecomputeAnalytics(ctx context.Context, repo string, labeler C
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	for _, n := range res.Nodes {
+	// Batch-update all node signals in one statement using an unnest approach to
+	// avoid N round-trips (one per entity).
+	nodeIDs := make([]string, len(res.Nodes))
+	communities := make([]int, len(res.Nodes))
+	degrees := make([]int, len(res.Nodes))
+	betweennesses := make([]float64, len(res.Nodes))
+	for i, n := range res.Nodes {
+		nodeIDs[i] = n.ID
+		communities[i] = n.Community
+		degrees[i] = n.Degree
+		betweennesses[i] = n.Betweenness
+	}
+	if len(nodeIDs) > 0 {
 		if _, err := tx.ExecContext(ctx, `
-			UPDATE code_entities SET community=$3, degree=$4, betweenness=$5
-			WHERE repo=$1 AND id=$2`,
-			repo, n.ID, n.Community, n.Degree, n.Betweenness); err != nil {
+			UPDATE code_entities AS e
+			SET community = u.community, degree = u.degree, betweenness = u.betweenness
+			FROM (SELECT unnest($2::text[]) AS id,
+			             unnest($3::int[])  AS community,
+			             unnest($4::int[])  AS degree,
+			             unnest($5::float8[]) AS betweenness) AS u
+			WHERE e.repo = $1 AND e.id = u.id`,
+			repo, nodeIDs, communities, degrees, betweennesses); err != nil {
 			return RecomputeResult{}, err
 		}
 	}
@@ -94,8 +110,7 @@ func (s *PGStore) RecomputeAnalytics(ctx context.Context, repo string, labeler C
 }
 
 // labelCommunity returns an LLM label when a labeler is set and succeeds,
-// otherwise the first non-empty member name (deterministic, Louvain order;
-// not degree-sorted).
+// otherwise the first non-empty member name.
 func labelCommunity(ctx context.Context, labeler CommunityLabeler, c analytics.CommunitySignal, names map[string]string) string {
 	memberNames := make([]string, 0, len(c.Members))
 	for _, id := range c.Members {
