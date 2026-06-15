@@ -82,8 +82,6 @@ networkPolicy:
   postgresPort: 5432
   neo4jPort: 7687
 
-serviceMonitor:
-  enabled: false
-  path: /metrics
-  interval: 30s
-  scrapeTimeout: 10s
+# serviceMonitor removed: upstream LightRAG (FastAPI) does not expose a
+# Prometheus /metrics endpoint. Add it back when/if a prometheus exporter
+# is integrated into the LightRAG deployment.

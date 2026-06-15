@@ -3,6 +3,7 @@ package ingest
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -32,6 +33,7 @@ type Pool struct {
 	sources     SourceSink
 	itemTimeout time.Duration
 	metrics     *metrics
+	log         *slog.Logger
 	notify      chan string
 	stop        chan struct{}
 	wg          sync.WaitGroup
@@ -69,6 +71,12 @@ func NewPoolWithSources(store JobStore, runner itemRunner, size int, sources Sou
 	return newPool(store, runner, size, 256, sources, opts...)
 }
 
+// WithLogger injects a structured logger into the pool for job start/finish and
+// item-failure log lines. Defaults to slog.Default() when not set.
+func WithLogger(l *slog.Logger) Option {
+	return func(p *Pool) { p.log = l }
+}
+
 func newPool(store JobStore, runner itemRunner, size, buf int, sources SourceSink, opts ...Option) *Pool {
 	if size < 1 {
 		size = 1
@@ -82,6 +90,7 @@ func newPool(store JobStore, runner itemRunner, size, buf int, sources SourceSin
 		size:    size,
 		sources: sources,
 		metrics: newMetrics(nil),
+		log:     slog.Default(),
 		notify:  make(chan string, buf),
 		stop:    make(chan struct{}),
 	}
@@ -166,10 +175,15 @@ func (p *Pool) worker(ctx context.Context) {
 }
 
 func (p *Pool) runJob(ctx context.Context, jobID string) {
+	jobStart := time.Now()
 	j, err := p.store.GetJob(ctx, jobID)
 	if err != nil {
 		return
 	}
+	p.log.InfoContext(ctx, "ingest.job.start",
+		"action", "ingest_job_start",
+		"job_id", jobID,
+	)
 	if j.Status == memory.JobStatusQueued {
 		j.Status = memory.JobStatusRunning
 		j.UpdatedAt = time.Now()
@@ -194,6 +208,11 @@ func (p *Pool) runJob(ctx context.Context, jobID string) {
 				IdempotencyKey: item.IdempotencyKey,
 				Error:          runErr.Error(),
 			}
+			p.log.WarnContext(ctx, "ingest.item.error",
+				"job_id", jobID,
+				"idempotency_key", item.IdempotencyKey,
+				"err", runErr,
+			)
 		}
 		_ = p.store.IncrementJobProgress(ctx, jobID, itemErr)
 	}
@@ -214,6 +233,15 @@ func (p *Pool) runJob(ctx context.Context, jobID string) {
 	}
 	final.UpdatedAt = time.Now()
 	_ = p.store.UpdateJob(ctx, final)
+	p.log.InfoContext(ctx, "ingest.job.done",
+		"action", "ingest_job_done",
+		"job_id", jobID,
+		"status", string(final.Status),
+		"done", final.Done,
+		"failed", final.Failed,
+		"total", final.Total,
+		"duration_ms", time.Since(jobStart).Milliseconds(),
+	)
 }
 
 // itemResult classifies a per-item run error for ingest_items_total: a fired

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -176,4 +177,59 @@ func TestBulkIngestReconcileFilesNoRepoReturns400(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
 	require.Empty(t, spy.snapshot())
+}
+
+// countingReconcileSvc returns a configurable purge count for DeleteMemoriesBySource.
+type countingReconcileSvc struct {
+	stubService
+	mu      sync.Mutex
+	deleted [][2]string
+	counts  map[string]int // file -> purge count
+}
+
+func (s *countingReconcileSvc) DeleteMemoriesBySource(_ context.Context, repo, file string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deleted = append(s.deleted, [2]string{repo, file})
+	if s.counts != nil {
+		return s.counts[file], nil
+	}
+	return 3, nil // default: 3 memories purged
+}
+
+// TestBulkIngestReconcile_LogsPurgeCount verifies that the reconcile purge INFO
+// log captures the deleted count (finding 2). A non-zero count must be accepted
+// and the request must still return 202.
+func TestBulkIngestReconcile_LogsPurgeCount(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	spy := &countingReconcileSvc{counts: map[string]int{"a.go": 5}}
+	ing := &ingestStub{enq: memory.IngestJob{ID: "j-log", Status: memory.JobStatusQueued}}
+	r := httpapi.NewRouter(httpapi.Config{Service: spy, Ingest: ing, Logger: logger})
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	body := `{"repo":"myrepo","reconcile_files":["a.go"],"items":[{"text":"x","metadata":{"repo":"myrepo","file_path":"a.go"}}]}`
+	resp, err := http.Post(srv.URL+"/memories:bulk", "application/json", bytes.NewReader([]byte(body)))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
+
+	// Parse JSON log lines and find the reconcile purge entry.
+	var purgeLine map[string]any
+	for _, line := range bytes.Split(bytes.TrimSpace(buf.Bytes()), []byte("\n")) {
+		var m map[string]any
+		if err := json.Unmarshal(line, &m); err != nil {
+			continue
+		}
+		if m["msg"] == "memories.reconcile.purge" {
+			purgeLine = m
+			break
+		}
+	}
+	require.NotNil(t, purgeLine, "reconcile purge INFO log not emitted")
+	require.EqualValues(t, 5, purgeLine["deleted"], "purge count must reflect returned count")
+	require.Equal(t, "myrepo", purgeLine["repo"])
+	require.EqualValues(t, 1, purgeLine["files"])
 }

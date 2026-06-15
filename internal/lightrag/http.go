@@ -67,19 +67,25 @@ func (c *HTTPClient) do(ctx context.Context, op, method, path string, body io.Re
 	err := c.roundTrip(ctx, method, path, body, out)
 	dur := time.Since(start).Seconds()
 	c.metrics.observe(op, dur, err)
-	c.log.LogAttrs(ctx, levelFor(err), "lightrag_call",
+	attrs := []slog.Attr{
 		slog.String("op", op),
 		slog.String("method", method),
 		slog.String("path", path),
 		slog.Float64("duration_s", dur),
-		slog.Any("error", err),
-	)
+	}
+	if err != nil {
+		attrs = append(attrs, slog.Any("error", err))
+	}
+	c.log.LogAttrs(ctx, levelFor(op, err), "lightrag_call", attrs...)
 	return err
 }
 
-func levelFor(err error) slog.Level {
+func levelFor(op string, err error) slog.Level {
 	if err != nil {
 		return slog.LevelWarn
+	}
+	if op == OpHealth {
+		return slog.LevelDebug
 	}
 	return slog.LevelInfo
 }

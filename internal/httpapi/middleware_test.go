@@ -1,6 +1,8 @@
 package httpapi_test
 
 import (
+	"bytes"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -45,6 +47,52 @@ func TestRecoverMiddlewareReturns500(t *testing.T) {
 	h.ServeHTTP(rr, httptest.NewRequest("GET", "/x", nil))
 	require.Equal(t, 500, rr.Code)
 	require.Contains(t, rr.Body.String(), "internal error")
+}
+
+// TestRecoverWithLogger verifies that RecoverWithLogger logs at ERROR with the panic
+// value + stack, and increments the panic counter (finding 4).
+func TestRecoverWithLogger_LogsAndCountsPanic(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	ctr := prometheus.NewCounter(prometheus.CounterOpts{Name: "test_panics_total"})
+
+	h := httpapi.RequestID(httpapi.RecoverWithLogger(logger, ctr)(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		panic("test-panic-value")
+	})))
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest("GET", "/x", nil))
+
+	require.Equal(t, 500, rr.Code)
+
+	// counter must have been incremented
+	ch := make(chan prometheus.Metric, 1)
+	ctr.Collect(ch)
+	m := <-ch
+	var pb dto.Metric
+	require.NoError(t, m.Write(&pb))
+	require.InDelta(t, 1.0, pb.GetCounter().GetValue(), 0.0001, "panic counter not incremented")
+
+	// logger must have emitted an ERROR entry with the panic value
+	var logLine map[string]any
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &logLine))
+	require.Equal(t, "ERROR", logLine["level"])
+	require.Equal(t, "test-panic-value", logLine["panic"])
+	require.NotEmpty(t, logLine["stack"])
+}
+
+// TestNewMetrics_PanicCounterRegistered verifies that NewMetrics registers
+// http_panics_total so a wedged handler is visible in Prometheus (finding 4).
+func TestNewMetrics_PanicCounterRegistered(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	_ = httpapi.NewMetrics(reg)
+
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+	names := map[string]bool{}
+	for _, mf := range mfs {
+		names[mf.GetName()] = true
+	}
+	require.True(t, names["http_panics_total"], "http_panics_total not registered")
 }
 
 func TestAccessLogMiddlewareCallsNext(t *testing.T) {

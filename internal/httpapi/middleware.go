@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -62,15 +63,34 @@ func (s *statusRecorder) WriteHeader(c int) {
 }
 
 // Recover is a middleware that catches panics and returns a 500 JSON error envelope.
+// For panic logging and metrics use RecoverWithLogger.
 func Recover(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer func() {
-			if rec := recover(); rec != nil {
-				WriteError(w, http.StatusInternalServerError, "internal error", RequestIDFromContext(r.Context()))
-			}
-		}()
-		next.ServeHTTP(w, r)
-	})
+	return RecoverWithLogger(nil, nil)(next)
+}
+
+// RecoverWithLogger is Recover with structured ERROR logging and a panic counter.
+// logger and panicCounter may be nil (degrades to Recover behaviour).
+func RecoverWithLogger(logger *slog.Logger, panicCounter prometheus.Counter) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer func() {
+				if rec := recover(); rec != nil {
+					if logger != nil {
+						logger.ErrorContext(r.Context(), "http panic recovered",
+							"request_id", RequestIDFromContext(r.Context()),
+							"panic", rec,
+							"stack", string(debug.Stack()),
+						)
+					}
+					if panicCounter != nil {
+						panicCounter.Inc()
+					}
+					WriteError(w, http.StatusInternalServerError, "internal error", RequestIDFromContext(r.Context()))
+				}
+			}()
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // AccessLog returns a middleware that logs each request using the given slog.Logger.
@@ -92,11 +112,12 @@ func AccessLog(logger *slog.Logger) func(http.Handler) http.Handler {
 	}
 }
 
-// Metrics tracks HTTP request counts, durations, and in-flight counts via Prometheus.
+// Metrics tracks HTTP request counts, durations, in-flight counts, and panics via Prometheus.
 type Metrics struct {
-	reqTotal *prometheus.CounterVec
-	reqDur   *prometheus.HistogramVec
-	inFlight prometheus.Gauge
+	reqTotal   *prometheus.CounterVec
+	reqDur     *prometheus.HistogramVec
+	inFlight   prometheus.Gauge
+	panicTotal prometheus.Counter
 }
 
 // NewMetrics creates and registers HTTP metrics with the given Prometheus registerer.
@@ -115,10 +136,17 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Name: "http_in_flight",
 			Help: "In-flight HTTP requests.",
 		}),
+		panicTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "http_panics_total",
+			Help: "Count of HTTP handler panics recovered by the Recover middleware.",
+		}),
 	}
-	reg.MustRegister(m.reqTotal, m.reqDur, m.inFlight)
+	reg.MustRegister(m.reqTotal, m.reqDur, m.inFlight, m.panicTotal)
 	return m
 }
+
+// PanicCounter returns the panic counter for wiring into RecoverWithLogger.
+func (m *Metrics) PanicCounter() prometheus.Counter { return m.panicTotal }
 
 // Middleware returns an http.Handler middleware that records request metrics.
 func (m *Metrics) Middleware(next http.Handler) http.Handler {
