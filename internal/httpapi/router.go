@@ -43,6 +43,7 @@ func NewRouter(cfg Config) *chi.Mux {
 	r.Get("/readyz", func(w http.ResponseWriter, req *http.Request) {
 		if cfg.ReadyCheck != nil {
 			if err := cfg.ReadyCheck(req.Context()); err != nil {
+				cfg.Logger.WarnContext(req.Context(), "readyz failed", "error", err, "request_id", RequestIDFromContext(req.Context()))
 				WriteError(w, http.StatusServiceUnavailable, "not ready", RequestIDFromContext(req.Context()))
 				return
 			}
