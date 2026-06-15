@@ -201,3 +201,88 @@ func labelValue(m *dto.Metric, name string) string {
 	}
 	return ""
 }
+
+// TestRecoverDoesNotDoubleWriteHeader verifies that if a handler writes a header
+// before panicking, the Recover middleware does NOT attempt a second WriteHeader
+// (finding 2: superfluous-WriteHeader / corrupt response).
+func TestRecoverDoesNotDoubleWriteHeader(t *testing.T) {
+	// Handler: write 200 header, then panic mid-body.
+	handler := httpapi.RecoverWithLogger(nil, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		panic("mid-body panic")
+	}))
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest("GET", "/x", nil))
+
+	// The key assertion: no 500 body was appended after 200 was committed.
+	// If WriteError ran unconditionally we'd see "internal error" in the body.
+	require.NotContains(t, recorder.Body.String(), "internal error",
+		"Recover must not write 500 envelope after headers are already committed")
+}
+
+// TestRequestIDValidatesInboundHeader verifies that an X-Request-Id containing
+// invalid characters (e.g. newlines) is rejected and a fresh ID is generated
+// (finding 3: log injection / response-header reflection).
+func TestRequestIDValidatesInboundHeader(t *testing.T) {
+	var contextID string
+	h := httpapi.RequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		contextID = httpapi.RequestIDFromContext(r.Context())
+		w.WriteHeader(200)
+	}))
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/x", nil)
+	req.Header.Set("X-Request-Id", "evil\ninjected-header: val")
+	h.ServeHTTP(rr, req)
+
+	// The injected value must not appear in the response header.
+	require.NotContains(t, rr.Header().Get("X-Request-Id"), "\n",
+		"newline must not be reflected into X-Request-Id response header")
+	// A fresh ID must have been generated.
+	require.NotEqual(t, "evil\ninjected-header: val", contextID,
+		"invalid inbound X-Request-Id must be replaced by a generated one")
+	require.NotEmpty(t, contextID)
+}
+
+// TestRequestIDValidatesLength verifies that an X-Request-Id longer than 64
+// chars is rejected and a fresh ID is generated (finding 3).
+func TestRequestIDValidatesLength(t *testing.T) {
+	var contextID string
+	h := httpapi.RequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		contextID = httpapi.RequestIDFromContext(r.Context())
+		w.WriteHeader(200)
+	}))
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/x", nil)
+	req.Header.Set("X-Request-Id", string(make([]byte, 65)))
+	h.ServeHTTP(rr, req)
+
+	longID := rr.Header().Get("X-Request-Id")
+	require.LessOrEqual(t, len(longID), 64, "reflected X-Request-Id must not exceed 64 chars")
+	require.NotEmpty(t, contextID)
+	require.LessOrEqual(t, len(contextID), 64)
+}
+
+// TestRequestIDFallsBackOnRandError verifies that a zero rand.Read result does
+// not produce an all-zero request ID (finding 4).
+// This test exercises the normal path (no way to inject rand failure) but
+// verifies that generated IDs are non-empty and non-zero.
+func TestRequestIDGeneratesNonZeroID(t *testing.T) {
+	var ids []string
+	h := httpapi.RequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ids = append(ids, httpapi.RequestIDFromContext(r.Context()))
+		w.WriteHeader(200)
+	}))
+
+	for i := 0; i < 5; i++ {
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, httptest.NewRequest("GET", "/x", nil))
+	}
+
+	for _, id := range ids {
+		require.NotEmpty(t, id)
+		require.NotEqual(t, "0000000000000000", id, "all-zero ID detected")
+	}
+}

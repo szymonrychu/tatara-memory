@@ -4,14 +4,23 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"runtime/debug"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus"
 )
+
+// requestIDRe accepts only safe characters for X-Request-Id.
+var requestIDRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// requestIDCounter is used as a fallback ID source when crypto/rand fails.
+var requestIDCounter atomic.Uint64
 
 // routeLabel returns the matched chi route pattern (e.g. "/memories/{id}") for
 // use as a bounded metric/log label. Unmatched requests (404s, or calls made
@@ -37,14 +46,14 @@ func RequestIDFromContext(ctx context.Context) string {
 }
 
 // RequestID is a middleware that assigns a unique request ID to each request.
-// If the incoming request carries an X-Request-Id header, that value is used.
+// If the incoming request carries an X-Request-Id header that passes validation
+// (max 64 chars, only [A-Za-z0-9._-]), that value is used; otherwise a fresh
+// ID is generated.
 func RequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.Header.Get("X-Request-Id")
-		if id == "" {
-			var b [8]byte
-			_, _ = rand.Read(b[:])
-			id = hex.EncodeToString(b[:])
+		if id == "" || len(id) > 64 || !requestIDRe.MatchString(id) {
+			id = generateRequestID()
 		}
 		w.Header().Set("X-Request-Id", id)
 		ctx := context.WithValue(r.Context(), requestIDKey, id)
@@ -52,14 +61,36 @@ func RequestID(next http.Handler) http.Handler {
 	})
 }
 
+// generateRequestID returns a hex-encoded random ID, falling back to a
+// monotonic counter if crypto/rand fails (finding 4: never emit all-zero ID).
+func generateRequestID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("%016x", requestIDCounter.Add(1))
+	}
+	return hex.EncodeToString(b[:])
+}
+
 type statusRecorder struct {
 	http.ResponseWriter
-	status int
+	status      int
+	wroteHeader bool
 }
 
 func (s *statusRecorder) WriteHeader(c int) {
+	if s.wroteHeader {
+		return
+	}
+	s.wroteHeader = true
 	s.status = c
 	s.ResponseWriter.WriteHeader(c)
+}
+
+func (s *statusRecorder) Write(b []byte) (int, error) {
+	if !s.wroteHeader {
+		s.WriteHeader(http.StatusOK)
+	}
+	return s.ResponseWriter.Write(b)
 }
 
 // Recover is a middleware that catches panics and returns a 500 JSON error envelope.
@@ -70,9 +101,13 @@ func Recover(next http.Handler) http.Handler {
 
 // RecoverWithLogger is Recover with structured ERROR logging and a panic counter.
 // logger and panicCounter may be nil (degrades to Recover behaviour).
+// If headers were already written before the panic, the 500 envelope is skipped
+// (writing it would produce a corrupt/split response); the panic is still logged
+// and counted (finding 2).
 func RecoverWithLogger(logger *slog.Logger, panicCounter prometheus.Counter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			sr := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 			defer func() {
 				if rec := recover(); rec != nil {
 					if logger != nil {
@@ -85,10 +120,13 @@ func RecoverWithLogger(logger *slog.Logger, panicCounter prometheus.Counter) fun
 					if panicCounter != nil {
 						panicCounter.Inc()
 					}
-					WriteError(w, http.StatusInternalServerError, "internal error", RequestIDFromContext(r.Context()))
+					// Only write the error envelope if headers have not been committed yet.
+					if !sr.wroteHeader {
+						WriteError(sr, http.StatusInternalServerError, "internal error", RequestIDFromContext(r.Context()))
+					}
 				}
 			}()
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(sr, r)
 		})
 	}
 }
