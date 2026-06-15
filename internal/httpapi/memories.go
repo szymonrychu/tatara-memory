@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"net/http"
 	"time"
 
@@ -15,8 +14,7 @@ func handlePostMemory(cfg Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		var m memory.Memory
-		if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
-			WriteError(w, http.StatusBadRequest, "invalid json", RequestIDFromContext(r.Context()))
+		if !decodeStrict(w, r, &m) {
 			return
 		}
 		created, err := cfg.Service.CreateMemory(r.Context(), m)

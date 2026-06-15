@@ -21,7 +21,10 @@ func handlePostCodeGraph(cfg Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		var p codegraph.GraphPush
-		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, maxBulkBody)
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&p); err != nil {
 			WriteError(w, http.StatusBadRequest, "invalid json", RequestIDFromContext(r.Context()))
 			return
 		}
@@ -546,7 +549,9 @@ func handleSemanticMisses(cfg Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, 4<<20) // 4 MiB
 		var req semanticMissesRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
 			WriteError(w, http.StatusBadRequest, "invalid json", RequestIDFromContext(r.Context()))
 			return
 		}

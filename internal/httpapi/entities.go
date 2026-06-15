@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"net/http"
 	"time"
 
@@ -41,8 +40,7 @@ func handlePatchEntity(cfg Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		var patch memory.Entity
-		if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
-			WriteError(w, http.StatusBadRequest, "invalid json", RequestIDFromContext(r.Context()))
+		if !decodeStrict(w, r, &patch) {
 			return
 		}
 		id := chi.URLParam(r, "id")

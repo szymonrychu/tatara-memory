@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"net/http"
 	"time"
 
@@ -25,8 +24,7 @@ func handleCreateEdge(cfg Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		var e memory.Edge
-		if err := json.NewDecoder(r.Body).Decode(&e); err != nil {
-			WriteError(w, http.StatusBadRequest, "invalid json", RequestIDFromContext(r.Context()))
+		if !decodeStrict(w, r, &e) {
 			return
 		}
 		if e.From == "" || e.To == "" || e.Relation == "" {
