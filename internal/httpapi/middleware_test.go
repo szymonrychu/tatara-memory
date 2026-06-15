@@ -86,13 +86,12 @@ func TestMetricsMiddlewareCountsRequest(t *testing.T) {
 func TestMetricsUsesRoutePattern(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	r := httpapi.NewRouter(httpapi.Config{Service: &stubService{}, Registry: reg})
-	srv := httptest.NewServer(r)
-	defer srv.Close()
 
+	// Drive the router synchronously: ServeHTTP returns only after the whole
+	// middleware chain (including the post-handler metric increment) has run,
+	// so Gather below observes a settled registry with no client/server race.
 	for _, id := range []string{"abc", "def"} {
-		resp, err := http.Get(srv.URL + "/memories/" + id)
-		require.NoError(t, err)
-		_ = resp.Body.Close()
+		r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/memories/"+id, nil))
 	}
 
 	mfs, err := reg.Gather()
@@ -124,13 +123,9 @@ func TestMetricsUsesRoutePattern(t *testing.T) {
 func TestMetricsUnmatchedCollapses(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	r := httpapi.NewRouter(httpapi.Config{Service: &stubService{}, Registry: reg})
-	srv := httptest.NewServer(r)
-	defer srv.Close()
 
 	for _, p := range []string{"/does-not-exist", "/also/missing"} {
-		resp, err := http.Get(srv.URL + p)
-		require.NoError(t, err)
-		_ = resp.Body.Close()
+		r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", p, nil))
 	}
 
 	mfs, err := reg.Gather()
