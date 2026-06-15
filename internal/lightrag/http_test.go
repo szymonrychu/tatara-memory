@@ -358,6 +358,25 @@ func TestHTTPClient_Retry_On5xx(t *testing.T) {
 	require.GreaterOrEqual(t, calls.Load(), int32(3))
 }
 
+// Review fix: a 429 carrying Retry-After must not double-burn the retry budget.
+// With retryMax=3, two 429s (Retry-After: 0) followed by success must succeed.
+func TestHTTPClient_RetryAfter_DoesNotBurnExtraAttempt(t *testing.T) {
+	var calls atomic.Int32
+	c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		n := calls.Add(1)
+		if n < 3 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(lightrag.InsertResponse{Status: "success", TrackID: "t-ra"})
+	})
+	resp, err := c.InsertText(context.Background(), lightrag.InsertTextRequest{Text: "x"})
+	require.NoError(t, err)
+	require.Equal(t, "t-ra", resp.TrackID)
+	require.Equal(t, int32(3), calls.Load(), "Retry-After must not consume an extra attempt")
+}
+
 // Finding 1: 4xx is terminal (no retry).
 func TestHTTPClient_NoRetry_On4xx(t *testing.T) {
 	var calls atomic.Int32

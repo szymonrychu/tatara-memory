@@ -60,17 +60,6 @@ func escapeLike(s string) string {
 	return s
 }
 
-// relFilterClause returns a SQL fragment that filters e.relation against a
-// comma-joined relation string bound to paramRef. When relStr is empty the
-// fragment passes all rows (no relation filter); otherwise it restricts to the
-// ANY(string_to_array(...)) set. paramRef is the SQL placeholder, e.g. "$3".
-func relFilterClause(relStr, paramRef string) string {
-	if relStr == "" {
-		return "(" + paramRef + "='' OR e.relation = ANY(string_to_array(" + paramRef + ", ',')))"
-	}
-	return "e.relation = ANY(string_to_array(" + paramRef + ", ','))"
-}
-
 // Reconcile deletes the prior graph owned by p.Files for p's Extractor origin,
 // then inserts p.Entities, p.Edges, p.Symbols, and p.Hyperedges (all tagged with
 // that extractor). When p.FileSHAs is set it upserts the semantic_extractions

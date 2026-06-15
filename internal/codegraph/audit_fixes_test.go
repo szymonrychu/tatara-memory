@@ -31,17 +31,19 @@ func TestEscapeLike(t *testing.T) {
 
 // ---------- Finding 10: empty relations walks all ----------
 
-func TestNeighborsRelStringEmpty(t *testing.T) {
-	// When relations slice is empty, relFilter should return the guard clause
-	// ($N='' OR ...) which passes all rows.
-	got := relFilterClause("", "$3")
-	require.Contains(t, got, "$3=''", "empty relStr must produce OR-guard")
-}
-
-func TestNeighborsRelStringNonEmpty(t *testing.T) {
-	got := relFilterClause("calls,imports", "$3")
-	require.NotContains(t, got, "''", "non-empty relStr must not produce empty guard")
-	require.Contains(t, got, "ANY", "non-empty relStr must use ANY array")
+// TestNeighborQueriesGuardEmptyRelations verifies the recursive-walk query
+// constants carry the empty-relation OR-guard so an empty relation filter
+// walks all edges instead of matching nothing.
+func TestNeighborQueriesGuardEmptyRelations(t *testing.T) {
+	for name, q := range map[string]string{
+		"neighborsOutQuery":   neighborsOutQuery,
+		"neighborsInQuery":    neighborsInQuery,
+		"neighborsOutCFQuery": neighborsOutCFQuery,
+		"neighborsInCFQuery":  neighborsInCFQuery,
+	} {
+		require.Contains(t, q, "$3='' OR e.relation = ANY(string_to_array($3, ','))",
+			"%s must guard the empty relation filter so it walks all edges", name)
+	}
 }
 
 // ---------- Finding 13: marshalProps/scanProps errors ----------

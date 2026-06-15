@@ -134,8 +134,11 @@ func (c *HTTPClient) roundTrip(ctx context.Context, method, path string, body io
 	}
 
 	var lastErr error
+	// skipBackoff is set when the previous iteration already slept (Retry-After),
+	// so the exponential backoff is not stacked on top of the server-directed wait.
+	skipBackoff := false
 	for attempt := 0; attempt <= retryMax; attempt++ {
-		if attempt > 0 {
+		if attempt > 0 && !skipBackoff {
 			delay := retryBaseDelay * (1 << (attempt - 1)) // 200ms, 400ms, 800ms
 			select {
 			case <-ctx.Done():
@@ -143,6 +146,7 @@ func (c *HTTPClient) roundTrip(ctx context.Context, method, path string, body io
 			case <-time.After(delay):
 			}
 		}
+		skipBackoff = false
 
 		var reqBody io.Reader
 		if bodyBytes != nil {
@@ -177,12 +181,14 @@ func (c *HTTPClient) roundTrip(ctx context.Context, method, path string, body io
 			_ = resp.Body.Close()
 			body := string(buf)
 			if len(body) > maxErrBodyDisplay {
-				body = body[:maxErrBodyDisplay] + "…(truncated)"
+				body = body[:maxErrBodyDisplay] + "...(truncated)"
 			}
 			httpErr := &HTTPError{Status: resp.StatusCode, Body: body, Path: path}
 			if isRetryable(resp.StatusCode, nil) && attempt < retryMax {
 				lastErr = httpErr
-				// Honour Retry-After if present.
+				// Honour Retry-After if present: sleep the server-directed
+				// duration now and skip the next iteration's exponential
+				// backoff (do not stack the two waits, do not burn an attempt).
 				if ra := resp.Header.Get("Retry-After"); ra != "" {
 					if secs, parseErr := strconv.Atoi(ra); parseErr == nil {
 						select {
@@ -190,7 +196,7 @@ func (c *HTTPClient) roundTrip(ctx context.Context, method, path string, body io
 							return ctx.Err()
 						case <-time.After(time.Duration(secs) * time.Second):
 						}
-						attempt++ // skip the normal delay on next iteration
+						skipBackoff = true
 					}
 				}
 				c.log.LogAttrs(ctx, slog.LevelDebug, "lightrag_retry",
