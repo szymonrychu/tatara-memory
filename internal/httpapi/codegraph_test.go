@@ -1,8 +1,10 @@
 package httpapi_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -132,6 +134,43 @@ func TestPostCodeGraph_OK(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &res))
 	require.Equal(t, 1, res.EntitiesUpserted)
 	require.Equal(t, "r", cg.pushed.Repo)
+}
+
+// TestPostCodeGraph_LogsActor verifies that POST /code-graph:bulk emits an INFO
+// log with action=push_code_graph and a user field (hard rule 12).
+func TestPostCodeGraph_LogsActor(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	cg := &stubCodeGraph{}
+	r := httpapi.NewRouter(httpapi.Config{
+		Service:   &stubService{},
+		CodeGraph: cg,
+		Logger:    logger,
+	})
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	body := `{"repo":"r","files":["a.go"],"entities":[{"id":"x","file_path":"a.go","type":"go_func","name":"x"}],"edges":[]}`
+	resp, err := http.Post(srv.URL+"/code-graph:bulk", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var actionLine map[string]any
+	for _, line := range bytes.Split(bytes.TrimSpace(buf.Bytes()), []byte("\n")) {
+		var m map[string]any
+		if err := json.Unmarshal(line, &m); err != nil {
+			continue
+		}
+		if m["action"] == "push_code_graph" {
+			actionLine = m
+			break
+		}
+	}
+	require.NotNil(t, actionLine, "push_code_graph INFO log not emitted")
+	_, hasUser := actionLine["user"]
+	require.True(t, hasUser, "push_code_graph log must include user field")
 }
 
 func TestPostCodeGraph_InvalidJSON(t *testing.T) {

@@ -23,6 +23,7 @@ func handleListEdges(cfg Config) http.HandlerFunc {
 
 func handleCreateEdge(cfg Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
 		var e memory.Edge
 		if err := json.NewDecoder(r.Body).Decode(&e); err != nil {
 			WriteError(w, http.StatusBadRequest, "invalid json", RequestIDFromContext(r.Context()))
@@ -37,6 +38,13 @@ func handleCreateEdge(cfg Config) http.HandlerFunc {
 			mapServiceError(w, r, err)
 			return
 		}
+		cfg.Logger.InfoContext(r.Context(), "edge.create",
+			"action", "create_edge",
+			"request_id", RequestIDFromContext(r.Context()),
+			"user", claimSubject(r),
+			"resource_id", created.ID,
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
 		WriteJSON(w, http.StatusCreated, created)
 	}
 }

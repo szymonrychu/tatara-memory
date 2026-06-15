@@ -66,6 +66,40 @@ func TestDeleteEdge204(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, resp.StatusCode)
 }
 
+// TestCreateEdgeLogsActor verifies that POST /edges emits a structured INFO log
+// with action=create_edge and a user field.
+func TestCreateEdgeLogsActor(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	r := httpapi.NewRouter(httpapi.Config{Service: &edgeStub{}, Logger: logger})
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	body, _ := json.Marshal(memory.Edge{From: "a", To: "b", Relation: "rel"})
+	resp, err := http.Post(srv.URL+"/edges", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var actionLine map[string]any
+	for _, line := range bytes.Split(bytes.TrimSpace(buf.Bytes()), []byte("\n")) {
+		var m map[string]any
+		if err := json.Unmarshal(line, &m); err != nil {
+			continue
+		}
+		if m["action"] == "create_edge" {
+			actionLine = m
+			break
+		}
+	}
+	require.NotNil(t, actionLine, "create_edge INFO log not emitted")
+	_, hasUser := actionLine["user"]
+	require.True(t, hasUser, "create_edge log must include user field")
+	_, hasResource := actionLine["resource_id"]
+	require.True(t, hasResource, "create_edge log must include resource_id field")
+}
+
 // TestDeleteEdgeLogsActor verifies that DELETE /edges/{id} emits a structured
 // INFO log with action=delete_edge and a user field (actor scoping requirement).
 func TestDeleteEdgeLogsActor(t *testing.T) {

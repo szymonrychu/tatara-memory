@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/szymonrychu/tatara-memory/internal/codegraph"
 )
@@ -18,6 +19,7 @@ const (
 
 func handlePostCodeGraph(cfg Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
 		var p codegraph.GraphPush
 		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
 			WriteError(w, http.StatusBadRequest, "invalid json", RequestIDFromContext(r.Context()))
@@ -28,6 +30,13 @@ func handlePostCodeGraph(cfg Config) http.HandlerFunc {
 			mapServiceError(w, r, err)
 			return
 		}
+		cfg.Logger.InfoContext(r.Context(), "codegraph.push",
+			"action", "push_code_graph",
+			"request_id", RequestIDFromContext(r.Context()),
+			"user", claimSubject(r),
+			"resource_id", p.Repo,
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
 		WriteJSON(w, http.StatusOK, res)
 	}
 }

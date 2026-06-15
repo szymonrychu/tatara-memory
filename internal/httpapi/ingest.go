@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -59,6 +60,7 @@ func readAllLimited(r *http.Request) ([]byte, error) {
 
 func handleBulkIngest(cfg Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
 		body, err := readAllLimited(r)
 		if err != nil {
 			WriteError(w, http.StatusBadRequest, "invalid json", RequestIDFromContext(r.Context()))
@@ -112,6 +114,14 @@ func handleBulkIngest(cfg Config) http.HandlerFunc {
 			mapServiceError(w, r, err)
 			return
 		}
+		cfg.Logger.InfoContext(r.Context(), "memories.bulk_ingest",
+			"action", "bulk_ingest",
+			"request_id", RequestIDFromContext(r.Context()),
+			"user", claimSubject(r),
+			"job_id", job.ID,
+			"items", len(req.Items),
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
 		WriteJSON(w, http.StatusAccepted, job)
 	}
 }

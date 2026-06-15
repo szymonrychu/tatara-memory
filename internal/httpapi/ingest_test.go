@@ -268,6 +268,41 @@ func (s *countingReconcileSvc) DeleteMemoriesBySources(_ context.Context, repo s
 	return total, nil
 }
 
+// TestBulkIngestEnqueue_LogsActor verifies that POST /memories:bulk emits an
+// INFO log with action=bulk_ingest when items are enqueued (finding 1, enqueue path).
+func TestBulkIngestEnqueue_LogsActor(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	ing := &ingestStub{enq: memory.IngestJob{ID: "job-log", Status: memory.JobStatusQueued}}
+	r := httpapi.NewRouter(httpapi.Config{Service: &stubService{}, Ingest: ing, Logger: logger})
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	body := `{"items":[{"text":"x"},{"text":"y"}]}`
+	resp, err := http.Post(srv.URL+"/memories:bulk", "application/json", bytes.NewReader([]byte(body)))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
+
+	var actionLine map[string]any
+	for _, line := range bytes.Split(bytes.TrimSpace(buf.Bytes()), []byte("\n")) {
+		var m map[string]any
+		if err := json.Unmarshal(line, &m); err != nil {
+			continue
+		}
+		if m["action"] == "bulk_ingest" {
+			actionLine = m
+			break
+		}
+	}
+	require.NotNil(t, actionLine, "bulk_ingest INFO log not emitted")
+	_, hasUser := actionLine["user"]
+	require.True(t, hasUser, "bulk_ingest log must include user field")
+	_, hasJobID := actionLine["job_id"]
+	require.True(t, hasJobID, "bulk_ingest log must include job_id field")
+}
+
 // TestBulkIngestReconcile_LogsActor verifies that the reconcile purge INFO log
 // includes a user field so the actor is recorded on write operations.
 func TestBulkIngestReconcile_LogsActor(t *testing.T) {
