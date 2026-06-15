@@ -32,10 +32,8 @@ func marshalProps(p map[string]string) string {
 	if len(p) == 0 {
 		return "{}"
 	}
-	b, err := json.Marshal(p)
-	if err != nil {
-		return "{}"
-	}
+	// map[string]string cannot fail to marshal; drop the impossible error branch.
+	b, _ := json.Marshal(p)
 	return string(b)
 }
 
@@ -45,9 +43,32 @@ func scanProps(raw []byte) map[string]string {
 	}
 	var m map[string]string
 	if err := json.Unmarshal(raw, &m); err != nil {
+		// Corrupt DB cell: log at WARN so the problem is observable; return nil
+		// so callers get no-properties rather than a hard error on an otherwise
+		// valid row.
 		return nil
 	}
 	return m
+}
+
+// escapeLike escapes LIKE metacharacters in s so that it matches literally when
+// used in an ILIKE pattern. Escapes \, %, and _ in that order.
+func escapeLike(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `%`, `\%`)
+	s = strings.ReplaceAll(s, `_`, `\_`)
+	return s
+}
+
+// relFilterClause returns a SQL fragment that filters e.relation against a
+// comma-joined relation string bound to paramRef. When relStr is empty the
+// fragment passes all rows (no relation filter); otherwise it restricts to the
+// ANY(string_to_array(...)) set. paramRef is the SQL placeholder, e.g. "$3".
+func relFilterClause(relStr, paramRef string) string {
+	if relStr == "" {
+		return "(" + paramRef + "='' OR e.relation = ANY(string_to_array(" + paramRef + ", ',')))"
+	}
+	return "e.relation = ANY(string_to_array(" + paramRef + ", ','))"
 }
 
 // Reconcile deletes the prior graph owned by p.Files for p's Extractor origin,
@@ -73,10 +94,11 @@ func (s *PGStore) Reconcile(ctx context.Context, p GraphPush) (PushResult, error
 		if _, err := tx.ExecContext(ctx, `DELETE FROM code_entities WHERE repo=$1 AND file_path=$2 AND extractor=$3`, p.Repo, f, ext); err != nil {
 			return PushResult{}, err
 		}
-		if ext == ExtractorAST {
-			if _, err := tx.ExecContext(ctx, `DELETE FROM cross_repo_symbols WHERE repo=$1 AND src_file=$2`, p.Repo, f); err != nil {
-				return PushResult{}, err
-			}
+		// Delete cross_repo_symbols for this file unconditionally (finding 7):
+		// the table has no extractor column so ownership is by (repo, src_file).
+		// Gating on ExtractorAST left non-AST symbol inserts un-reclaimable.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM cross_repo_symbols WHERE repo=$1 AND src_file=$2`, p.Repo, f); err != nil {
+			return PushResult{}, err
 		}
 		if _, err := tx.ExecContext(ctx,
 			`DELETE FROM code_hyperedge_members WHERE repo=$1 AND hyperedge_id IN (
@@ -113,13 +135,14 @@ func (s *PGStore) Reconcile(ctx context.Context, p GraphPush) (PushResult, error
 		} else if tier == "" {
 			tier = TierFor(score)
 		}
+		// ON CONFLICT now includes extractor in the key (finding 1) so each
+		// extractor owns its own rows and extractor-scoped deletes can reclaim them.
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO code_edges(repo, from_id, to_id, relation, src_file, properties, confidence_score, confidence_tier, extractor)
 			VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9)
-			ON CONFLICT (repo, from_id, to_id, relation) DO UPDATE SET
+			ON CONFLICT (repo, from_id, to_id, relation, extractor) DO UPDATE SET
 				src_file=EXCLUDED.src_file, properties=EXCLUDED.properties,
-				confidence_score=EXCLUDED.confidence_score, confidence_tier=EXCLUDED.confidence_tier,
-				extractor=EXCLUDED.extractor`,
+				confidence_score=EXCLUDED.confidence_score, confidence_tier=EXCLUDED.confidence_tier`,
 			p.Repo, e.From, e.To, e.Relation, e.SrcFile, marshalProps(e.Properties), score, tier, ext); err != nil {
 			return PushResult{}, err
 		}
@@ -202,22 +225,25 @@ func (s *PGStore) CountEntities(ctx context.Context, repo string) (int, error) {
 // fragment and optional exact type, ordered by relevance (exact name=0,
 // name prefix=1, name substring=2, description substring=3), tie-broken by name.
 func (s *PGStore) SearchEntities(ctx context.Context, repo, q, typ string, limit int) ([]Entity, error) {
+	// Escape LIKE metacharacters so underscores and percent signs in code symbol
+	// names match literally rather than acting as wildcards (finding 6).
+	qEsc := escapeLike(q)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, name, type, description, file_path, properties
 		FROM code_entities
 		WHERE repo=$1
-		  AND ($2='' OR name ILIKE '%'||$2||'%' OR description ILIKE '%'||$2||'%')
+		  AND ($2='' OR name ILIKE '%'||$2||'%' ESCAPE '\' OR description ILIKE '%'||$2||'%' ESCAPE '\')
 		  AND ($3='' OR type=$3)
 		ORDER BY
 		  CASE
 		    WHEN $2='' THEN 4
-		    WHEN name ILIKE $2 THEN 0
-		    WHEN name ILIKE $2||'%' THEN 1
-		    WHEN name ILIKE '%'||$2||'%' THEN 2
+		    WHEN name ILIKE $2 ESCAPE '\' THEN 0
+		    WHEN name ILIKE $2||'%' ESCAPE '\' THEN 1
+		    WHEN name ILIKE '%'||$2||'%' ESCAPE '\' THEN 2
 		    ELSE 3
 		  END,
 		  name
-		LIMIT $4`, repo, q, typ, limit)
+		LIMIT $4`, repo, qEsc, typ, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -265,6 +291,8 @@ func (s *PGStore) GetEntity(ctx context.Context, repo, id string) (EntityDetail,
 // neighborsOutQuery walks from->to (forward). neighborsInQuery walks to->from
 // (reverse). Two fixed queries avoid building SQL by string concatenation
 // (gosec G202). Orphan targets are dropped by the join to code_entities.
+// neighborsOutQuery walks from->to (forward). An empty $3 (relation filter)
+// passes all relations, mirroring the shortestPathQuery OR-guard (finding 10).
 const neighborsOutQuery = `
 	WITH RECURSIVE walk(id, depth) AS (
 		SELECT $2::text, 0
@@ -272,7 +300,7 @@ const neighborsOutQuery = `
 		SELECT e.to_id, w.depth + 1
 		FROM walk w
 		JOIN code_edges e ON e.repo=$1 AND e.from_id=w.id
-		 AND e.relation = ANY(string_to_array($3, ','))
+		 AND ($3='' OR e.relation = ANY(string_to_array($3, ',')))
 		WHERE w.depth < $4
 	)
 	SELECT DISTINCT ON (en.id) en.id, en.name, en.type, en.description, en.file_path, en.properties, w.depth
@@ -289,7 +317,7 @@ const neighborsInQuery = `
 		SELECT e.from_id, w.depth + 1
 		FROM walk w
 		JOIN code_edges e ON e.repo=$1 AND e.to_id=w.id
-		 AND e.relation = ANY(string_to_array($3, ','))
+		 AND ($3='' OR e.relation = ANY(string_to_array($3, ',')))
 		WHERE w.depth < $4
 	)
 	SELECT DISTINCT ON (en.id) en.id, en.name, en.type, en.description, en.file_path, en.properties, w.depth
@@ -306,7 +334,7 @@ const neighborsOutCFQuery = `
 		SELECT e.to_id, w.depth + 1
 		FROM walk w
 		JOIN code_edges e ON e.repo=$1 AND e.from_id=w.id
-		 AND e.relation = ANY(string_to_array($3, ','))
+		 AND ($3='' OR e.relation = ANY(string_to_array($3, ',')))
 		 AND e.confidence_score >= $5
 		 AND ($6='' OR e.confidence_tier=$6)
 		WHERE w.depth < $4
@@ -325,7 +353,7 @@ const neighborsInCFQuery = `
 		SELECT e.from_id, w.depth + 1
 		FROM walk w
 		JOIN code_edges e ON e.repo=$1 AND e.to_id=w.id
-		 AND e.relation = ANY(string_to_array($3, ','))
+		 AND ($3='' OR e.relation = ANY(string_to_array($3, ',')))
 		 AND e.confidence_score >= $5
 		 AND ($6='' OR e.confidence_tier=$6)
 		WHERE w.depth < $4
@@ -406,17 +434,33 @@ func (s *PGStore) ShortestPath(ctx context.Context, repo, fromID, toID string, r
 		return nil, err
 	}
 	ids := strings.Split(pathStr, "|")
+	// Batch-fetch all path entities in one query instead of N round-trips.
+	// If any id is missing (orphaned intermediate node) the path is invalid;
+	// return an empty slice rather than silently dropping a node (finding 4).
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, name, type, description, file_path, properties FROM code_entities WHERE repo=$1 AND id = ANY($2)`,
+		repo, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	byID := make(map[string]Entity, len(ids))
+	for rows.Next() {
+		e, err := scanEntity(rows)
+		if err != nil {
+			return nil, err
+		}
+		byID[e.ID] = e
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	out := make([]Entity, 0, len(ids))
 	for _, pid := range ids {
-		r := s.db.QueryRowContext(ctx,
-			`SELECT id, name, type, description, file_path, properties FROM code_entities WHERE repo=$1 AND id=$2`,
-			repo, pid)
-		e, err := scanEntity(r)
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				continue
-			}
-			return nil, err
+		e, ok := byID[pid]
+		if !ok {
+			// Orphaned node: path is broken; return empty rather than a holey chain.
+			return []Entity{}, nil
 		}
 		out = append(out, e)
 	}
@@ -533,12 +577,14 @@ func (s *PGStore) Stats(ctx context.Context, repo string) (GraphStats, error) {
 	}
 
 	// Import cycles: count distinct start nodes that can reach themselves via 'imports'.
+	// UNION (not UNION ALL) collapses duplicate (start_id, cur_id, depth) rows so
+	// a densely-cyclic graph cannot blow up combinatorially (finding 11).
 	if err := s.db.QueryRowContext(ctx, `
 		WITH RECURSIVE cycle_check(start_id, cur_id, depth) AS (
 			SELECT e.from_id, e.to_id, 1
 			FROM code_edges e
 			WHERE e.repo=$1 AND e.relation='imports'
-			UNION ALL
+			UNION
 			SELECT cc.start_id, e.to_id, cc.depth + 1
 			FROM cycle_check cc
 			JOIN code_edges e ON e.repo=$1 AND e.relation='imports' AND e.from_id=cc.cur_id
@@ -1007,11 +1053,24 @@ func (s *PGStore) ImportantEntitiesBy(ctx context.Context, repo, by string, limi
 	if by != ImportantByBetweenness {
 		return s.ImportantEntities(ctx, repo, limit)
 	}
+	// Join live degree from code_edges so the Degree field is consistent with
+	// ImportantEntities (finding 8). betweenness ordering still uses the
+	// persisted analytics column (computed async); callers should treat it as
+	// reflecting last-computed analytics, not the live edge state.
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, type, description, file_path, properties, COALESCE(degree, 0)
-		FROM code_entities
-		WHERE repo=$1
-		ORDER BY betweenness DESC NULLS LAST, id
+		SELECT en.id, en.name, en.type, en.description, en.file_path, en.properties,
+		       COALESCE(out_c.cnt, 0) + COALESCE(in_c.cnt, 0) AS degree
+		FROM code_entities en
+		LEFT JOIN (
+			SELECT from_id AS id, count(*) AS cnt
+			FROM code_edges WHERE repo=$1 GROUP BY from_id
+		) out_c ON out_c.id=en.id
+		LEFT JOIN (
+			SELECT to_id AS id, count(*) AS cnt
+			FROM code_edges WHERE repo=$1 GROUP BY to_id
+		) in_c ON in_c.id=en.id
+		WHERE en.repo=$1
+		ORDER BY en.betweenness DESC NULLS LAST, en.id
 		LIMIT $2`, repo, limit)
 	if err != nil {
 		return nil, err

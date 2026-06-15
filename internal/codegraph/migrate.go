@@ -18,9 +18,12 @@ var migration0003 string
 //go:embed migrations/0004_phase2_semantic.sql
 var migration0004 string
 
+//go:embed migrations/0005_audit_fixes.sql
+var migration0005 string
+
 // MigrationSQL returns the DDL for the code-graph schema (all migrations concatenated).
 func MigrationSQL() string {
-	return migration0001 + "\n" + migration0002 + "\n" + migration0003 + "\n" + migration0004
+	return migration0001 + "\n" + migration0002 + "\n" + migration0003 + "\n" + migration0004 + "\n" + migration0005
 }
 
 // Migrate applies the code-graph schema to db, creating tables if they do not exist.
@@ -34,6 +37,9 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 	if _, err := db.ExecContext(ctx, migration0003); err != nil {
 		return err
 	}
-	_, err := db.ExecContext(ctx, migration0004)
+	if _, err := db.ExecContext(ctx, migration0004); err != nil {
+		return err
+	}
+	_, err := db.ExecContext(ctx, migration0005)
 	return err
 }

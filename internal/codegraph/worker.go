@@ -3,6 +3,7 @@ package codegraph
 import (
 	"context"
 	"log/slog"
+	"runtime"
 	"sync"
 	"time"
 
@@ -32,6 +33,11 @@ type AnalyticsWorkerConfig struct {
 	tickC <-chan time.Time
 }
 
+// recomputeMaxConcurrency caps the number of concurrent RecomputeAnalytics
+// goroutines (findings 2, 9). Bounded to GOMAXPROCS so CPU-heavy betweenness
+// computation does not fan out unboundedly on mass re-ingests.
+var recomputeMaxConcurrency = runtime.GOMAXPROCS(0)
+
 // AnalyticsWorker periodically recomputes analytics for dirty, settled repos.
 // Single-flight per repo prevents concurrent recomputes of the same repo.
 type AnalyticsWorker struct {
@@ -45,6 +51,11 @@ type AnalyticsWorker struct {
 
 	mu       sync.Mutex
 	inflight map[string]bool
+
+	// wg tracks in-flight recompute goroutines so Run can drain them on shutdown.
+	wg sync.WaitGroup
+	// sem bounds the number of goroutines running RecomputeAnalytics concurrently.
+	sem chan struct{}
 }
 
 // NewAnalyticsWorker constructs the worker. labeler may be nil (no LLM labels).
@@ -58,6 +69,10 @@ func NewAnalyticsWorker(store AnalyticsStore, labeler CommunityLabeler, cfg Anal
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
+	concurrency := recomputeMaxConcurrency
+	if concurrency < 1 {
+		concurrency = 1
+	}
 	return &AnalyticsWorker{
 		store:        store,
 		labeler:      labeler,
@@ -67,10 +82,13 @@ func NewAnalyticsWorker(store AnalyticsStore, labeler CommunityLabeler, cfg Anal
 		metrics:      NewAnalyticsMetrics(cfg.Registerer),
 		tickC:        cfg.tickC,
 		inflight:     map[string]bool{},
+		sem:          make(chan struct{}, concurrency),
 	}
 }
 
 // Run blocks until ctx is canceled, processing dirty repos on each tick.
+// On ctx.Done it stops accepting new ticks and waits for all in-flight
+// recompute goroutines to finish before returning (findings 2, 9).
 func (w *AnalyticsWorker) Run(ctx context.Context) {
 	tickC := w.tickC
 	if tickC == nil {
@@ -81,6 +99,7 @@ func (w *AnalyticsWorker) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			w.wg.Wait()
 			return
 		case <-tickC:
 			w.processOnce(ctx)
@@ -97,7 +116,13 @@ func (w *AnalyticsWorker) processOnce(ctx context.Context) {
 	w.metrics.setDirtyRepos(len(repos))
 	for _, repo := range repos {
 		repo := repo
+		// Acquire semaphore slot before starting the goroutine so the number of
+		// concurrent recomputes is bounded (finding 2).
+		w.sem <- struct{}{}
+		w.wg.Add(1)
 		go func() {
+			defer w.wg.Done()
+			defer func() { <-w.sem }()
 			if err := w.recompute(ctx, repo); err != nil {
 				w.log.Error("analytics recompute", "repo", repo, "err", err)
 			}
