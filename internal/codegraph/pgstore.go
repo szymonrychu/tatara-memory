@@ -14,6 +14,12 @@ import (
 // chains; cycles deeper than this are not counted.
 const maxImportCycleDepth = 20
 
+// importCycleBaseFilter is the WHERE clause applied to the base term of the
+// cycle_check CTE. It excludes self-imports (from_id=to_id) so that a file
+// importing itself is not counted as a cycle (finding 8). Exported as a
+// package-level const so query-text unit tests can assert the guard is present.
+const importCycleBaseFilter = "e.repo=$1 AND e.relation='imports' AND e.from_id<>e.to_id"
+
 // PGStore is a PostgreSQL-backed implementation of Store.
 type PGStore struct {
 	db *sql.DB
@@ -84,11 +90,14 @@ func (s *PGStore) Reconcile(ctx context.Context, p GraphPush) (PushResult, error
 		if _, err := tx.ExecContext(ctx, `DELETE FROM code_entities WHERE repo=$1 AND file_path=$2 AND extractor=$3`, p.Repo, f, ext); err != nil {
 			return PushResult{}, err
 		}
-		// Delete cross_repo_symbols for this file unconditionally (finding 7):
-		// the table has no extractor column so ownership is by (repo, src_file).
-		// Gating on ExtractorAST left non-AST symbol inserts un-reclaimable.
-		if _, err := tx.ExecContext(ctx, `DELETE FROM cross_repo_symbols WHERE repo=$1 AND src_file=$2`, p.Repo, f); err != nil {
-			return PushResult{}, err
+		// Only the AST extractor writes cross_repo_symbols rows (Symbols slice is
+		// empty on semantic pushes). Deleting unconditionally on every extractor
+		// would clobber the AST-written rows when the semantic stage runs on the
+		// same files immediately after (finding 1).
+		if ext == ExtractorAST {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM cross_repo_symbols WHERE repo=$1 AND src_file=$2`, p.Repo, f); err != nil {
+				return PushResult{}, err
+			}
 		}
 		if _, err := tx.ExecContext(ctx,
 			`DELETE FROM code_hyperedge_members WHERE repo=$1 AND hyperedge_id IN (
@@ -462,23 +471,28 @@ func (s *PGStore) ShortestPath(ctx context.Context, repo, fromID, toID string, r
 	return out, nil
 }
 
+// importantEntitiesDegreeQuery computes degree as in+out edge count, excluding
+// self-edges (from_id<>to_id) so a self-recursive call counts zero rather than
+// two (finding 5). Exported as a package-level const for query-text unit tests.
+const importantEntitiesDegreeQuery = `
+	SELECT en.id, en.name, en.type, en.description, en.file_path, en.properties,
+	       COALESCE(out_c.cnt, 0) + COALESCE(in_c.cnt, 0) AS degree
+	FROM code_entities en
+	LEFT JOIN (
+		SELECT from_id AS id, count(*) AS cnt
+		FROM code_edges WHERE repo=$1 AND from_id<>to_id GROUP BY from_id
+	) out_c ON out_c.id=en.id
+	LEFT JOIN (
+		SELECT to_id AS id, count(*) AS cnt
+		FROM code_edges WHERE repo=$1 AND from_id<>to_id GROUP BY to_id
+	) in_c ON in_c.id=en.id
+	WHERE en.repo=$1
+	ORDER BY degree DESC
+	LIMIT $2`
+
 // ImportantEntities returns entities ranked by degree (in+out edge count) DESC.
 func (s *PGStore) ImportantEntities(ctx context.Context, repo string, limit int) ([]EntityDegree, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT en.id, en.name, en.type, en.description, en.file_path, en.properties,
-		       COALESCE(out_c.cnt, 0) + COALESCE(in_c.cnt, 0) AS degree
-		FROM code_entities en
-		LEFT JOIN (
-			SELECT from_id AS id, count(*) AS cnt
-			FROM code_edges WHERE repo=$1 GROUP BY from_id
-		) out_c ON out_c.id=en.id
-		LEFT JOIN (
-			SELECT to_id AS id, count(*) AS cnt
-			FROM code_edges WHERE repo=$1 GROUP BY to_id
-		) in_c ON in_c.id=en.id
-		WHERE en.repo=$1
-		ORDER BY degree DESC
-		LIMIT $2`, repo, limit)
+	rows, err := s.db.QueryContext(ctx, importantEntitiesDegreeQuery, repo, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -574,11 +588,13 @@ func (s *PGStore) Stats(ctx context.Context, repo string) (GraphStats, error) {
 	// Import cycles: count distinct start nodes that can reach themselves via 'imports'.
 	// UNION (not UNION ALL) collapses duplicate (start_id, cur_id, depth) rows so
 	// a densely-cyclic graph cannot blow up combinatorially (finding 11).
+	// Self-imports (from_id=to_id) are excluded from the base term so a file that
+	// imports itself is not counted as a cycle (finding 8).
 	if err := s.db.QueryRowContext(ctx, `
 		WITH RECURSIVE cycle_check(start_id, cur_id, depth) AS (
 			SELECT e.from_id, e.to_id, 1
 			FROM code_edges e
-			WHERE e.repo=$1 AND e.relation='imports'
+			WHERE e.repo=$1 AND e.relation='imports' AND e.from_id<>e.to_id
 			UNION
 			SELECT cc.start_id, e.to_id, cc.depth + 1
 			FROM cycle_check cc
@@ -1004,27 +1020,33 @@ func (s *PGStore) Community(ctx context.Context, repo string, community, limit i
 	return out, rows.Err()
 }
 
+// bridgesQuery computes neighbor communities for each entity, excluding
+// self-edges (from_id<>to_id) so an entity's own community is not counted as a
+// bridged neighbor community (finding 6).
+const bridgesQuery = `
+	WITH neighbor_comms AS (
+		SELECT en.id,
+		       count(DISTINCT nb.community) AS nc
+		FROM code_entities en
+		JOIN code_edges e ON e.repo=en.repo AND (e.from_id=en.id OR e.to_id=en.id)
+		  AND e.from_id<>e.to_id
+		JOIN code_entities nb ON nb.repo=en.repo
+		  AND nb.id = CASE WHEN e.from_id=en.id THEN e.to_id ELSE e.from_id END
+		WHERE en.repo=$1 AND nb.community IS NOT NULL
+		GROUP BY en.id
+	)
+	SELECT en.id, en.name, en.type, en.description, en.file_path, en.properties,
+	       COALESCE(en.betweenness, 0), COALESCE(en.community, 0), nc.nc
+	FROM code_entities en
+	JOIN neighbor_comms nc ON nc.id=en.id
+	WHERE en.repo=$1 AND nc.nc > 1
+	ORDER BY en.betweenness DESC NULLS LAST, en.id
+	LIMIT $2`
+
 // Bridges returns the highest-betweenness entities whose neighbors span more
 // than one community, ordered by betweenness DESC.
 func (s *PGStore) Bridges(ctx context.Context, repo string, limit int) ([]Bridge, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		WITH neighbor_comms AS (
-			SELECT en.id,
-			       count(DISTINCT nb.community) AS nc
-			FROM code_entities en
-			JOIN code_edges e ON e.repo=en.repo AND (e.from_id=en.id OR e.to_id=en.id)
-			JOIN code_entities nb ON nb.repo=en.repo
-			  AND nb.id = CASE WHEN e.from_id=en.id THEN e.to_id ELSE e.from_id END
-			WHERE en.repo=$1 AND nb.community IS NOT NULL
-			GROUP BY en.id
-		)
-		SELECT en.id, en.name, en.type, en.description, en.file_path, en.properties,
-		       COALESCE(en.betweenness, 0), COALESCE(en.community, 0), nc.nc
-		FROM code_entities en
-		JOIN neighbor_comms nc ON nc.id=en.id
-		WHERE en.repo=$1 AND nc.nc > 1
-		ORDER BY en.betweenness DESC NULLS LAST, en.id
-		LIMIT $2`, repo, limit)
+	rows, err := s.db.QueryContext(ctx, bridgesQuery, repo, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1059,11 +1081,11 @@ func (s *PGStore) ImportantEntitiesBy(ctx context.Context, repo, by string, limi
 		FROM code_entities en
 		LEFT JOIN (
 			SELECT from_id AS id, count(*) AS cnt
-			FROM code_edges WHERE repo=$1 GROUP BY from_id
+			FROM code_edges WHERE repo=$1 AND from_id<>to_id GROUP BY from_id
 		) out_c ON out_c.id=en.id
 		LEFT JOIN (
 			SELECT to_id AS id, count(*) AS cnt
-			FROM code_edges WHERE repo=$1 GROUP BY to_id
+			FROM code_edges WHERE repo=$1 AND from_id<>to_id GROUP BY to_id
 		) in_c ON in_c.id=en.id
 		WHERE en.repo=$1
 		ORDER BY en.betweenness DESC NULLS LAST, en.id
