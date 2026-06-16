@@ -23,7 +23,7 @@ endif
 # chart-test so the unittest plugin resolves correctly.
 HELM_UNITTEST_BIN := $(shell ls /opt/homebrew/bin/helm 2>/dev/null || echo $(HELM_BIN))
 
-.PHONY: all lint test build image chart-lint chart-test tidy fmt clean ci
+.PHONY: all lint test build image chart-lint chart-test tidy fmt clean ci eval
 
 all: lint test build
 
@@ -39,6 +39,14 @@ lint:
 
 test:
 	go test ./... -race -count=1
+
+# Retrieval-quality eval harness (issue #41). Opt-in like the integration
+# suite: it seeds a real tatara-memory deployment and scores the golden set,
+# so it needs MEMORY_BASE_URL (and usually MEMORY_TOKEN) in env. NOT part of
+# `make test`. Exits non-zero when mean recall@k falls below the floor.
+eval:
+	@test -n "$(MEMORY_BASE_URL)" || { echo "eval: MEMORY_BASE_URL is required (see eval/README.md)"; exit 1; }
+	go run ./cmd/eval
 
 build:
 	CGO_ENABLED=0 go build \

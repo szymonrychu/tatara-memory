@@ -1,0 +1,142 @@
+[
+  {
+    "name": "go-version-rule",
+    "query": "What Go version should tatara services use?",
+    "mode": "hybrid",
+    "top_k": 10,
+    "expected": ["newest stable Go", "exact minor"]
+  },
+  {
+    "name": "no-lists-in-values",
+    "query": "Can I put lists or plain env vars in values.yaml?",
+    "mode": "hybrid",
+    "top_k": 10,
+    "expected": ["no lists in values.yaml", "templated ConfigMap"]
+  },
+  {
+    "name": "query-score-zero",
+    "query": "Why is QueryMatch.Score always zero?",
+    "mode": "local",
+    "top_k": 10,
+    "expected": ["Score remains 0", "per-match ranking field"]
+  },
+  {
+    "name": "kubectl-mutation-rule",
+    "query": "Is it safe to kubectl edit a helm-managed resource?",
+    "mode": "hybrid",
+    "top_k": 10,
+    "expected": ["never kubectl set image", "orphan field-managers"]
+  },
+  {
+    "name": "implementation-vs-merge-model",
+    "query": "Which model is used for implementation versus merges?",
+    "mode": "hybrid",
+    "top_k": 10,
+    "expected": ["Sonnet for implementation", "Opus for merges"]
+  },
+  {
+    "name": "code-graph-storage",
+    "query": "Where does the structural code graph live and how is it ingested?",
+    "mode": "hybrid",
+    "top_k": 10,
+    "expected": ["code_entities", "semantic text chunks stay in LightRAG"]
+  },
+  {
+    "name": "branch-and-deploy-flow",
+    "query": "What is the branch and deploy flow for a component repo?",
+    "mode": "global",
+    "top_k": 10,
+    "expected": ["worktree off main", "deploy from main only"]
+  },
+  {
+    "name": "ingest-pool-metrics",
+    "query": "What Prometheus metrics were added to the ingest worker pool?",
+    "mode": "hybrid",
+    "top_k": 10,
+    "expected": ["ingest_items_total", "ingest_notify_dropped_total"]
+  },
+  {
+    "name": "fileless-entity-fix",
+    "query": "Why were go_package entities rejected by code-graph bulk push?",
+    "mode": "local",
+    "top_k": 10,
+    "expected": ["fileless entities", "skip the membership check for empty FilePath"]
+  },
+  {
+    "name": "json-logging-rule",
+    "query": "What logging library and format do tatara services use?",
+    "mode": "hybrid",
+    "top_k": 10,
+    "expected": ["JSON logs only", "log/slog"]
+  },
+  {
+    "name": "platform-repo-count",
+    "query": "How many repositories make up the tatara platform?",
+    "mode": "global",
+    "top_k": 10,
+    "expected": ["eight independent GitHub repositories", "Not a monorepo"]
+  },
+  {
+    "name": "golangci-lint-version",
+    "query": "What version of golangci-lint is pinned and why?",
+    "mode": "local",
+    "top_k": 10,
+    "expected": ["golangci-lint pinned to v2.11", "go1.25 modules"]
+  },
+  {
+    "name": "top-k-clamp",
+    "query": "What are the default and maximum top_k values for a query?",
+    "mode": "hybrid",
+    "top_k": 10,
+    "expected": ["defaultTopK is 10", "maxTopK is 500"]
+  },
+  {
+    "name": "makefile-version-strip",
+    "query": "Why does the Makefile strip the leading v from the version?",
+    "mode": "local",
+    "top_k": 10,
+    "expected": ["strips the leading v", "appVersion and image tag now match"]
+  },
+  {
+    "name": "lightrag-idempotent-insert",
+    "query": "How are duplicated lightrag insert statuses handled on retry?",
+    "mode": "hybrid",
+    "top_k": 10,
+    "expected": ["duplicated and partial_success", "idempotent success"]
+  },
+  {
+    "name": "migrations-applied-when",
+    "query": "When are database migrations applied in the service?",
+    "mode": "local",
+    "top_k": 10,
+    "expected": ["migrations are applied at startup", "app.migrate"]
+  },
+  {
+    "name": "metrics-when-rule",
+    "query": "When should I add a Prometheus metric to a service?",
+    "mode": "hybrid",
+    "top_k": 10,
+    "expected": ["everything that counts, times out, or can fail", "/metrics Prometheus endpoint"]
+  },
+  {
+    "name": "empty-filepath-orphan",
+    "query": "Are repo-scoped code entities reclaimed by file-granular reconcile?",
+    "mode": "local",
+    "top_k": 10,
+    "expected": ["not reclaimed by file-granular reconcile", "orphan forever"]
+  },
+  {
+    "name": "recall-value-loop",
+    "query": "Why does memory retrieval quality matter for autonomous agents?",
+    "mode": "naive",
+    "top_k": 10,
+    "expected": ["core value loop", "downstream agent decision degrades"]
+  },
+  {
+    "name": "tech-debt-policy",
+    "query": "What is the policy on introducing tech debt?",
+    "mode": "hybrid",
+    "top_k": 10,
+    "expected": ["never introduce tech-debt", "call it out in MEMORY.md"]
+  }
+]

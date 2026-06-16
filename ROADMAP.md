@@ -19,6 +19,22 @@ file-imports) via recursive CTEs. Migrations wired at startup in run()
 tatara-memory-repo-ingester (B) and tatara-cli code-graph MCP tools (C).
 Spec: parent-repo `docs/superpowers/specs/2026-06-05-tatara-code-ingestion-design.md`.
 
+## Retrieval-quality eval harness (issue #41)
+
+**Status:** shipped 2026-06-16.
+
+The measurement layer for memory recall: a versioned golden set
+(`eval/golden/*.json`) + seed corpus (`eval/seed/*.json`), a `cmd/eval`
+runner that seeds a live deployment, queries each case, and computes
+recall@k + MRR, and a `make eval` target (opt-in, needs
+`MEMORY_BASE_URL`/`MEMORY_TOKEN`, not part of `make test`). Since
+`QueryMatch.Score` is unavailable, a hit is a substring/ID match over the
+returned Matches and ranking is match-order only; the runner exits
+non-zero below a configurable recall floor so CI can gate. Delivers only
+measurement: reranker / ranking / hybrid-weighting changes, any
+`Score`/LightRAG change, Grafana dashboards, and in-cluster cron eval stay
+out of scope (each a later issue, now unblocked by this gate).
+
 ## Ingest worker hardening (post-0.2.2)
 
 **Status:** planned. Found during the 0.2.2 pool-wiring fix (see MEMORY).
