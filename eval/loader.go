@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"os"
 	"path"
 	"strings"
 
@@ -51,6 +52,13 @@ func LoadGolden() ([]GoldenCase, error) { return loadGolden(goldenFS, "golden") 
 // LoadSeed parses and validates every embedded seed/*.json file, returning the
 // combined corpus with globally-unique idempotency keys.
 func LoadSeed() ([]SeedItem, error) { return loadSeed(seedFS, "seed") }
+
+// LoadGoldenDir is LoadGolden against an on-disk directory of *.json files,
+// for the runner's optional path override.
+func LoadGoldenDir(dir string) ([]GoldenCase, error) { return loadGolden(os.DirFS(dir), ".") }
+
+// LoadSeedDir is LoadSeed against an on-disk directory of *.json files.
+func LoadSeedDir(dir string) ([]SeedItem, error) { return loadSeed(os.DirFS(dir), ".") }
 
 func loadGolden(fsys fs.FS, dir string) ([]GoldenCase, error) {
 	files, err := fs.Glob(fsys, path.Join(dir, "*.json"))
