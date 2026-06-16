@@ -64,22 +64,6 @@ func (s *TombstoneStore) Delete(ctx context.Context, trackID string) error {
 	return nil
 }
 
-// ReapOlderThan deletes all tombstones older than the given age. Used
-// by the reaper for the 24h belt-and-suspenders cleanup (blind path, no upstream verify).
-func (s *TombstoneStore) ReapOlderThan(ctx context.Context, age time.Duration) (int64, error) {
-	res, err := s.db.ExecContext(ctx,
-		`DELETE FROM deleted_memories WHERE deleted_at < now() - ($1 * interval '1 second')`,
-		int64(age.Seconds()))
-	if err != nil {
-		return 0, fmt.Errorf("tombstone reap: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("tombstone reap rows affected: %w", err)
-	}
-	return n, nil
-}
-
 // ListOlderThan returns track_ids of tombstones older than the given age,
 // without deleting them. Used by the reaper's forced path so it can verify each
 // id upstream before committing the delete.

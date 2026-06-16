@@ -30,12 +30,12 @@ type trackStatuser interface {
 type reapStore interface {
 	List(ctx context.Context, limit int) ([]string, error)
 	Delete(ctx context.Context, id string) error
-	ReapOlderThan(ctx context.Context, maxAge time.Duration) (int64, error)
 	ListOlderThan(ctx context.Context, maxAge time.Duration) ([]string, error)
 }
 
 // Reaper periodically removes tombstones once lightrag confirms the document
-// has been deleted, plus an unconditional 24h TTL fallback.
+// has been deleted, plus a 24h forced sweep that re-verifies each aged
+// tombstone upstream before deleting (skipping still-present docs).
 type Reaper struct {
 	store    reapStore
 	lightrag trackStatuser
