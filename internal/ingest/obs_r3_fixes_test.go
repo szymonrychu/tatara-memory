@@ -43,6 +43,9 @@ func (s *periodicResumeStore) IncrementJobProgress(_ context.Context, _ string, 
 }
 func (s *periodicResumeStore) SetItemTrackID(_ context.Context, _, _, _ string) error { return nil }
 func (s *periodicResumeStore) ResetRunningItems(_ context.Context) (int, error)       { return 0, nil }
+func (s *periodicResumeStore) MarkItemDoneAndProgress(_ context.Context, _, _ string, _ error) error {
+	return nil
+}
 
 // nopRunner satisfies itemRunner with no-ops.
 type nopRunner struct{}

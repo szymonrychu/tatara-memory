@@ -571,7 +571,7 @@ type injectErrorStore struct {
 	failProgress bool
 }
 
-func (s *injectErrorStore) IncrementJobProgress(ctx context.Context, jobID string, itemErr *memory.IngestItemError) error {
+func (s *injectErrorStore) MarkItemDoneAndProgress(ctx context.Context, jobID, idemKey string, runErr error) error {
 	s.mu.Lock()
 	fail := s.failProgress
 	if fail {
@@ -581,7 +581,7 @@ func (s *injectErrorStore) IncrementJobProgress(ctx context.Context, jobID strin
 	if fail {
 		return errors.New("db: transient error")
 	}
-	return s.JobStore.IncrementJobProgress(ctx, jobID, itemErr)
+	return s.JobStore.MarkItemDoneAndProgress(ctx, jobID, idemKey, runErr)
 }
 
 func (s *injectErrorStore) SetItemTrackID(ctx context.Context, jobID, key, trackID string) error {

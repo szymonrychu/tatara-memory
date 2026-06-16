@@ -44,6 +44,7 @@ type Pool struct {
 	wg             sync.WaitGroup
 	mu             sync.Mutex
 	started        bool
+	stopped        bool
 }
 
 // Option configures a Pool at construction time.
@@ -150,16 +151,23 @@ func (p *Pool) periodicResume(ctx context.Context) {
 }
 
 // Stop signals all workers to exit and waits for them to finish.
+// Calling Stop more than once is a no-op (mirrors the idempotency of Start).
 func (p *Pool) Stop() {
+	p.mu.Lock()
+	if !p.started || p.stopped {
+		p.mu.Unlock()
+		return
+	}
+	p.stopped = true
+	p.mu.Unlock()
 	close(p.stop)
 	p.wg.Wait()
 }
 
 // Notify queues the given job ID for processing. When the notify channel is
 // full the job ID is dropped and counted in ingest_notify_dropped_total.
-// Dropped jobs are NOT recovered in-process: they remain 'queued' until the
-// next process start, when Resume re-queues all unfinished jobs. The metric is
-// the only signal that a drop occurred; alert on it so starvation is visible.
+// Dropped jobs are recovered within defaultResumeInterval by the periodic
+// Resume sweeper launched by Start; no manual restart is required.
 func (p *Pool) Notify(jobID string) {
 	select {
 	case p.notify <- jobID:
@@ -262,7 +270,9 @@ func (p *Pool) runJob(ctx context.Context, jobID string) {
 		start := time.Now()
 		runErr := p.runItem(ctx, jobID, item)
 		dur := time.Since(start).Seconds()
-		if err := p.store.MarkItemDone(ctx, jobID, item.IdempotencyKey, runErr); err != nil {
+		// MarkItemDoneAndProgress updates the item status and bumps the job
+		// counter atomically, so a crash between the two cannot strand the job.
+		if err := p.store.MarkItemDoneAndProgress(ctx, jobID, item.IdempotencyKey, runErr); err != nil {
 			p.log.ErrorContext(ctx, "ingest.item.mark_done_failed",
 				"job_id", jobID,
 				"idempotency_key", item.IdempotencyKey,
@@ -273,25 +283,12 @@ func (p *Pool) runJob(ctx context.Context, jobID string) {
 		p.metrics.decInFlight()
 		p.metrics.observeItem(dur, itemResult(runErr))
 
-		var itemErr *memory.IngestItemError
 		if runErr != nil {
-			itemErr = &memory.IngestItemError{
-				IdempotencyKey: item.IdempotencyKey,
-				Error:          runErr.Error(),
-			}
 			p.log.WarnContext(ctx, "ingest.item.error",
 				"job_id", jobID,
 				"idempotency_key", item.IdempotencyKey,
 				"err", runErr,
 			)
-		}
-		if err := p.store.IncrementJobProgress(ctx, jobID, itemErr); err != nil {
-			p.log.ErrorContext(ctx, "ingest.item.progress_failed",
-				"job_id", jobID,
-				"idempotency_key", item.IdempotencyKey,
-				"err", err,
-			)
-			p.metrics.incStoreOpError()
 		}
 	}
 	final, err := p.store.GetJob(ctx, jobID)
@@ -300,6 +297,13 @@ func (p *Pool) runJob(ctx context.Context, jobID string) {
 			"job_id", jobID,
 			"err", err,
 		)
+		return
+	}
+	// Guard against a concurrent worker that already finalized this job (duplicate
+	// Notify or two workers racing to the end). A terminal status means the
+	// counter has already been recorded; returning here prevents double-counting
+	// ingest_jobs_total and a spurious UpdateJob call.
+	if final.Status.Terminal() {
 		return
 	}
 	// Only finalize when every item is accounted for. If items are still
@@ -354,7 +358,7 @@ func itemResult(err error) string {
 }
 
 // runItem processes a single item, applying the per-item timeout when one is
-// configured. MarkItemDone/IncrementJobProgress use the parent ctx so progress
+// configured. MarkItemDoneAndProgress uses the parent ctx so progress
 // is recorded even when the item's own deadline fired.
 func (p *Pool) runItem(ctx context.Context, jobID string, it memory.IngestItem) error {
 	if p.itemTimeout <= 0 {
