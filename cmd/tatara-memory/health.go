@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 )
 
 // pinger is implemented by *sql.DB and any test double that can check a DB connection.
@@ -15,31 +16,15 @@ type healther interface {
 }
 
 // readyzFunc returns a ReadyCheck function suitable for httpapi.Config.ReadyCheck.
+// It returns the first dependency error it encounters, wrapped with the component name.
 func readyzFunc(db pinger, lr healther) func(context.Context) error {
 	return func(ctx context.Context) error {
-		result := readyzCheck(ctx, db, lr)
-		for _, v := range result {
-			if v != "ok" {
-				return errNotReady
-			}
+		if err := db.PingContext(ctx); err != nil {
+			return fmt.Errorf("db: %w", err)
+		}
+		if err := lr.Health(ctx); err != nil {
+			return fmt.Errorf("lightrag: %w", err)
 		}
 		return nil
 	}
-}
-
-type notReadyError struct{}
-
-func (notReadyError) Error() string { return "not ready" }
-
-var errNotReady = notReadyError{}
-
-func readyzCheck(ctx context.Context, db pinger, lr healther) map[string]string {
-	result := map[string]string{"db": "ok", "lightrag": "ok"}
-	if err := db.PingContext(ctx); err != nil {
-		result["db"] = err.Error()
-	}
-	if err := lr.Health(ctx); err != nil {
-		result["lightrag"] = err.Error()
-	}
-	return result
 }
