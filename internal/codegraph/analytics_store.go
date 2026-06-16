@@ -2,6 +2,7 @@ package codegraph
 
 import (
 	"context"
+	"time"
 
 	"github.com/szymonrychu/tatara-memory/internal/analytics"
 )
@@ -45,7 +46,23 @@ type RecomputeResult struct {
 // RecomputeAnalytics loads the repo's graph, computes signals via gonum, persists
 // them to code_entities + code_communities, labels communities (via labeler or
 // first non-empty member name when labeler is nil), and clears the dirty flag.
-func (s *PGStore) RecomputeAnalytics(ctx context.Context, repo string, labeler CommunityLabeler) (RecomputeResult, error) {
+// betweennessMaxNodes is forwarded to analytics.Config.MaxNodes; 0 means no
+// limit (not recommended in production - pass a sane cap via AnalyticsWorkerConfig).
+//
+// The dirty-flag clear is guarded: it only fires when reconciled_at has not
+// advanced since the snapshot was taken (finding 1). A push that lands after the
+// snapshot but before the commit keeps dirty=true so the next tick recomputes.
+func (s *PGStore) RecomputeAnalytics(ctx context.Context, repo string, labeler CommunityLabeler, betweennessMaxNodes int) (RecomputeResult, error) {
+	// Capture the snapshot timestamp BEFORE loading the graph so the guard can
+	// detect a concurrent push (finding 1).
+	var snapshotReconciled time.Time
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(reconciled_at, '-infinity'::timestamptz) FROM repo_analytics_state WHERE repo=$1`, repo).
+		Scan(&snapshotReconciled)
+	if err != nil {
+		return RecomputeResult{}, err
+	}
+
 	ids, names, err := s.loadEntityIDs(ctx, repo)
 	if err != nil {
 		return RecomputeResult{}, err
@@ -55,7 +72,7 @@ func (s *PGStore) RecomputeAnalytics(ctx context.Context, repo string, labeler C
 		return RecomputeResult{}, err
 	}
 
-	res := analytics.Compute(ids, edges, analytics.Config{})
+	res := analytics.Compute(ids, edges, analytics.Config{MaxNodes: betweennessMaxNodes})
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -64,27 +81,26 @@ func (s *PGStore) RecomputeAnalytics(ctx context.Context, repo string, labeler C
 	defer func() { _ = tx.Rollback() }()
 
 	// Batch-update all node signals in one statement using an unnest approach to
-	// avoid N round-trips (one per entity).
+	// avoid N round-trips (one per entity). degree is omitted: the column was
+	// dropped in migration 0006 (finding 4); degree is cheap to compute live and
+	// is already computed live in ImportantEntities/ImportantEntitiesBy.
 	nodeIDs := make([]string, len(res.Nodes))
 	communities := make([]int, len(res.Nodes))
-	degrees := make([]int, len(res.Nodes))
 	betweennesses := make([]float64, len(res.Nodes))
 	for i, n := range res.Nodes {
 		nodeIDs[i] = n.ID
 		communities[i] = n.Community
-		degrees[i] = n.Degree
 		betweennesses[i] = n.Betweenness
 	}
 	if len(nodeIDs) > 0 {
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE code_entities AS e
-			SET community = u.community, degree = u.degree, betweenness = u.betweenness
+			SET community = u.community, betweenness = u.betweenness
 			FROM (SELECT unnest($2::text[]) AS id,
 			             unnest($3::int[])  AS community,
-			             unnest($4::int[])  AS degree,
-			             unnest($5::float8[]) AS betweenness) AS u
+			             unnest($4::float8[]) AS betweenness) AS u
 			WHERE e.repo = $1 AND e.id = u.id`,
-			repo, nodeIDs, communities, degrees, betweennesses); err != nil {
+			repo, nodeIDs, communities, betweennesses); err != nil {
 			return RecomputeResult{}, err
 		}
 	}
@@ -102,10 +118,15 @@ func (s *PGStore) RecomputeAnalytics(ctx context.Context, repo string, labeler C
 		}
 	}
 
+	// Guard: only clear dirty when reconciled_at has not advanced since the
+	// snapshot (finding 1). A push that races in leaves dirty=true so the next
+	// tick recomputes with the fresh graph.
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO repo_analytics_state(repo, dirty, computed_at)
-		VALUES ($1, false, now())
-		ON CONFLICT (repo) DO UPDATE SET dirty=false, computed_at=now()`, repo); err != nil {
+		UPDATE repo_analytics_state
+		SET dirty=false, computed_at=now()
+		WHERE repo=$1
+		  AND COALESCE(reconciled_at, '-infinity'::timestamptz) = $2`,
+		repo, snapshotReconciled); err != nil {
 		return RecomputeResult{}, err
 	}
 

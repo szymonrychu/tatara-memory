@@ -396,6 +396,10 @@ func (s *PGStore) Neighbors(ctx context.Context, repo, id string, relations []st
 // Cycle detection uses a text[] array so that membership is exact (no false positives
 // when one entity ID is a prefix/substring of another).
 // The path array is converted to a '|'-separated string for easy scanning.
+//
+// Finding 5: the recursive branch is pruned once the current node is the target
+// (AND walk.id <> $5) so branches that already reached the goal do not expand
+// further. Combined with the depth cap this bounds worst-case path enumeration.
 const shortestPathQuery = `
 	WITH RECURSIVE walk(id, path_arr, depth) AS (
 		SELECT $2::text, ARRAY[$2::text], 0
@@ -408,6 +412,7 @@ const shortestPathQuery = `
 		  AND ($3='' OR e.relation = ANY(string_to_array($3, ',')))
 		WHERE walk.depth < $4
 		  AND e.to_id <> ALL(walk.path_arr)
+		  AND walk.id <> $5
 	)
 	SELECT array_to_string(path_arr, '|') FROM walk WHERE id=$5 ORDER BY depth LIMIT 1`
 

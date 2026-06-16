@@ -14,7 +14,7 @@ import (
 // *PGStore.
 type AnalyticsStore interface {
 	DirtyRepos(ctx context.Context, debounceSecs int) ([]string, error)
-	RecomputeAnalytics(ctx context.Context, repo string, labeler CommunityLabeler) (RecomputeResult, error)
+	RecomputeAnalytics(ctx context.Context, repo string, labeler CommunityLabeler, betweennessMaxNodes int) (RecomputeResult, error)
 }
 
 // AnalyticsWorkerConfig configures the debounced recompute worker.
@@ -24,6 +24,10 @@ type AnalyticsWorkerConfig struct {
 	// DebounceSecs is how long a repo must be settled (no reconcile) before its
 	// analytics are recomputed. Default 60.
 	DebounceSecs int
+	// BetweennessMaxNodes caps the graph size for betweenness centrality (Brandes
+	// O(V*E)). Graphs larger than this skip betweenness (all values 0.0) to avoid
+	// unbounded CPU. Default 5000. Set to -1 to disable the cap (not recommended).
+	BetweennessMaxNodes int
 	// Logger; defaults to slog.Default().
 	Logger *slog.Logger
 	// Registerer for the worker's Prometheus instruments. nil registers nothing
@@ -41,13 +45,14 @@ var recomputeMaxConcurrency = runtime.GOMAXPROCS(0)
 // AnalyticsWorker periodically recomputes analytics for dirty, settled repos.
 // Single-flight per repo prevents concurrent recomputes of the same repo.
 type AnalyticsWorker struct {
-	store        AnalyticsStore
-	labeler      CommunityLabeler
-	interval     time.Duration
-	debounceSecs int
-	log          *slog.Logger
-	metrics      *AnalyticsMetrics
-	tickC        <-chan time.Time
+	store               AnalyticsStore
+	labeler             CommunityLabeler
+	interval            time.Duration
+	debounceSecs        int
+	betweennessMaxNodes int
+	log                 *slog.Logger
+	metrics             *AnalyticsMetrics
+	tickC               <-chan time.Time
 
 	mu       sync.Mutex
 	inflight map[string]bool
@@ -58,6 +63,10 @@ type AnalyticsWorker struct {
 	sem chan struct{}
 }
 
+// defaultBetweennessMaxNodes is the production cap for Brandes betweenness.
+// Repos larger than this skip betweenness (left at 0.0) to avoid O(V*E) blowup.
+const defaultBetweennessMaxNodes = 5000
+
 // NewAnalyticsWorker constructs the worker. labeler may be nil (no LLM labels).
 func NewAnalyticsWorker(store AnalyticsStore, labeler CommunityLabeler, cfg AnalyticsWorkerConfig) *AnalyticsWorker {
 	if cfg.Interval <= 0 {
@@ -65,6 +74,9 @@ func NewAnalyticsWorker(store AnalyticsStore, labeler CommunityLabeler, cfg Anal
 	}
 	if cfg.DebounceSecs <= 0 {
 		cfg.DebounceSecs = 60
+	}
+	if cfg.BetweennessMaxNodes == 0 {
+		cfg.BetweennessMaxNodes = defaultBetweennessMaxNodes
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
@@ -74,15 +86,16 @@ func NewAnalyticsWorker(store AnalyticsStore, labeler CommunityLabeler, cfg Anal
 		concurrency = 1
 	}
 	return &AnalyticsWorker{
-		store:        store,
-		labeler:      labeler,
-		interval:     cfg.Interval,
-		debounceSecs: cfg.DebounceSecs,
-		log:          cfg.Logger,
-		metrics:      NewAnalyticsMetrics(cfg.Registerer),
-		tickC:        cfg.tickC,
-		inflight:     map[string]bool{},
-		sem:          make(chan struct{}, concurrency),
+		store:               store,
+		labeler:             labeler,
+		interval:            cfg.Interval,
+		debounceSecs:        cfg.DebounceSecs,
+		betweennessMaxNodes: cfg.BetweennessMaxNodes,
+		log:                 cfg.Logger,
+		metrics:             NewAnalyticsMetrics(cfg.Registerer),
+		tickC:               cfg.tickC,
+		inflight:            map[string]bool{},
+		sem:                 make(chan struct{}, concurrency),
 	}
 }
 
@@ -115,10 +128,23 @@ func (w *AnalyticsWorker) processOnce(ctx context.Context) {
 	}
 	w.metrics.setDirtyRepos(len(repos))
 	for _, repo := range repos {
-		repo := repo
-		// Acquire semaphore slot before starting the goroutine so the number of
-		// concurrent recomputes is bounded (finding 2).
-		w.sem <- struct{}{}
+		// Check single-flight BEFORE acquiring the semaphore (finding 7): skip
+		// repos already in-flight so we do not waste a slot on an immediate no-op.
+		w.mu.Lock()
+		if w.inflight[repo] {
+			w.mu.Unlock()
+			continue
+		}
+		w.mu.Unlock()
+
+		// Acquire semaphore slot with ctx awareness so shutdown is not delayed by
+		// a saturated sem (finding 8). Go 1.22+ per-iteration loop variables make
+		// the old `repo := repo` shadow copy unnecessary (finding 12).
+		select {
+		case w.sem <- struct{}{}:
+		case <-ctx.Done():
+			return
+		}
 		w.wg.Add(1)
 		go func() {
 			defer w.wg.Done()
@@ -132,6 +158,8 @@ func (w *AnalyticsWorker) processOnce(ctx context.Context) {
 
 // recompute runs RecomputeAnalytics for one repo under a single-flight guard.
 // If a recompute for repo is already running, recompute returns nil immediately.
+// processOnce pre-checks inflight before acquiring the semaphore, but the guard
+// here is retained to be safe against any future direct calls.
 func (w *AnalyticsWorker) recompute(ctx context.Context, repo string) error {
 	w.mu.Lock()
 	if w.inflight[repo] {
@@ -150,7 +178,7 @@ func (w *AnalyticsWorker) recompute(ctx context.Context, repo string) error {
 	defer w.metrics.decInFlight()
 
 	start := time.Now()
-	res, err := w.store.RecomputeAnalytics(ctx, repo, w.labeler)
+	res, err := w.store.RecomputeAnalytics(ctx, repo, w.labeler, w.betweennessMaxNodes)
 	dur := time.Since(start)
 	w.metrics.observeDuration(dur.Seconds())
 	if err != nil {

@@ -30,7 +30,7 @@ func (f *fakeAnalyticsStore) DirtyRepos(_ context.Context, debounceSecs int) ([]
 	return out, nil
 }
 
-func (f *fakeAnalyticsStore) RecomputeAnalytics(_ context.Context, repo string, _ CommunityLabeler) (RecomputeResult, error) {
+func (f *fakeAnalyticsStore) RecomputeAnalytics(_ context.Context, repo string, _ CommunityLabeler, _ int) (RecomputeResult, error) {
 	if f.blockCh != nil {
 		<-f.blockCh
 	}
@@ -90,7 +90,7 @@ type blockingAnalyticsStore struct {
 	blockCh     chan struct{}
 }
 
-func (b *blockingAnalyticsStore) RecomputeAnalytics(_ context.Context, repo string, _ CommunityLabeler) (RecomputeResult, error) {
+func (b *blockingAnalyticsStore) RecomputeAnalytics(_ context.Context, repo string, _ CommunityLabeler, _ int) (RecomputeResult, error) {
 	b.inRecompute <- struct{}{}
 	<-b.blockCh
 	b.mu.Lock()
@@ -155,7 +155,7 @@ func (m *metricsStore) DirtyRepos(context.Context, int) ([]string, error) {
 	return m.dirty, nil
 }
 
-func (m *metricsStore) RecomputeAnalytics(context.Context, string, CommunityLabeler) (RecomputeResult, error) {
+func (m *metricsStore) RecomputeAnalytics(context.Context, string, CommunityLabeler, int) (RecomputeResult, error) {
 	return m.res, m.err
 }
 

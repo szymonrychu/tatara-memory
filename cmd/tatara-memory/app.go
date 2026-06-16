@@ -178,8 +178,9 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 	}
 	analyticsCtx, analyticsCancel := context.WithCancel(context.Background())
 	analyticsWorker := codegraph.NewAnalyticsWorker(cgStore, labeler, codegraph.AnalyticsWorkerConfig{
-		Logger:     logger,
-		Registerer: reg,
+		Logger:              logger,
+		Registerer:          reg,
+		BetweennessMaxNodes: cfg.BetweennessMaxNodes,
 	})
 	go analyticsWorker.Run(analyticsCtx)
 
