@@ -164,7 +164,63 @@ func TestHealth_LoggedAtDebug(t *testing.T) {
 	require.Equal(t, "DEBUG", logLine["level"], "successful Health() must log at DEBUG, not INFO")
 }
 
-// TestHealth_ErrorNotLogged_SuccessHasNoErrorAttr verifies that a successful
+// Finding 2: QueryData logical failure (HTTP 200 + non-success status) must
+// increment the error counter, not just the success counter recorded by do().
+func TestHTTPClient_QueryData_LogicalFailure_IncrementsErrorCounter(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// HTTP 200 but status=failure in the envelope.
+		_ = json.NewEncoder(w).Encode(lightrag.QueryDataResponse{
+			Status:  "failure",
+			Message: "upstream error",
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	c, err := lightrag.NewHTTPClient(lightrag.HTTPConfig{BaseURL: srv.URL, Registry: reg})
+	require.NoError(t, err)
+
+	_, err = c.QueryData(context.Background(), lightrag.QueryRequest{Query: "x"})
+	require.Error(t, err)
+	var le *lightrag.LogicalError
+	require.ErrorAs(t, err, &le, "must be a LogicalError")
+
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+
+	// The do() call records success (HTTP 200); the logical-failure branch must
+	// then add an additional error count so callers see failure in the metric.
+	errCount := counterFor(t, mfs, "query_data", "error")
+	require.GreaterOrEqual(t, errCount, 1.0,
+		"logical failure must increment query_data error counter")
+}
+
+// TestHTTPClient_QueryData_Success_NoExtraErrorCounter verifies the success
+// path does NOT spuriously increment the error counter (regression guard).
+func TestHTTPClient_QueryData_Success_NoExtraErrorCounter(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(lightrag.QueryDataResponse{
+			Status: "success",
+			Data:   map[string]any{},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	c, err := lightrag.NewHTTPClient(lightrag.HTTPConfig{BaseURL: srv.URL, Registry: reg})
+	require.NoError(t, err)
+
+	_, err = c.QueryData(context.Background(), lightrag.QueryRequest{Query: "x"})
+	require.NoError(t, err)
+
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+
+	errCount := counterFor(t, mfs, "query_data", "error")
+	require.InDelta(t, 0.0, errCount, 0.001, "success path must not increment error counter")
+}
+
+// TestHTTPClient_QueryData_Success_NoErrorAttr verifies that a successful
 // call does not include an "error" attribute in the log line (finding 10).
 func TestHealth_Success_NoErrorAttr(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

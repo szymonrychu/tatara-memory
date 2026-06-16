@@ -155,6 +155,7 @@ func TestBulkIngestReconcileFilesTopLevelRepo(t *testing.T) {
 // TestBulkIngestPureDeletion exercises the pure-deletion reconcile path: files
 // deleted from a repo, no items to insert. Prior to the fix, repo could not be
 // derived and the purge was silently skipped.
+// Returns 200 (not 202) because the work is synchronous and there is no job to poll.
 func TestBulkIngestPureDeletion(t *testing.T) {
 	spy := &reconcileSpyService{}
 	ing := &ingestStub{}
@@ -165,7 +166,7 @@ func TestBulkIngestPureDeletion(t *testing.T) {
 	resp, err := http.Post(srv.URL+"/memories:bulk", "application/json", bytes.NewReader([]byte(body)))
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
-	require.Equal(t, http.StatusAccepted, resp.StatusCode)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
 
 	got := spy.snapshot()
 	require.ElementsMatch(t, [][2]string{{"repoC", "gone.go"}}, got)
@@ -335,6 +336,36 @@ func TestBulkIngestReconcile_LogsActor(t *testing.T) {
 	require.NotNil(t, purgeLine, "reconcile purge INFO log not emitted")
 	_, hasUser := purgeLine["user"]
 	require.True(t, hasUser, "reconcile purge log must include user field")
+}
+
+// TestBulkIngestPureDeletion_Returns200 verifies that a pure-deletion reconcile
+// (reconcile_files set, no items) returns 200 OK, not 202 Accepted, because the
+// purge is synchronous and there is no job ID to poll.
+func TestBulkIngestPureDeletion_Returns200(t *testing.T) {
+	spy := &reconcileSpyService{}
+	ing := &ingestStub{}
+	srv := newSrvIngest(t, spy, ing)
+	defer srv.Close()
+
+	body := `{"repo":"repoD","reconcile_files":["deleted.go"]}`
+	resp, err := http.Post(srv.URL+"/memories:bulk", "application/json", bytes.NewReader([]byte(body)))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// TestBulkIngestStrictDecode verifies that an unknown top-level field in the
+// object form of the bulk request returns 400, matching all other write endpoints.
+// A misspelled "reconcil_files" would silently skip the purge without this check.
+func TestBulkIngestStrictDecode(t *testing.T) {
+	srv := newSrvIngest(t, &stubService{}, &ingestStub{enq: memory.IngestJob{ID: "j", Status: memory.JobStatusQueued}})
+	defer srv.Close()
+
+	body := `{"reconcil_files":["a.go"],"items":[{"text":"x"}]}`
+	resp, err := http.Post(srv.URL+"/memories:bulk", "application/json", bytes.NewReader([]byte(body)))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
 // TestBulkIngestReconcile_LogsPurgeCount verifies that the reconcile purge INFO

@@ -30,12 +30,12 @@ func TestRelated_SemanticEdgesWithConfidence(t *testing.T) {
 	require.NoError(t, err)
 
 	// All semantic relations, min_confidence 0 -> both targets.
-	all, err := s.Related(ctx, "rel", "rel:a", nil, 0)
+	all, err := s.Related(ctx, "rel", "rel:a", nil, 0, 100)
 	require.NoError(t, err)
 	require.Len(t, all, 2)
 
 	// min_confidence 0.5 -> only rel:b survives.
-	hi, err := s.Related(ctx, "rel", "rel:a", nil, 0.5)
+	hi, err := s.Related(ctx, "rel", "rel:a", nil, 0.5, 100)
 	require.NoError(t, err)
 	require.Len(t, hi, 1)
 	require.Equal(t, "rel:b", hi[0].Entity.ID)
@@ -43,7 +43,7 @@ func TestRelated_SemanticEdgesWithConfidence(t *testing.T) {
 	require.InDelta(t, 0.9, hi[0].ConfidenceScore, 1e-6)
 
 	// relation filter narrows to one relation.
-	sim, err := s.Related(ctx, "rel", "rel:a", []string{codegraph.RelSemanticallySimilar}, 0)
+	sim, err := s.Related(ctx, "rel", "rel:a", []string{codegraph.RelSemanticallySimilar}, 0, 100)
 	require.NoError(t, err)
 	require.Len(t, sim, 1)
 	require.Equal(t, "rel:c", sim[0].Entity.ID)
@@ -68,18 +68,18 @@ func TestHyperedges_AndHyperedge(t *testing.T) {
 	require.NoError(t, err)
 
 	// All hyperedges in repo.
-	all, err := s.Hyperedges(ctx, "hy", "")
+	all, err := s.Hyperedges(ctx, "hy", "", 100)
 	require.NoError(t, err)
 	require.Len(t, all, 1)
 	require.Equal(t, "hy:auth-flow", all[0].ID)
 	require.ElementsMatch(t, []string{"hy:a", "hy:b", "hy:c"}, all[0].Members)
 
 	// Filter by entity membership.
-	byEnt, err := s.Hyperedges(ctx, "hy", "hy:b")
+	byEnt, err := s.Hyperedges(ctx, "hy", "hy:b", 100)
 	require.NoError(t, err)
 	require.Len(t, byEnt, 1)
 
-	none, err := s.Hyperedges(ctx, "hy", "hy:zzz")
+	none, err := s.Hyperedges(ctx, "hy", "hy:zzz", 100)
 	require.NoError(t, err)
 	require.Empty(t, none)
 

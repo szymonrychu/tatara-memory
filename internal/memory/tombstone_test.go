@@ -50,7 +50,7 @@ func TestTombstoneStore_MarkAndCheck(t *testing.T) {
 	require.True(t, deleted)
 }
 
-func TestTombstoneStore_Reap(t *testing.T) {
+func TestTombstoneStore_ListOlderThan(t *testing.T) {
 	db := openTestDB(t)
 	s := memory.NewTombstoneStore(db)
 	ctx := context.Background()
@@ -58,12 +58,13 @@ func TestTombstoneStore_Reap(t *testing.T) {
 	require.NoError(t, memory.Migrate(ctx, db))
 
 	require.NoError(t, s.Mark(ctx, "old"))
+	require.NoError(t, s.Mark(ctx, "fresh"))
 	_, err := db.ExecContext(ctx, `UPDATE deleted_memories SET deleted_at = now() - interval '25 hours' WHERE track_id = 'old'`)
 	require.NoError(t, err)
 
-	n, err := s.ReapOlderThan(ctx, 24*time.Hour)
+	aged, err := s.ListOlderThan(ctx, 24*time.Hour)
 	require.NoError(t, err)
-	require.Equal(t, int64(1), n)
+	require.Equal(t, []string{"old"}, aged, "only the >24h tombstone is aged; fresh is excluded")
 }
 
 func TestTombstoneStore_List(t *testing.T) {

@@ -64,20 +64,28 @@ func (s *TombstoneStore) Delete(ctx context.Context, trackID string) error {
 	return nil
 }
 
-// ReapOlderThan deletes all tombstones older than the given age. Used
-// by the reaper for the 24h belt-and-suspenders cleanup.
-func (s *TombstoneStore) ReapOlderThan(ctx context.Context, age time.Duration) (int64, error) {
-	res, err := s.db.ExecContext(ctx,
-		`DELETE FROM deleted_memories WHERE deleted_at < now() - ($1 * interval '1 second')`,
+// ListOlderThan returns track_ids of tombstones older than the given age,
+// without deleting them. Used by the reaper's forced path so it can verify each
+// id upstream before committing the delete.
+func (s *TombstoneStore) ListOlderThan(ctx context.Context, age time.Duration) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT track_id FROM deleted_memories
+		 WHERE deleted_at < now() - ($1 * interval '1 second')
+		 ORDER BY deleted_at ASC`,
 		int64(age.Seconds()))
 	if err != nil {
-		return 0, fmt.Errorf("tombstone reap: %w", err)
+		return nil, fmt.Errorf("tombstone list older: %w", err)
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("tombstone reap rows affected: %w", err)
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("tombstone list older scan: %w", err)
+		}
+		out = append(out, id)
 	}
-	return n, nil
+	return out, rows.Err()
 }
 
 // List returns up to `limit` tombstones, oldest first.

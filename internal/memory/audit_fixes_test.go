@@ -1,13 +1,18 @@
 package memory_test
 
-// Tests for audit findings 1, 2, 4, 6, 7, 8, 9 in internal/memory.
+// Tests for audit findings 1, 2, 4, 5, 6, 7, 8, 9 in internal/memory.
 // Each sub-test documents which finding it covers.
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"log/slog"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
 
 	"github.com/szymonrychu/tatara-memory/internal/lightrag"
@@ -162,4 +167,108 @@ func TestEdgeFromGraphEdge_KeywordsIsPrimaryRelation(t *testing.T) {
 	e3 := lightrag.GraphEdge{Source: "a", Target: "b", Type: "fallback"}
 	got3 := memory.EdgeFromGraphEdge(e3)
 	require.Equal(t, "fallback", got3.Relation, "e.Type is the fallback when keywords absent")
+}
+
+// --- helpers for findings 5 & 7 ---
+
+func memOpCounter(t *testing.T, mfs []*dto.MetricFamily, op, result string) float64 {
+	t.Helper()
+	for _, mf := range mfs {
+		if mf.GetName() != "tatara_memory_op_total" {
+			continue
+		}
+		for _, m := range mf.Metric {
+			var opOK, resOK bool
+			for _, lp := range m.GetLabel() {
+				if lp.GetName() == "op" && lp.GetValue() == op {
+					opOK = true
+				}
+				if lp.GetName() == "result" && lp.GetValue() == result {
+					resOK = true
+				}
+			}
+			if opOK && resOK {
+				return m.GetCounter().GetValue()
+			}
+		}
+	}
+	return 0
+}
+
+// Finding 5: PatchEntity, CreateEdge, DeleteEdge must increment tatara_memory_op_total.
+func TestService_WriteOpMetrics(t *testing.T) {
+	ctx := context.Background()
+	f := fake.New()
+	f.SeedEntity("alpha", nil)
+	f.SeedEntity("beta", nil)
+
+	reg := prometheus.NewRegistry()
+	svc := memory.NewService(f, nil).WithMetrics(reg)
+
+	// PatchEntity
+	_, err := svc.PatchEntity(ctx, "alpha", memory.Entity{Description: "updated"})
+	require.NoError(t, err)
+
+	// CreateEdge
+	_, err = svc.CreateEdge(ctx, memory.Edge{From: "alpha", To: "beta", Relation: "rel"})
+	require.NoError(t, err)
+
+	// DeleteEdge
+	edgeID := memory.EncodeEdgeID("alpha", "beta")
+	err = svc.DeleteEdge(ctx, edgeID)
+	require.NoError(t, err)
+
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+
+	require.InDelta(t, 1.0, memOpCounter(t, mfs, "patch_entity", "success"), 0.001,
+		"patch_entity must increment success counter")
+	require.InDelta(t, 1.0, memOpCounter(t, mfs, "create_edge", "success"), 0.001,
+		"create_edge must increment success counter")
+	require.InDelta(t, 1.0, memOpCounter(t, mfs, "delete_edge", "success"), 0.001,
+		"delete_edge must increment success counter")
+}
+
+// Finding 7: DeleteMemoriesBySources must emit an INFO log with action/repo/files_count/total_purged.
+func TestService_DeleteMemoriesBySources_EmitsInfoLog(t *testing.T) {
+	ctx := context.Background()
+	lr := fake.New()
+	tomb := newInMemTombstone()
+	src := newInMemSources()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	svc := memory.NewServiceWithSources(lr, tomb, src).WithLogger(logger)
+
+	// Create and index two memories under two different files.
+	m1, err := svc.CreateMemory(ctx, memory.Memory{Text: "one"})
+	require.NoError(t, err)
+	m2, err := svc.CreateMemory(ctx, memory.Memory{Text: "two"})
+	require.NoError(t, err)
+	require.NoError(t, src.Add(ctx, "r", "a.go", m1.ID))
+	require.NoError(t, src.Add(ctx, "r", "b.go", m2.ID))
+
+	n, err := svc.DeleteMemoriesBySources(ctx, "r", []string{"a.go", "b.go"})
+	require.NoError(t, err)
+	require.Equal(t, 2, n)
+
+	// Find the delete_by_sources INFO log line.
+	var batchLog map[string]any
+	for _, line := range bytes.Split(bytes.TrimSpace(buf.Bytes()), []byte("\n")) {
+		var entry map[string]any
+		if json.Unmarshal(line, &entry) != nil {
+			continue
+		}
+		if entry["msg"] == "memory.delete_by_sources" {
+			batchLog = entry
+			break
+		}
+	}
+	require.NotNil(t, batchLog, "delete_by_sources must emit a structured INFO log")
+	require.Equal(t, "INFO", batchLog["level"])
+	require.Equal(t, "delete_memories_by_sources", batchLog["action"])
+	require.Equal(t, "r", batchLog["repo"])
+	require.EqualValues(t, 2, batchLog["files_count"])
+	require.EqualValues(t, 2, batchLog["total_purged"])
 }

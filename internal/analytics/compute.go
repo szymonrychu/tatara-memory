@@ -5,7 +5,7 @@
 package analytics
 
 import (
-	"log/slog"
+	"math"
 	"math/rand/v2"
 	"sort"
 	"time"
@@ -52,10 +52,18 @@ type Config struct {
 	MaxNodes int
 }
 
-// Result bundles the computed node and community signals.
+// Result bundles the computed node and community signals and telemetry the
+// caller uses for logging and Prometheus metrics (findings 3, 6, 8).
 type Result struct {
 	Nodes       []NodeSignal
 	Communities []CommunitySignal
+
+	// Telemetry: returned so the pure Compute function stays dependency-free
+	// while callers can record metrics and structured logs.
+	NodeCount          int
+	EdgeCount          int
+	DurationMs         int64
+	BetweennessSkipped bool
 }
 
 // Compute builds an undirected graph from ids+edges and returns community,
@@ -63,10 +71,14 @@ type Result struct {
 // (isolated nodes, degree 0). Empty input returns an empty Result.
 //
 // Community detection is deterministic: a fixed PCG seed is passed to Louvain.
-// Betweenness is normalized to [0,1] by (n-1)*(n-2)/2 so values are comparable
-// across repos of different sizes. When cfg.MaxNodes > 0 and len(ids) exceeds
-// it, betweenness is skipped and left at 0.0.
-// The returned Communities slice is sorted by Community id.
+// Betweenness is normalized to [0,1] by (n-1)*(n-2)/2 and rounded to 6 decimal
+// places.  Rounding is required because gonum's Brandes implementation
+// accumulates shortest-path deltas over Go map iteration order, which is
+// randomized per-process; without rounding, betweenness float64 values differ
+// between binary invocations for the same graph.  6 decimal places (1e-6
+// resolution) eliminates that noise while preserving ranking.
+// When cfg.MaxNodes > 0 and len(ids) exceeds it, betweenness is skipped and
+// left at 0.0. The returned Communities slice is sorted by Community id.
 func Compute(ids []string, edges []Edge, cfg Config) Result {
 	if len(ids) == 0 {
 		return Result{}
@@ -118,7 +130,12 @@ func Compute(ids []string, edges []Edge, cfg Config) Result {
 			norm = float64((n - 1) * (n - 2))
 		}
 		for nid, v := range raw {
-			betweenness[nid] = v / norm
+			// Round to 6 decimal places so the result is order-insensitive:
+			// gonum.Betweenness accumulates deltas over Go map iteration order
+			// (randomized per-process), producing bit-different float64 values
+			// across binary invocations for the same graph.  Rounding to 1e-6
+			// eliminates that noise while preserving ranking and [0,1] range.
+			betweenness[nid] = math.Round((v/norm)*1e6) / 1e6
 		}
 	}
 
@@ -161,15 +178,15 @@ func Compute(ids []string, edges []Edge, cfg Config) Result {
 	}
 
 	durationMs := time.Since(start).Milliseconds()
-	slog.Info("analytics.Compute",
-		"nodes", n,
-		"edges", edgeCount,
-		"communities", len(communities),
-		"betweenness_skipped", betweennessSkipped,
-		"duration_ms", durationMs,
-	)
 
-	return Result{Nodes: nodes, Communities: communities}
+	return Result{
+		Nodes:              nodes,
+		Communities:        communities,
+		NodeCount:          n,
+		EdgeCount:          edgeCount,
+		DurationMs:         durationMs,
+		BetweennessSkipped: betweennessSkipped,
+	}
 }
 
 // cohesion is the intra-community edge density: 2*(internal edges) / (n*(n-1)).

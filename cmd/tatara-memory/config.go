@@ -9,14 +9,15 @@ import (
 )
 
 type config struct {
-	HTTPAddr          string
-	PGDSN             string
-	LightRAGBaseURL   string
-	OIDCIssuer        string
-	OIDCAudience      string
-	WorkerPoolSize    int
-	IngestItemTimeout time.Duration
-	LogLevel          string
+	HTTPAddr            string
+	PGDSN               string
+	LightRAGBaseURL     string
+	OIDCIssuer          string
+	OIDCAudience        string
+	WorkerPoolSize      int
+	IngestItemTimeout   time.Duration
+	LogLevel            string
+	BetweennessMaxNodes int
 }
 
 func envOr(key, def string) string {
@@ -59,15 +60,20 @@ func loadConfig(args []string) (config, error) {
 	if err != nil {
 		return config{}, err
 	}
+	betweennessMaxNodes, err := envIntOr("BETWEENNESS_MAX_NODES", 0) // 0 -> worker default (5000)
+	if err != nil {
+		return config{}, err
+	}
 	cfg := config{
-		HTTPAddr:          envOr("HTTP_ADDR", ":8080"),
-		PGDSN:             envOr("PG_DSN", ""),
-		LightRAGBaseURL:   envOr("LIGHTRAG_BASE_URL", ""),
-		OIDCIssuer:        envOr("OIDC_ISSUER", "https://auth.szymonrichert.pl/realms/master"),
-		OIDCAudience:      envOr("OIDC_AUDIENCE", "tatara-memory"),
-		WorkerPoolSize:    wp,
-		IngestItemTimeout: itemTimeout,
-		LogLevel:          envOr("LOG_LEVEL", "info"),
+		HTTPAddr:            envOr("HTTP_ADDR", ":8080"),
+		PGDSN:               envOr("PG_DSN", ""),
+		LightRAGBaseURL:     envOr("LIGHTRAG_BASE_URL", ""),
+		OIDCIssuer:          envOr("OIDC_ISSUER", "https://auth.szymonrichert.pl/realms/master"),
+		OIDCAudience:        envOr("OIDC_AUDIENCE", "tatara-memory"),
+		WorkerPoolSize:      wp,
+		IngestItemTimeout:   itemTimeout,
+		LogLevel:            envOr("LOG_LEVEL", "info"),
+		BetweennessMaxNodes: betweennessMaxNodes,
 	}
 
 	fs := flag.NewFlagSet("tatara-memory", flag.ContinueOnError)
@@ -79,6 +85,7 @@ func loadConfig(args []string) (config, error) {
 	fs.IntVar(&cfg.WorkerPoolSize, "worker-pool-size", cfg.WorkerPoolSize, "Ingest worker pool size")
 	fs.DurationVar(&cfg.IngestItemTimeout, "ingest-item-timeout", cfg.IngestItemTimeout, "Per-item ingest timeout (0 disables)")
 	fs.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "Log level (debug|info|warn|error)")
+	fs.IntVar(&cfg.BetweennessMaxNodes, "betweenness-max-nodes", cfg.BetweennessMaxNodes, "Max graph nodes for betweenness centrality (0 = default 5000)")
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
 	}

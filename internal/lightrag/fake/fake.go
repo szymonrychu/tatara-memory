@@ -35,6 +35,13 @@ type Client struct {
 	// DocStatusProcessing via SetInsertStatus to exercise the polling lifecycle.
 	insertStatus lightrag.DocStatus
 
+	// insertRespStatus and insertRespTrackID override the InsertResponse returned
+	// by InsertText when insertRespOverride is true. Used to simulate logical
+	// failures (non-success status or empty track_id).
+	insertRespOverride bool
+	insertRespStatus   string
+	insertRespTrackID  string
+
 	// leaveEdgesOnDelete disables the fake's eager incident-edge cascade in
 	// DeleteEntity, mirroring the real backend's async/eventual behaviour.
 	// When true, dangling edges survive the entity deletion.
@@ -70,6 +77,19 @@ func (c *Client) SetLeaveEdgesOnDelete(v bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.leaveEdgesOnDelete = v
+}
+
+// SetInsertResponse overrides the InsertResponse returned by InsertText with a
+// fixed status and track_id. Pass status="failure" and trackID="" to simulate
+// a logical failure response. Pass status="success" and trackID="" to simulate
+// a response with an empty track_id (also a logical error from the service's view).
+// Call with override=false equivalent by not calling this method (default: normal).
+func (c *Client) SetInsertResponse(status, trackID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.insertRespOverride = true
+	c.insertRespStatus = status
+	c.insertRespTrackID = trackID
 }
 
 func (c *Client) nextStr(prefix string) string {
@@ -119,9 +139,17 @@ func (c *Client) SeedLabels(labels []string) {
 // InsertText accepts a text submission and produces a track_id with one doc.
 // The doc's initial status is controlled by SetInsertStatus (default: DocStatusProcessed).
 // Use SetInsertStatus(DocStatusPending) to exercise polling/lifecycle code paths.
+// Use SetInsertResponse to inject a logical-failure response without storing any doc.
 func (c *Client) InsertText(_ context.Context, req lightrag.InsertTextRequest) (*lightrag.InsertResponse, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.insertRespOverride {
+		return &lightrag.InsertResponse{
+			Status:  c.insertRespStatus,
+			Message: "override",
+			TrackID: c.insertRespTrackID,
+		}, nil
+	}
 	trackID := c.nextStr("track")
 	docID := c.nextStr("doc")
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -172,6 +200,8 @@ func (c *Client) TrackStatus(_ context.Context, trackID string) (*lightrag.Track
 }
 
 // DeleteDocs deletes documents and removes any track references.
+// All doc IDs are validated before any mutation so a missing ID never
+// leaves the store in a partially-mutated state.
 func (c *Client) DeleteDocs(_ context.Context, req lightrag.DeleteDocRequest) (*lightrag.DeleteDocByIdResponse, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -179,11 +209,13 @@ func (c *Client) DeleteDocs(_ context.Context, req lightrag.DeleteDocRequest) (*
 		if _, ok := c.docs[id]; !ok {
 			return nil, &lightrag.HTTPError{Status: 404, Path: "/documents/delete_document", Body: "doc not found: " + id}
 		}
+	}
+	for _, id := range req.DocIDs {
 		state := c.docs[id]
 		delete(c.docs, id)
 		if state.trackID != "" {
 			ids := c.tracks[state.trackID]
-			filtered := ids[:0]
+			filtered := make([]string, 0, len(ids))
 			for _, did := range ids {
 				if did != id {
 					filtered = append(filtered, did)
@@ -426,7 +458,7 @@ func appendUnique(s []string, v string) []string {
 }
 
 func removeLabel(s []string, v string) []string {
-	out := s[:0]
+	out := make([]string, 0, len(s))
 	for _, x := range s {
 		if x != v {
 			out = append(out, x)

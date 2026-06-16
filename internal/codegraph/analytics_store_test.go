@@ -34,18 +34,17 @@ func TestAnalytics_ComputeAndPersist(t *testing.T) {
 	require.NoError(t, err)
 
 	// nil labeler -> label = top-degree member name.
-	res, err := s.RecomputeAnalytics(ctx, "an", nil)
+	res, err := s.RecomputeAnalytics(ctx, "an", nil, 0)
 	require.NoError(t, err)
 	require.Equal(t, 2, res.Communities)
 	require.Greater(t, res.Entities, 0)
 
-	// Entity columns persisted.
-	var community, degree int
+	// Entity columns persisted. degree column was dropped (finding 4 - dead write-only column).
+	var community int
 	var betweenness float64
 	require.NoError(t, db.QueryRowContext(ctx,
-		`SELECT community, degree, betweenness FROM code_entities WHERE repo='an' AND id='an:c'`).
-		Scan(&community, &degree, &betweenness))
-	require.Equal(t, 3, degree)
+		`SELECT community, betweenness FROM code_entities WHERE repo='an' AND id='an:c'`).
+		Scan(&community, &betweenness))
 	require.Greater(t, betweenness, 0.0)
 
 	// Two communities persisted in code_communities with non-empty labels.
@@ -79,7 +78,7 @@ func TestAnalytics_DirtyReposListing(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, repos, "dr")
 
-	_, err = s.RecomputeAnalytics(ctx, "dr", nil)
+	_, err = s.RecomputeAnalytics(ctx, "dr", nil, 0)
 	require.NoError(t, err)
 	repos2, err := s.DirtyRepos(ctx, 60)
 	require.NoError(t, err)

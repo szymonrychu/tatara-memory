@@ -72,7 +72,11 @@ func (s *PGStore) GetJob(ctx context.Context, id string) (memory.IngestJob, erro
 		return memory.IngestJob{}, fmt.Errorf("ingest: get job %q: %w", id, err)
 	}
 	j.Status = memory.JobStatus(status)
-	_ = json.Unmarshal([]byte(errJSON), &j.Errors)
+	if errJSON != "" {
+		if err := json.Unmarshal([]byte(errJSON), &j.Errors); err != nil {
+			return memory.IngestJob{}, fmt.Errorf("ingest: get job %q: unmarshal errors_json: %w", id, err)
+		}
+	}
 	return j, nil
 }
 
@@ -194,7 +198,13 @@ func (s *PGStore) IncrementJobProgress(ctx context.Context, jobID string, itemEr
 		return fmt.Errorf("ingest: increment failed %q: scan: %w", jobID, err)
 	}
 	var errs []memory.IngestItemError
-	_ = json.Unmarshal([]byte(errJSON), &errs)
+	if errJSON != "" {
+		if err := json.Unmarshal([]byte(errJSON), &errs); err != nil {
+			// errors_json is corrupt; start a fresh slice rather than silently
+			// overwriting prior errors with a parse-derived nil.
+			errs = nil
+		}
+	}
 	if len(errs) < maxErrors {
 		errs = append(errs, *itemErr)
 	}
@@ -214,7 +224,7 @@ func (s *PGStore) IncrementJobProgress(ctx context.Context, jobID string, itemEr
 // i.e. enqueued but not yet terminal. Used at startup to resume work that a
 // crash or restart left scheduled-but-undrained.
 func (s *PGStore) ListUnfinishedJobs(ctx context.Context) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM ingest_jobs WHERE status IN ('queued','running')`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM ingest_jobs WHERE status IN ('queued','running') ORDER BY created_at`)
 	if err != nil {
 		return nil, fmt.Errorf("ingest: list unfinished jobs: %w", err)
 	}

@@ -1,7 +1,6 @@
 suite: render all templates
 templates:
   - configmap.yaml
-  - secret.yaml
   - serviceaccount.yaml
   - service.yaml
   - deployment.yaml

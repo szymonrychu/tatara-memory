@@ -385,11 +385,11 @@ func (s *stubCodeGraph) SemanticMisses(_ context.Context, _ string, files []code
 	return out, nil
 }
 
-func (s *stubCodeGraph) Related(_ context.Context, _, _ string, _ []string, _ float64) ([]codegraph.RelatedResult, error) {
+func (s *stubCodeGraph) Related(_ context.Context, _, _ string, _ []string, _ float64, _ int) ([]codegraph.RelatedResult, error) {
 	return []codegraph.RelatedResult{{Entity: codegraph.Entity{ID: "rel:b", Name: "B"}, Relation: codegraph.RelConceptuallyRelated, ConfidenceScore: 0.9}}, nil
 }
 
-func (s *stubCodeGraph) Hyperedges(_ context.Context, _, _ string) ([]codegraph.Hyperedge, error) {
+func (s *stubCodeGraph) Hyperedges(_ context.Context, _, _ string, _ int) ([]codegraph.Hyperedge, error) {
 	return []codegraph.Hyperedge{{ID: "h1", Label: "flow", Members: []string{"a", "b", "c"}}}, nil
 }
 
@@ -397,11 +397,11 @@ func (s *stubCodeGraph) Hyperedge(_ context.Context, _, _ string) (codegraph.Hyp
 	return codegraph.Hyperedge{ID: "h1", Label: "flow", Members: []string{"a", "b", "c"}}, nil
 }
 
-func (s *stubCodeGraph) Communities(_ context.Context, _ string) ([]codegraph.CommunityRow, error) {
+func (s *stubCodeGraph) Communities(_ context.Context, _ string, _ int) ([]codegraph.CommunityRow, error) {
 	return []codegraph.CommunityRow{{Community: 0, Label: "auth", Size: 3, Cohesion: 1.0}}, nil
 }
 
-func (s *stubCodeGraph) Community(_ context.Context, _ string, _ int) ([]codegraph.Entity, error) {
+func (s *stubCodeGraph) Community(_ context.Context, _ string, _ int, _ int) ([]codegraph.Entity, error) {
 	return []codegraph.Entity{{ID: "cm:a", Name: "A"}}, nil
 }
 
@@ -651,4 +651,65 @@ func TestCommunities_LimitCaps_Results(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 	require.Len(t, body.Communities, 1) // stub returns 1; limit=1 keeps it
+}
+
+// --- Finding 6: invalid by= on /code-graph/important must 400 ---
+
+func TestImportantEntities_InvalidBy_Returns400(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/code-graph/important?repo=r&by=pagerank", nil)
+	w := httptest.NewRecorder()
+	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
+	require.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestImportantEntities_ByDegree_Returns200(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/code-graph/important?repo=r&by=degree", nil)
+	w := httptest.NewRecorder()
+	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestImportantEntities_ByBetweenness_Returns200(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/code-graph/important?repo=r&by=betweenness", nil)
+	w := httptest.NewRecorder()
+	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestImportantEntities_ByCapitalized_Returns400(t *testing.T) {
+	// "Betweenness" (wrong case) must not silently fall back to degree.
+	req := httptest.NewRequest(http.MethodGet, "/code-graph/important?repo=r&by=Betweenness", nil)
+	w := httptest.NewRecorder()
+	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
+	require.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+// --- Finding 7: invalid direction on /code/neighbors must 400 ---
+
+func TestNeighbors_InvalidDirection_Returns400(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/code/neighbors?repo=r&id=x&relation=calls&direction=both", nil)
+	w := httptest.NewRecorder()
+	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
+	require.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestNeighbors_DirectionOut_Returns200(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/code/neighbors?repo=r&id=x&relation=calls&direction=out", nil)
+	w := httptest.NewRecorder()
+	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestNeighbors_DirectionIn_Returns200(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/code/neighbors?repo=r&id=x&relation=calls&direction=in", nil)
+	w := httptest.NewRecorder()
+	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestNeighbors_DirectionEmpty_Returns200(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/code/neighbors?repo=r&id=x&relation=calls", nil)
+	w := httptest.NewRecorder()
+	cgRouter(&stubCodeGraph{}).ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
 }

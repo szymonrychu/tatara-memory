@@ -78,7 +78,7 @@ func newServiceOps(reg prometheus.Registerer) *prometheus.CounterVec {
 	if reg != nil {
 		reg.MustRegister(c)
 	}
-	for _, op := range []string{"create", "delete", "delete_by_source"} {
+	for _, op := range []string{"create", "delete", "delete_by_source", "patch_entity", "create_edge", "delete_edge", "delete_by_sources"} {
 		for _, r := range []string{"success", "error"} {
 			c.WithLabelValues(op, r)
 		}
@@ -124,6 +124,15 @@ func (s *Service) CreateMemory(ctx context.Context, m Memory) (Memory, error) {
 	if err != nil {
 		s.incOp("create", err)
 		return Memory{}, wrapUpstream(err)
+	}
+	// Treat a non-success status or an empty track_id as a logical upstream failure.
+	// LightRAG may return HTTP 200 with status="failure" when ingest is rejected
+	// (e.g. string_too_short). An empty track_id makes the returned Memory unusable.
+	if resp.Status != "success" || resp.TrackID == "" {
+		logicalErr := fmt.Errorf("%w: insert returned status=%q track_id=%q",
+			ErrUpstream, resp.Status, resp.TrackID)
+		s.incOp("create", logicalErr)
+		return Memory{}, logicalErr
 	}
 	m.ID = resp.TrackID
 	m.CreatedAt = s.now()
@@ -204,14 +213,25 @@ func (s *Service) DeleteMemory(ctx context.Context, trackID string) error {
 // total count of track_ids purged across all files. A nil sources index is a
 // no-op returning 0.
 func (s *Service) DeleteMemoriesBySources(ctx context.Context, repo string, files []string) (int, error) {
+	start := time.Now()
 	total := 0
 	for _, f := range files {
 		n, err := s.DeleteMemoriesBySource(ctx, repo, f)
 		if err != nil {
-			return total, err
+			s.incOp("delete_by_sources", err)
+			return total, fmt.Errorf("delete memories for %s/%s: %w", repo, f, err)
 		}
 		total += n
 	}
+	s.incOp("delete_by_sources", nil)
+	s.log.InfoContext(ctx, "memory.delete_by_sources",
+		"action", "delete_memories_by_sources",
+		"resource_id", repo,
+		"repo", repo,
+		"files_count", len(files),
+		"total_purged", total,
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
 	return total, nil
 }
 
@@ -236,13 +256,16 @@ func (s *Service) DeleteMemoriesBySource(ctx context.Context, repo, filePath str
 				continue // already gone upstream; index cleanup below still runs
 			}
 			s.incOp("delete_by_source", err)
-			return 0, fmt.Errorf("delete memory %s for %s/%s: %w", id, repo, filePath, err)
+			// Return purged (work done so far), not 0, so callers can account for
+			// partial progress. The source-index is not cleaned up on mid-loop failure;
+			// a retry will re-read the remaining ids (ErrNotFound entries are skipped).
+			return purged, fmt.Errorf("delete memory %s for %s/%s: %w", id, repo, filePath, err)
 		}
 		purged++
 	}
 	if _, err := s.sources.DeleteByFile(ctx, repo, filePath); err != nil {
 		s.incOp("delete_by_source", err)
-		return 0, fmt.Errorf("purge source index %s/%s: %w", repo, filePath, err)
+		return purged, fmt.Errorf("purge source index %s/%s: %w", repo, filePath, err)
 	}
 	s.incOp("delete_by_source", nil)
 	s.log.InfoContext(ctx, "memory.delete_by_source",
@@ -328,6 +351,7 @@ func (s *Service) SearchEntities(ctx context.Context, q string) ([]Entity, error
 
 // PatchEntity applies a partial update to the entity identified by name.
 func (s *Service) PatchEntity(ctx context.Context, name string, patch Entity) (Entity, error) {
+	start := time.Now()
 	data := EntityUpdatePayload(patch)
 	allowRename := patch.Name != "" && patch.Name != name
 	_, err := s.lr.UpdateEntity(ctx, lightrag.EntityUpdateRequest{
@@ -336,17 +360,29 @@ func (s *Service) PatchEntity(ctx context.Context, name string, patch Entity) (E
 		AllowRename: allowRename,
 	})
 	if err != nil {
+		s.incOp("patch_entity", err)
 		return Entity{}, wrapUpstream(err)
 	}
 	final := name
 	if allowRename {
 		final = patch.Name
 	}
-	return s.GetEntity(ctx, final)
+	out, err := s.GetEntity(ctx, final)
+	if err != nil {
+		s.incOp("patch_entity", err)
+		return Entity{}, err
+	}
+	s.incOp("patch_entity", nil)
+	s.log.InfoContext(ctx, "memory.patch_entity",
+		"action", "patch_entity",
+		"resource_id", name,
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
+	return out, nil
 }
 
 // ListEdges returns all edges by iterating every known label and collecting its incident edges.
-// O(N) graph reads; acceptable for v0.1.1, slated for revisit in v0.2.
+// See MEMORY.md for the O(N) graph-read trade-off rationale.
 func (s *Service) ListEdges(ctx context.Context) ([]Edge, error) {
 	labels, err := s.lr.LabelSearch(ctx, "")
 	if err != nil {
@@ -379,25 +415,42 @@ func (s *Service) ListEdges(ctx context.Context) ([]Edge, error) {
 
 // CreateEdge stores a new relation between two existing entities.
 func (s *Service) CreateEdge(ctx context.Context, e Edge) (Edge, error) {
+	start := time.Now()
 	if _, err := s.lr.CreateRelation(ctx, RelationCreatePayload(e)); err != nil {
+		s.incOp("create_edge", err)
 		return Edge{}, wrapUpstream(err)
 	}
 	created := e
 	created.ID = EncodeEdgeID(e.From, e.To)
+	s.incOp("create_edge", nil)
+	s.log.InfoContext(ctx, "memory.create_edge",
+		"action", "create_edge",
+		"resource_id", created.ID,
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
 	return created, nil
 }
 
 // DeleteEdge removes an edge by opaque ID produced by EncodeEdgeID.
 func (s *Service) DeleteEdge(ctx context.Context, id string) error {
+	start := time.Now()
 	from, to, err := DecodeEdgeID(id)
 	if err != nil {
+		s.incOp("delete_edge", err)
 		return fmt.Errorf("%w: invalid edge id %q", ErrInvalid, id)
 	}
 	if err := s.lr.DeleteRelation(ctx, lightrag.DeleteRelationRequest{
 		SourceEntity: from,
 		TargetEntity: to,
 	}); err != nil {
+		s.incOp("delete_edge", err)
 		return wrapUpstream(err)
 	}
+	s.incOp("delete_edge", nil)
+	s.log.InfoContext(ctx, "memory.delete_edge",
+		"action", "delete_edge",
+		"resource_id", id,
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
 	return nil
 }

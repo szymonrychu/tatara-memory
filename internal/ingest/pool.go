@@ -137,10 +137,12 @@ func (p *Pool) Notify(jobID string) {
 // and returns how many it scheduled. This recovers jobs that were enqueued but
 // never notified (or whose notify was dropped) before a restart.
 //
-// It first resets any items left 'running' by a mid-item crash back to
-// 'pending', so the orphans are reclaimed rather than skipped (ClaimNextItem
-// only claims 'pending'). This runs before notifying, and the resumed jobs are
-// not yet in the notify channel, so no worker is claiming them concurrently.
+// It first calls ResetRunningItems to move items left 'running' by a mid-item
+// crash back to 'pending', so the orphans are reclaimed rather than skipped
+// (ClaimNextItem only claims 'pending'). ResetRunningItems completes as a
+// single atomic statement before any job ID is sent to the notify channel, so
+// orphan reclaim is correct even though workers may already be running when
+// Resume is called (Start is typically called first at the app layer).
 func (p *Pool) Resume(ctx context.Context) (int, error) {
 	if _, err := p.store.ResetRunningItems(ctx); err != nil {
 		return 0, err
@@ -183,6 +185,12 @@ func (p *Pool) runJob(ctx context.Context, jobID string) {
 			"job_id", jobID,
 			"err", err,
 		)
+		return
+	}
+	// Guard against duplicate/stale notifies: a job that is already terminal
+	// (Succeeded, Failed, Partial) must not be re-finalized. Returning here
+	// prevents double-counting ingest_jobs_total and a spurious UpdateJob call.
+	if j.Status.Terminal() {
 		return
 	}
 	p.log.InfoContext(ctx, "ingest.job.start",
@@ -257,6 +265,12 @@ func (p *Pool) runJob(ctx context.Context, jobID string) {
 			"job_id", jobID,
 			"err", err,
 		)
+		return
+	}
+	// Only finalize when every item is accounted for. If items are still
+	// in-flight (e.g. two workers racing on the same job via duplicate notifies),
+	// Done+Failed < Total; leave the job running so the other worker completes it.
+	if final.Done+final.Failed < final.Total {
 		return
 	}
 	switch {

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 )
 
@@ -43,9 +44,9 @@ func scanProps(raw []byte) map[string]string {
 	}
 	var m map[string]string
 	if err := json.Unmarshal(raw, &m); err != nil {
-		// Corrupt DB cell: log at WARN so the problem is observable; return nil
-		// so callers get no-properties rather than a hard error on an otherwise
-		// valid row.
+		// Corrupt DB cell: return nil so callers get no-properties rather than a
+		// hard error on an otherwise valid row.
+		slog.Warn("codegraph: corrupt properties jsonb", "err", err)
 		return nil
 	}
 	return m
@@ -395,6 +396,10 @@ func (s *PGStore) Neighbors(ctx context.Context, repo, id string, relations []st
 // Cycle detection uses a text[] array so that membership is exact (no false positives
 // when one entity ID is a prefix/substring of another).
 // The path array is converted to a '|'-separated string for easy scanning.
+//
+// Finding 5: the recursive branch is pruned once the current node is the target
+// (AND walk.id <> $5) so branches that already reached the goal do not expand
+// further. Combined with the depth cap this bounds worst-case path enumeration.
 const shortestPathQuery = `
 	WITH RECURSIVE walk(id, path_arr, depth) AS (
 		SELECT $2::text, ARRAY[$2::text], 0
@@ -407,6 +412,7 @@ const shortestPathQuery = `
 		  AND ($3='' OR e.relation = ANY(string_to_array($3, ',')))
 		WHERE walk.depth < $4
 		  AND e.to_id <> ALL(walk.path_arr)
+		  AND walk.id <> $5
 	)
 	SELECT array_to_string(path_arr, '|') FROM walk WHERE id=$5 ORDER BY depth LIMIT 1`
 
@@ -833,7 +839,7 @@ var semanticRelations = []string{
 // Related returns the semantic-extractor neighbors of id: targets reached by a
 // semantic relation edge with confidence_score >= minConfidence. When relations
 // is empty the full semantic relation vocabulary is used.
-func (s *PGStore) Related(ctx context.Context, repo, id string, relations []string, minConfidence float64) ([]RelatedResult, error) {
+func (s *PGStore) Related(ctx context.Context, repo, id string, relations []string, minConfidence float64, limit int) ([]RelatedResult, error) {
 	rels := relations
 	if len(rels) == 0 {
 		rels = semanticRelations
@@ -848,8 +854,9 @@ func (s *PGStore) Related(ctx context.Context, repo, id string, relations []stri
 		  AND e.extractor='semantic'
 		  AND e.relation = ANY(string_to_array($3, ','))
 		  AND e.confidence_score >= $4
-		ORDER BY e.confidence_score DESC, en.id`,
-		repo, id, relStr, minConfidence)
+		ORDER BY e.confidence_score DESC, en.id
+		LIMIT $5`,
+		repo, id, relStr, minConfidence, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -870,19 +877,19 @@ func (s *PGStore) Related(ctx context.Context, repo, id string, relations []stri
 
 // Hyperedges returns the hyperedges in repo. When entityID is non-empty only
 // hyperedges whose members include it are returned.
-func (s *PGStore) Hyperedges(ctx context.Context, repo, entityID string) ([]Hyperedge, error) {
+func (s *PGStore) Hyperedges(ctx context.Context, repo, entityID string, limit int) ([]Hyperedge, error) {
 	var rows *sql.Rows
 	var err error
 	if entityID == "" {
 		rows, err = s.db.QueryContext(ctx, `
 			SELECT id, label, relation, confidence_score, src_file, properties
-			FROM code_hyperedges WHERE repo=$1 ORDER BY id`, repo)
+			FROM code_hyperedges WHERE repo=$1 ORDER BY id LIMIT $2`, repo, limit)
 	} else {
 		rows, err = s.db.QueryContext(ctx, `
 			SELECT h.id, h.label, h.relation, h.confidence_score, h.src_file, h.properties
 			FROM code_hyperedges h
 			JOIN code_hyperedge_members m ON m.repo=h.repo AND m.hyperedge_id=h.id
-			WHERE h.repo=$1 AND m.entity_id=$2 ORDER BY h.id`, repo, entityID)
+			WHERE h.repo=$1 AND m.entity_id=$2 ORDER BY h.id LIMIT $3`, repo, entityID, limit)
 	}
 	if err != nil {
 		return nil, err
@@ -958,10 +965,10 @@ func (s *PGStore) hyperedgeMembers(ctx context.Context, repo, id string) ([]stri
 }
 
 // Communities returns the detected communities for a repo, ordered by size DESC.
-func (s *PGStore) Communities(ctx context.Context, repo string) ([]CommunityRow, error) {
+func (s *PGStore) Communities(ctx context.Context, repo string, limit int) ([]CommunityRow, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT community, label, size, cohesion
-		FROM code_communities WHERE repo=$1 ORDER BY size DESC, community`, repo)
+		FROM code_communities WHERE repo=$1 ORDER BY size DESC, community LIMIT $2`, repo, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -978,10 +985,10 @@ func (s *PGStore) Communities(ctx context.Context, repo string) ([]CommunityRow,
 }
 
 // Community returns the member entities of one community.
-func (s *PGStore) Community(ctx context.Context, repo string, community int) ([]Entity, error) {
+func (s *PGStore) Community(ctx context.Context, repo string, community, limit int) ([]Entity, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, name, type, description, file_path, properties
-		FROM code_entities WHERE repo=$1 AND community=$2 ORDER BY id`, repo, community)
+		FROM code_entities WHERE repo=$1 AND community=$2 ORDER BY id LIMIT $3`, repo, community, limit)
 	if err != nil {
 		return nil, err
 	}
