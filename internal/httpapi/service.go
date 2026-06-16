@@ -54,11 +54,11 @@ type CodeGraphService interface {
 
 	// Phase 2 semantic ceiling methods.
 	SemanticMisses(ctx context.Context, repo string, files []codegraph.FileSHA) ([]string, error)
-	Related(ctx context.Context, repo, id string, relations []string, minConfidence float64) ([]codegraph.RelatedResult, error)
-	Hyperedges(ctx context.Context, repo, entityID string) ([]codegraph.Hyperedge, error)
+	Related(ctx context.Context, repo, id string, relations []string, minConfidence float64, limit int) ([]codegraph.RelatedResult, error)
+	Hyperedges(ctx context.Context, repo, entityID string, limit int) ([]codegraph.Hyperedge, error)
 	Hyperedge(ctx context.Context, repo, id string) (codegraph.Hyperedge, error)
-	Communities(ctx context.Context, repo string) ([]codegraph.CommunityRow, error)
-	Community(ctx context.Context, repo string, community int) ([]codegraph.Entity, error)
+	Communities(ctx context.Context, repo string, limit int) ([]codegraph.CommunityRow, error)
+	Community(ctx context.Context, repo string, community, limit int) ([]codegraph.Entity, error)
 	Bridges(ctx context.Context, repo string, limit int) ([]codegraph.Bridge, error)
 	ImportantEntitiesBy(ctx context.Context, repo, by string, limit int) ([]codegraph.EntityDegree, error)
 }

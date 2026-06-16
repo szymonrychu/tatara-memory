@@ -58,19 +58,19 @@ func (f *fakeStore) EntityExplain(_ context.Context, _, _ string) (codegraph.Ent
 func (f *fakeStore) SemanticMisses(_ context.Context, _ string, _ []codegraph.FileSHA) ([]string, error) {
 	return nil, nil
 }
-func (f *fakeStore) Related(_ context.Context, _, _ string, _ []string, _ float64) ([]codegraph.RelatedResult, error) {
+func (f *fakeStore) Related(_ context.Context, _, _ string, _ []string, _ float64, _ int) ([]codegraph.RelatedResult, error) {
 	return nil, nil
 }
-func (f *fakeStore) Hyperedges(_ context.Context, _, _ string) ([]codegraph.Hyperedge, error) {
+func (f *fakeStore) Hyperedges(_ context.Context, _, _ string, _ int) ([]codegraph.Hyperedge, error) {
 	return nil, nil
 }
 func (f *fakeStore) Hyperedge(_ context.Context, _, _ string) (codegraph.Hyperedge, error) {
 	return codegraph.Hyperedge{}, nil
 }
-func (f *fakeStore) Communities(_ context.Context, _ string) ([]codegraph.CommunityRow, error) {
+func (f *fakeStore) Communities(_ context.Context, _ string, _ int) ([]codegraph.CommunityRow, error) {
 	return nil, nil
 }
-func (f *fakeStore) Community(_ context.Context, _ string, _ int) ([]codegraph.Entity, error) {
+func (f *fakeStore) Community(_ context.Context, _ string, _ int, _ int) ([]codegraph.Entity, error) {
 	return nil, nil
 }
 func (f *fakeStore) Bridges(_ context.Context, _ string, _ int) ([]codegraph.Bridge, error) {

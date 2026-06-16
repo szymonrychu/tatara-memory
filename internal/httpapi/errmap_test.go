@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/szymonrychu/tatara-memory/internal/codegraph"
+	"github.com/szymonrychu/tatara-memory/internal/ingest"
 )
 
 func TestMapServiceError_CodeGraph(t *testing.T) {
@@ -27,4 +28,14 @@ func TestMapServiceError_CodeGraph(t *testing.T) {
 			require.Equal(t, c.want, w.Code)
 		})
 	}
+}
+
+// TestMapServiceError_DuplicateKey verifies that ErrDuplicateKey maps to 400,
+// not 500. A duplicate idempotency key is a permanent client error (same input
+// always produces the same key) and must not trigger retries.
+func TestMapServiceError_DuplicateKey(t *testing.T) {
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/", nil)
+	mapServiceError(w, r, ingest.ErrDuplicateKey)
+	require.Equal(t, http.StatusBadRequest, w.Code)
 }

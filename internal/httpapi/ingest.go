@@ -38,7 +38,9 @@ func decodeBulk(body []byte) (BulkMemoriesRequest, error) {
 		return BulkMemoriesRequest{Items: items}, nil
 	}
 	var req BulkMemoriesRequest
-	if err := json.Unmarshal(body, &req); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
 		return BulkMemoriesRequest{}, err
 	}
 	return req, nil
@@ -54,14 +56,14 @@ func repoFromItems(items []memory.IngestItem) string {
 	return ""
 }
 
-func readAllLimited(r *http.Request) ([]byte, error) {
-	return io.ReadAll(http.MaxBytesReader(nil, r.Body, maxBulkBody))
+func readAllLimited(w http.ResponseWriter, r *http.Request) ([]byte, error) {
+	return io.ReadAll(http.MaxBytesReader(w, r.Body, maxBulkBody))
 }
 
 func handleBulkIngest(cfg Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		body, err := readAllLimited(r)
+		body, err := readAllLimited(w, r)
 		if err != nil {
 			WriteError(w, http.StatusBadRequest, "invalid json", RequestIDFromContext(r.Context()))
 			return
@@ -104,8 +106,9 @@ func handleBulkIngest(cfg Config) http.HandlerFunc {
 		}
 
 		if len(req.Items) == 0 {
-			// Pure deletion reconcile (deleted files only): nothing to enqueue.
-			WriteJSON(w, http.StatusAccepted, memory.IngestJob{Status: memory.JobStatusSucceeded})
+			// Pure deletion reconcile completed synchronously; no async job.
+			// 200 (not 202) because the work is done and there is no job ID to poll.
+			WriteJSON(w, http.StatusOK, memory.IngestJob{Status: memory.JobStatusSucceeded})
 			return
 		}
 

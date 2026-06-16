@@ -212,6 +212,11 @@ func handleNeighbors(cfg Config) http.HandlerFunc {
 		if !ok {
 			return
 		}
+		dir := r.URL.Query().Get("direction")
+		if dir != "" && dir != "in" && dir != "out" {
+			WriteError(w, http.StatusBadRequest, "direction must be in or out", RequestIDFromContext(r.Context()))
+			return
+		}
 		depth, ok := depthParam(w, r)
 		if !ok {
 			return
@@ -220,7 +225,7 @@ func handleNeighbors(cfg Config) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		nodes, err := cfg.CodeGraph.Neighbors(r.Context(), repo, id, strings.Split(rel, ","), r.URL.Query().Get("direction"), depth, limit, cf)
+		nodes, err := cfg.CodeGraph.Neighbors(r.Context(), repo, id, strings.Split(rel, ","), dir, depth, limit, cf)
 		writeNodes(w, r, nodes, err)
 	}
 }
@@ -363,9 +368,9 @@ func handleFileImports(cfg Config) http.HandlerFunc {
 		if edges == nil {
 			edges = []codegraph.Edge{}
 		}
-		cap := clampListLimit(limit)
-		if len(edges) > cap {
-			edges = edges[:cap]
+		lim := clampListLimit(limit)
+		if len(edges) > lim {
+			edges = edges[:lim]
 		}
 		WriteJSON(w, http.StatusOK, map[string]interface{}{"edges": edges})
 	}
@@ -437,6 +442,10 @@ func handleImportantEntities(cfg Config) http.HandlerFunc {
 			return
 		}
 		by := r.URL.Query().Get("by")
+		if by != "" && by != codegraph.ImportantByDegree && by != codegraph.ImportantByBetweenness {
+			WriteError(w, http.StatusBadRequest, "by must be degree or betweenness", RequestIDFromContext(r.Context()))
+			return
+		}
 		var entities []codegraph.EntityDegree
 		var err error
 		if by != "" {
@@ -477,17 +486,13 @@ func handleRelated(cfg Config) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		results, err := cfg.CodeGraph.Related(r.Context(), repo, id, relations, minConf)
+		results, err := cfg.CodeGraph.Related(r.Context(), repo, id, relations, minConf, clampListLimit(limit))
 		if err != nil {
 			mapServiceError(w, r, err)
 			return
 		}
 		if results == nil {
 			results = []codegraph.RelatedResult{}
-		}
-		cap := clampListLimit(limit)
-		if len(results) > cap {
-			results = results[:cap]
 		}
 		WriteJSON(w, http.StatusOK, map[string]interface{}{"related": results})
 	}
@@ -503,17 +508,13 @@ func handleHyperedges(cfg Config) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		hes, err := cfg.CodeGraph.Hyperedges(r.Context(), repo, r.URL.Query().Get("entity"))
+		hes, err := cfg.CodeGraph.Hyperedges(r.Context(), repo, r.URL.Query().Get("entity"), clampListLimit(limit))
 		if err != nil {
 			mapServiceError(w, r, err)
 			return
 		}
 		if hes == nil {
 			hes = []codegraph.Hyperedge{}
-		}
-		cap := clampListLimit(limit)
-		if len(hes) > cap {
-			hes = hes[:cap]
 		}
 		WriteJSON(w, http.StatusOK, map[string]interface{}{"hyperedges": hes})
 	}
@@ -589,17 +590,13 @@ func handleCommunities(cfg Config) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		comms, err := cfg.CodeGraph.Communities(r.Context(), repo)
+		comms, err := cfg.CodeGraph.Communities(r.Context(), repo, clampListLimit(limit))
 		if err != nil {
 			mapServiceError(w, r, err)
 			return
 		}
 		if comms == nil {
 			comms = []codegraph.CommunityRow{}
-		}
-		cap := clampListLimit(limit)
-		if len(comms) > cap {
-			comms = comms[:cap]
 		}
 		WriteJSON(w, http.StatusOK, map[string]interface{}{"communities": comms})
 	}
@@ -625,17 +622,13 @@ func handleCommunity(cfg Config) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		members, err := cfg.CodeGraph.Community(r.Context(), repo, cid)
+		members, err := cfg.CodeGraph.Community(r.Context(), repo, cid, clampListLimit(limit))
 		if err != nil {
 			mapServiceError(w, r, err)
 			return
 		}
 		if members == nil {
 			members = []codegraph.Entity{}
-		}
-		cap := clampListLimit(limit)
-		if len(members) > cap {
-			members = members[:cap]
 		}
 		WriteJSON(w, http.StatusOK, map[string]interface{}{"entities": members})
 	}

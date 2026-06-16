@@ -19,11 +19,11 @@ type Store interface {
 
 	// Phase 2 semantic ceiling methods.
 	SemanticMisses(ctx context.Context, repo string, files []FileSHA) ([]string, error)
-	Related(ctx context.Context, repo, id string, relations []string, minConfidence float64) ([]RelatedResult, error)
-	Hyperedges(ctx context.Context, repo, entityID string) ([]Hyperedge, error)
+	Related(ctx context.Context, repo, id string, relations []string, minConfidence float64, limit int) ([]RelatedResult, error)
+	Hyperedges(ctx context.Context, repo, entityID string, limit int) ([]Hyperedge, error)
 	Hyperedge(ctx context.Context, repo, id string) (Hyperedge, error)
-	Communities(ctx context.Context, repo string) ([]CommunityRow, error)
-	Community(ctx context.Context, repo string, community int) ([]Entity, error)
+	Communities(ctx context.Context, repo string, limit int) ([]CommunityRow, error)
+	Community(ctx context.Context, repo string, community, limit int) ([]Entity, error)
 	Bridges(ctx context.Context, repo string, limit int) ([]Bridge, error)
 	ImportantEntitiesBy(ctx context.Context, repo, by string, limit int) ([]EntityDegree, error)
 	DirtyRepos(ctx context.Context, debounceSecs int) ([]string, error)

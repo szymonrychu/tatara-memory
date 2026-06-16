@@ -35,7 +35,7 @@ func TestCommunitiesAndBridgesAndImportantBy(t *testing.T) {
 	require.NoError(t, err)
 
 	// Communities list.
-	comms, err := s.Communities(ctx, "cm")
+	comms, err := s.Communities(ctx, "cm", 100)
 	require.NoError(t, err)
 	require.Len(t, comms, 2)
 	for _, c := range comms {
@@ -43,7 +43,7 @@ func TestCommunitiesAndBridgesAndImportantBy(t *testing.T) {
 	}
 
 	// Community members.
-	members, err := s.Community(ctx, "cm", comms[0].Community)
+	members, err := s.Community(ctx, "cm", comms[0].Community, 100)
 	require.NoError(t, err)
 	require.Len(t, members, 3)
 

@@ -183,17 +183,31 @@ func (s *Service) SemanticMisses(ctx context.Context, repo string, files []FileS
 	return s.store.SemanticMisses(ctx, repo, files)
 }
 
-// Related returns semantic neighbors of id filtered by relations and minConfidence.
-func (s *Service) Related(ctx context.Context, repo, id string, relations []string, minConfidence float64) ([]RelatedResult, error) {
+// Related returns semantic neighbors of id filtered by relations and minConfidence,
+// capped at limit rows by the SQL query.
+func (s *Service) Related(ctx context.Context, repo, id string, relations []string, minConfidence float64, limit int) ([]RelatedResult, error) {
+	if limit <= 0 {
+		limit = defaultImportantLimit
+	}
+	if limit > maxImportantLimit {
+		limit = maxImportantLimit
+	}
 	start := time.Now()
-	out, err := s.store.Related(ctx, repo, id, relations, minConfidence)
+	out, err := s.store.Related(ctx, repo, id, relations, minConfidence, limit)
 	s.metrics.observeQuery(queryOpRelated, start, err)
 	return out, err
 }
 
-// Hyperedges returns the hyperedges in repo, optionally filtered by member entity.
-func (s *Service) Hyperedges(ctx context.Context, repo, entityID string) ([]Hyperedge, error) {
-	return s.store.Hyperedges(ctx, repo, entityID)
+// Hyperedges returns the hyperedges in repo, optionally filtered by member entity,
+// capped at limit rows by the SQL query.
+func (s *Service) Hyperedges(ctx context.Context, repo, entityID string, limit int) ([]Hyperedge, error) {
+	if limit <= 0 {
+		limit = defaultImportantLimit
+	}
+	if limit > maxImportantLimit {
+		limit = maxImportantLimit
+	}
+	return s.store.Hyperedges(ctx, repo, entityID, limit)
 }
 
 // Hyperedge returns a single hyperedge with its members.
@@ -201,14 +215,26 @@ func (s *Service) Hyperedge(ctx context.Context, repo, id string) (Hyperedge, er
 	return s.store.Hyperedge(ctx, repo, id)
 }
 
-// Communities returns the detected communities for a repo.
-func (s *Service) Communities(ctx context.Context, repo string) ([]CommunityRow, error) {
-	return s.store.Communities(ctx, repo)
+// Communities returns the detected communities for a repo, capped at limit rows.
+func (s *Service) Communities(ctx context.Context, repo string, limit int) ([]CommunityRow, error) {
+	if limit <= 0 {
+		limit = defaultImportantLimit
+	}
+	if limit > maxImportantLimit {
+		limit = maxImportantLimit
+	}
+	return s.store.Communities(ctx, repo, limit)
 }
 
-// Community returns the member entities of one community.
-func (s *Service) Community(ctx context.Context, repo string, community int) ([]Entity, error) {
-	return s.store.Community(ctx, repo, community)
+// Community returns the member entities of one community, capped at limit rows.
+func (s *Service) Community(ctx context.Context, repo string, community, limit int) ([]Entity, error) {
+	if limit <= 0 {
+		limit = defaultImportantLimit
+	}
+	if limit > maxImportantLimit {
+		limit = maxImportantLimit
+	}
+	return s.store.Community(ctx, repo, community, limit)
 }
 
 // Bridges returns high-betweenness multi-community connectors, capped by limit.

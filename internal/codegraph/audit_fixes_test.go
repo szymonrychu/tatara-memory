@@ -289,19 +289,19 @@ func (f *fakeStoreForMetrics) EntityExplain(_ context.Context, _, _ string) (Ent
 func (f *fakeStoreForMetrics) SemanticMisses(_ context.Context, _ string, _ []FileSHA) ([]string, error) {
 	return nil, nil
 }
-func (f *fakeStoreForMetrics) Related(_ context.Context, _, _ string, _ []string, _ float64) ([]RelatedResult, error) {
+func (f *fakeStoreForMetrics) Related(_ context.Context, _, _ string, _ []string, _ float64, _ int) ([]RelatedResult, error) {
 	return nil, nil
 }
-func (f *fakeStoreForMetrics) Hyperedges(_ context.Context, _, _ string) ([]Hyperedge, error) {
+func (f *fakeStoreForMetrics) Hyperedges(_ context.Context, _, _ string, _ int) ([]Hyperedge, error) {
 	return nil, nil
 }
 func (f *fakeStoreForMetrics) Hyperedge(_ context.Context, _, _ string) (Hyperedge, error) {
 	return Hyperedge{}, nil
 }
-func (f *fakeStoreForMetrics) Communities(_ context.Context, _ string) ([]CommunityRow, error) {
+func (f *fakeStoreForMetrics) Communities(_ context.Context, _ string, _ int) ([]CommunityRow, error) {
 	return nil, nil
 }
-func (f *fakeStoreForMetrics) Community(_ context.Context, _ string, _ int) ([]Entity, error) {
+func (f *fakeStoreForMetrics) Community(_ context.Context, _ string, _ int, _ int) ([]Entity, error) {
 	return nil, nil
 }
 func (f *fakeStoreForMetrics) Bridges(_ context.Context, _ string, _ int) ([]Bridge, error) {
