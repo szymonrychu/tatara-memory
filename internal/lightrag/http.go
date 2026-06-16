@@ -190,14 +190,20 @@ func (c *HTTPClient) roundTrip(ctx context.Context, method, path string, body io
 				// duration now and skip the next iteration's exponential
 				// backoff (do not stack the two waits, do not burn an attempt).
 				if ra := resp.Header.Get("Retry-After"); ra != "" {
+					var wait time.Duration
 					if secs, parseErr := strconv.Atoi(ra); parseErr == nil {
+						wait = time.Duration(secs) * time.Second
+					} else if t, parseErr := http.ParseTime(ra); parseErr == nil && t.After(time.Now()) {
+						wait = time.Until(t)
+					}
+					if wait > 0 {
 						select {
 						case <-ctx.Done():
 							return ctx.Err()
-						case <-time.After(time.Duration(secs) * time.Second):
+						case <-time.After(wait):
 						}
-						skipBackoff = true
 					}
+					skipBackoff = true
 				}
 				c.log.LogAttrs(ctx, slog.LevelDebug, "lightrag_retry",
 					slog.String("path", path),
@@ -209,13 +215,15 @@ func (c *HTTPClient) roundTrip(ctx context.Context, method, path string, body io
 			return httpErr
 		}
 
-		defer func() { _ = resp.Body.Close() }()
 		if out == nil || resp.StatusCode == http.StatusNoContent {
 			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
 			return nil
 		}
-		if err := json.NewDecoder(io.LimitReader(resp.Body, maxBodyBytes)).Decode(out); err != nil {
-			return fmt.Errorf("lightrag: decode response: %w", err)
+		decodeErr := json.NewDecoder(io.LimitReader(resp.Body, maxBodyBytes)).Decode(out)
+		_ = resp.Body.Close()
+		if decodeErr != nil {
+			return fmt.Errorf("lightrag: decode response: %w", decodeErr)
 		}
 		return nil
 	}
@@ -267,6 +275,8 @@ func (c *HTTPClient) DeleteDocs(ctx context.Context, req DeleteDocRequest) (*Del
 }
 
 // Query executes a retrieval query and returns the generated response.
+// Unlike QueryData, /query returns a plain {response, references} body with no
+// status/failure envelope (LightRAG v1.4.16), so no LogicalError check is needed.
 func (c *HTTPClient) Query(ctx context.Context, req QueryRequest) (*QueryResponse, error) {
 	if req.Mode != "" && !req.Mode.Valid() {
 		c.metrics.incError(OpQuery)

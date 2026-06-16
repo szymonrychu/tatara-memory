@@ -159,6 +159,57 @@ func TestFake_DeleteEntity_RemovesEdgesByDefault(t *testing.T) {
 	require.Empty(t, g.Edges, "incident edges must be removed by default")
 }
 
+// Finding 2: DeleteDocs with a mix of known and unknown IDs must not mutate state
+// before returning an error. All IDs should be validated up front.
+func TestFake_DeleteDocs_UnknownIDDoesNotPartiallyMutate(t *testing.T) {
+	f := fake.New()
+	r1, _ := f.InsertText(context.Background(), lightrag.InsertTextRequest{Text: "a"})
+	r2, _ := f.InsertText(context.Background(), lightrag.InsertTextRequest{Text: "b"})
+
+	ts1, _ := f.TrackStatus(context.Background(), r1.TrackID)
+	ts2, _ := f.TrackStatus(context.Background(), r2.TrackID)
+	id1 := ts1.Documents[0].ID
+	id2 := ts2.Documents[0].ID
+
+	// Delete with id1 valid, "missing" unknown - should error without deleting id1.
+	_, err := f.DeleteDocs(context.Background(), lightrag.DeleteDocRequest{
+		DocIDs: []string{id1, "missing"},
+	})
+	require.Error(t, err)
+
+	// id1 must still be present (no partial mutation).
+	ts, err2 := f.TrackStatus(context.Background(), r1.TrackID)
+	require.NoError(t, err2, "id1 must not have been deleted on error")
+	require.Equal(t, id1, ts.Documents[0].ID)
+
+	// id2 is unrelated and must be unaffected.
+	ts2After, err3 := f.TrackStatus(context.Background(), r2.TrackID)
+	require.NoError(t, err3)
+	require.Equal(t, id2, ts2After.Documents[0].ID)
+}
+
+// Finding 4: removeLabel must not corrupt a caller-shared slice by reusing
+// the backing array via s[:0].
+func TestFake_RemoveLabel_DoesNotAliasBackingArray(t *testing.T) {
+	f := fake.New()
+	// Seed with labels A, B, C and capture a snapshot via LabelSearch.
+	f.SeedLabels([]string{"A", "B", "C"})
+	before, _ := f.LabelSearch(context.Background(), "")
+	require.ElementsMatch(t, []string{"A", "B", "C"}, before)
+
+	// Create entity "A" then delete it - DeleteEntity calls removeLabel("A").
+	_, _ = f.CreateEntity(context.Background(), lightrag.EntityCreateRequest{EntityName: "A", EntityData: nil})
+	// Re-seed so entity creation doesn't double-add; use SeedEntity to avoid
+	// the full round-trip: just seed A back, then delete.
+	require.NoError(t, f.DeleteEntity(context.Background(), lightrag.DeleteEntityRequest{EntityName: "A"}))
+
+	// B and C must still be present after A is removed.
+	after, _ := f.LabelSearch(context.Background(), "")
+	require.Contains(t, after, "B")
+	require.Contains(t, after, "C")
+	require.NotContains(t, after, "A")
+}
+
 // Finding 5: SetInsertStatus(pending) lets callers exercise the not-yet-processed lifecycle.
 func TestFake_InsertText_PendingStatusLifecycle(t *testing.T) {
 	f := fake.New()

@@ -172,6 +172,8 @@ func (c *Client) TrackStatus(_ context.Context, trackID string) (*lightrag.Track
 }
 
 // DeleteDocs deletes documents and removes any track references.
+// All doc IDs are validated before any mutation so a missing ID never
+// leaves the store in a partially-mutated state.
 func (c *Client) DeleteDocs(_ context.Context, req lightrag.DeleteDocRequest) (*lightrag.DeleteDocByIdResponse, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -179,11 +181,13 @@ func (c *Client) DeleteDocs(_ context.Context, req lightrag.DeleteDocRequest) (*
 		if _, ok := c.docs[id]; !ok {
 			return nil, &lightrag.HTTPError{Status: 404, Path: "/documents/delete_document", Body: "doc not found: " + id}
 		}
+	}
+	for _, id := range req.DocIDs {
 		state := c.docs[id]
 		delete(c.docs, id)
 		if state.trackID != "" {
 			ids := c.tracks[state.trackID]
-			filtered := ids[:0]
+			filtered := make([]string, 0, len(ids))
 			for _, did := range ids {
 				if did != id {
 					filtered = append(filtered, did)
@@ -426,7 +430,7 @@ func appendUnique(s []string, v string) []string {
 }
 
 func removeLabel(s []string, v string) []string {
-	out := s[:0]
+	out := make([]string, 0, len(s))
 	for _, x := range s {
 		if x != v {
 			out = append(out, x)
