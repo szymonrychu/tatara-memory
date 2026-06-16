@@ -125,6 +125,15 @@ func (s *Service) CreateMemory(ctx context.Context, m Memory) (Memory, error) {
 		s.incOp("create", err)
 		return Memory{}, wrapUpstream(err)
 	}
+	// Treat a non-success status or an empty track_id as a logical upstream failure.
+	// LightRAG may return HTTP 200 with status="failure" when ingest is rejected
+	// (e.g. string_too_short). An empty track_id makes the returned Memory unusable.
+	if resp.Status != "success" || resp.TrackID == "" {
+		logicalErr := fmt.Errorf("%w: insert returned status=%q track_id=%q",
+			ErrUpstream, resp.Status, resp.TrackID)
+		s.incOp("create", logicalErr)
+		return Memory{}, logicalErr
+	}
 	m.ID = resp.TrackID
 	m.CreatedAt = s.now()
 	s.incOp("create", nil)
@@ -247,13 +256,16 @@ func (s *Service) DeleteMemoriesBySource(ctx context.Context, repo, filePath str
 				continue // already gone upstream; index cleanup below still runs
 			}
 			s.incOp("delete_by_source", err)
-			return 0, fmt.Errorf("delete memory %s for %s/%s: %w", id, repo, filePath, err)
+			// Return purged (work done so far), not 0, so callers can account for
+			// partial progress. The source-index is not cleaned up on mid-loop failure;
+			// a retry will re-read the remaining ids (ErrNotFound entries are skipped).
+			return purged, fmt.Errorf("delete memory %s for %s/%s: %w", id, repo, filePath, err)
 		}
 		purged++
 	}
 	if _, err := s.sources.DeleteByFile(ctx, repo, filePath); err != nil {
 		s.incOp("delete_by_source", err)
-		return 0, fmt.Errorf("purge source index %s/%s: %w", repo, filePath, err)
+		return purged, fmt.Errorf("purge source index %s/%s: %w", repo, filePath, err)
 	}
 	s.incOp("delete_by_source", nil)
 	s.log.InfoContext(ctx, "memory.delete_by_source",
@@ -370,7 +382,7 @@ func (s *Service) PatchEntity(ctx context.Context, name string, patch Entity) (E
 }
 
 // ListEdges returns all edges by iterating every known label and collecting its incident edges.
-// O(N) graph reads; acceptable for v0.1.1, slated for revisit in v0.2.
+// See MEMORY.md for the O(N) graph-read trade-off rationale.
 func (s *Service) ListEdges(ctx context.Context) ([]Edge, error) {
 	labels, err := s.lr.LabelSearch(ctx, "")
 	if err != nil {

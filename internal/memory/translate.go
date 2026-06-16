@@ -106,8 +106,17 @@ func EntityFromGraphNode(n lightrag.GraphNode) Entity {
 }
 
 // EntityUpdatePayload builds the LightRAG updated_data dict from a domain Entity patch.
+// Properties are copied first; typed fields (Name/Type/Description) are written last
+// so they always win over any same-keyed entry in Properties (mirrors the asymmetric
+// skip in EntityFromGraphNode on the read side: reserved keys are excluded from Properties).
 func EntityUpdatePayload(patch Entity) map[string]any {
 	data := map[string]any{}
+	for k, v := range patch.Properties {
+		if k == "entity_name" || k == "entity_type" || k == "description" {
+			continue // reserved keys must not be injected via Properties
+		}
+		data[k] = v
+	}
 	if patch.Name != "" {
 		data["entity_name"] = patch.Name
 	}
@@ -116,9 +125,6 @@ func EntityUpdatePayload(patch Entity) map[string]any {
 	}
 	if patch.Description != "" {
 		data["description"] = patch.Description
-	}
-	for k, v := range patch.Properties {
-		data[k] = v
 	}
 	return data
 }

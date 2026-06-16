@@ -31,6 +31,7 @@ type reapStore interface {
 	List(ctx context.Context, limit int) ([]string, error)
 	Delete(ctx context.Context, id string) error
 	ReapOlderThan(ctx context.Context, maxAge time.Duration) (int64, error)
+	ListOlderThan(ctx context.Context, maxAge time.Duration) ([]string, error)
 }
 
 // Reaper periodically removes tombstones once lightrag confirms the document
@@ -54,13 +55,13 @@ func newReaper(store reapStore, lr trackStatuser, logger *slog.Logger, reg prome
 	m := prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "tatara_memory_tombstone_total",
-			Help: "Tombstone operations by type (reaped, forced, created, check_error)",
+			Help: "Tombstone operations by type (reaped, forced, force_skipped_still_present, created, check_error)",
 		},
 		[]string{"op"},
 	)
 	reg.MustRegister(m)
 	// Pre-initialize all label values so Gather always returns the family.
-	for _, op := range []string{"reaped", "forced", "created", "check_error"} {
+	for _, op := range []string{"reaped", "forced", "force_skipped_still_present", "created", "check_error"} {
 		m.WithLabelValues(op)
 	}
 	return &Reaper{
@@ -103,29 +104,77 @@ func (r *Reaper) tick(ctx context.Context) {
 		if err := ctx.Err(); err != nil {
 			return // context cancelled; abort early to avoid serial timeouts
 		}
-		_, err := r.lightrag.TrackStatus(ctx, id)
+		resp, err := r.lightrag.TrackStatus(ctx, id)
 		if err != nil {
 			var he *lightrag.HTTPError
 			if errors.As(err, &he) && he.Status == http.StatusNotFound {
-				if derr := r.store.Delete(ctx, id); derr == nil {
-					r.metric.WithLabelValues("reaped").Inc()
-					r.logger.Info("tombstone reaped", "track_id", id)
-				} else {
-					r.logger.Error("tombstone reap delete", "track_id", id, "err", derr)
-				}
+				r.reapConfirmed(ctx, id)
 			} else {
 				r.metric.WithLabelValues("check_error").Inc()
 				r.logger.Warn("tombstone check error", "track_id", id, "err", err)
 			}
+		} else if resp == nil || len(resp.Documents) == 0 {
+			// HTTP 200 with empty (or nil) Documents: upstream has no record of this
+			// doc, treat as confirmed gone (mirrors GetMemory's own ErrNotFound path).
+			r.reapConfirmed(ctx, id)
 		}
+		// else: err==nil and docs present -> still being deleted, leave tombstone
 	}
-	forced, err := r.store.ReapOlderThan(ctx, r.maxAge)
+	r.forceTick(ctx)
+}
+
+// forceTick is the 24h forced-reap path. Unlike the fast path, it calls
+// TrackStatus per candidate id and only deletes tombstones whose upstream doc
+// is confirmed gone (404 or empty-docs). Tombstones whose doc is still present
+// are skipped and counted as force_skipped_still_present so the resurrection is
+// observable without silently un-deleting content.
+func (r *Reaper) forceTick(ctx context.Context) {
+	aged, err := r.store.ListOlderThan(ctx, r.maxAge)
 	if err != nil {
-		r.logger.Error("tombstone reap forced", "err", err)
+		r.logger.Error("tombstone list older", "err", err)
 		return
 	}
-	if forced > 0 {
-		r.metric.WithLabelValues("forced").Add(float64(forced))
-		r.logger.Info("tombstone forced reap", "count", forced)
+	for _, id := range aged {
+		if err := ctx.Err(); err != nil {
+			return
+		}
+		resp, err := r.lightrag.TrackStatus(ctx, id)
+		if err != nil {
+			var he *lightrag.HTTPError
+			if errors.As(err, &he) && he.Status == http.StatusNotFound {
+				// confirmed gone via 404
+				r.reapConfirmedForced(ctx, id)
+			} else {
+				// transient / unknown: keep tombstone, log WARN
+				r.metric.WithLabelValues("check_error").Inc()
+				r.logger.Warn("tombstone force-check error", "track_id", id, "err", err)
+			}
+		} else if resp == nil || len(resp.Documents) == 0 {
+			// 200 + empty: confirmed gone
+			r.reapConfirmedForced(ctx, id)
+		} else {
+			// doc still present: skip, emit observable metric + WARN
+			r.metric.WithLabelValues("force_skipped_still_present").Inc()
+			r.logger.Warn("tombstone force-reap skipped: doc still present",
+				"track_id", id)
+		}
+	}
+}
+
+func (r *Reaper) reapConfirmed(ctx context.Context, id string) {
+	if derr := r.store.Delete(ctx, id); derr == nil {
+		r.metric.WithLabelValues("reaped").Inc()
+		r.logger.Info("tombstone reaped", "track_id", id)
+	} else {
+		r.logger.Error("tombstone reap delete", "track_id", id, "err", derr)
+	}
+}
+
+func (r *Reaper) reapConfirmedForced(ctx context.Context, id string) {
+	if derr := r.store.Delete(ctx, id); derr == nil {
+		r.metric.WithLabelValues("forced").Inc()
+		r.logger.Info("tombstone forced reap confirmed", "track_id", id)
+	} else {
+		r.logger.Error("tombstone forced reap delete", "track_id", id, "err", derr)
 	}
 }
