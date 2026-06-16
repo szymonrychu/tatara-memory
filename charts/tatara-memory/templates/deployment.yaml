@@ -41,8 +41,10 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ include "tatara-memory.fullname" . }}
+            {{- if .Values.existingSecret }}
             - secretRef:
-                name: {{ default (include "tatara-memory.fullname" .) .Values.existingSecret }}
+                name: {{ .Values.existingSecret }}
+            {{- end }}
           env:
             # PG_DSN comes straight from the cnpg cluster's app secret;
             # cnpg packages user, password, host, port, db into a ready-to-use

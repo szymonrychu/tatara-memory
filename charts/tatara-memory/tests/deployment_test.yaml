@@ -5,7 +5,7 @@ release:
   name: tm
   namespace: tatara
 tests:
-  - it: renders one container wired via envFrom and single PG_DSN inline env
+  - it: renders one container wired via envFrom (configMapRef only) and single PG_DSN inline env
     set:
       image.tag: "1.2.3"
     asserts:
@@ -19,9 +19,6 @@ tests:
           value: harbor.szymonrichert.pl/containers/tatara-memory:1.2.3
       - equal:
           path: spec.template.spec.containers[0].envFrom[0].configMapRef.name
-          value: tm-tatara-memory
-      - equal:
-          path: spec.template.spec.containers[0].envFrom[1].secretRef.name
           value: tm-tatara-memory
       - equal:
           path: spec.template.spec.containers[0].env[0].name
@@ -41,6 +38,12 @@ tests:
       - equal:
           path: spec.template.spec.serviceAccountName
           value: tm-tatara-memory
+  - it: no default secretRef envFrom when existingSecret is empty
+    set:
+      existingSecret: ""
+    asserts:
+      - isNull:
+          path: spec.template.spec.containers[0].envFrom[1]
   - it: uses existingSecret name when provided
     set:
       existingSecret: external-tm-secret
@@ -53,10 +56,10 @@ tests:
     asserts:
       - isNull:
           path: spec.template.spec.containers[0].env[1]
-  - it: envFrom has exactly two entries (configMapRef and secretRef)
+  - it: envFrom has exactly one entry (configMapRef only) when no existingSecret
     documentSelector:
       path: kind
       value: Deployment
     asserts:
       - isNull:
-          path: spec.template.spec.containers[0].envFrom[2]
+          path: spec.template.spec.containers[0].envFrom[1]
