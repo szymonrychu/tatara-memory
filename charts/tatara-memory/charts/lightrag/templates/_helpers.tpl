@@ -50,11 +50,9 @@ Pinned image: repository:tag@digest. Digest must be present.
 {{- end }}
 
 {{/*
-Non-secret config keys. camelCase values.yaml key -> kebab-case
+Non-secret config keys. camelCase values.yaml key -> SCREAMING_SNAKE
 ConfigMap key. The deployment mounts the ConfigMap via envFrom with
-no prefix, so upstream LightRAG env names map 1:1 by uppercasing
-and replacing "-" with "_" downstream. We render kebab-case here
-because that is the project-wide convention.
+no prefix, so upstream LightRAG env names map 1:1 to these keys.
 */}}
 {{- define "lightrag.configKeys" -}}
 LLM_BINDING: {{ .Values.llmBinding | quote }}

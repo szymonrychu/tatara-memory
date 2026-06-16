@@ -11,10 +11,11 @@ tests:
     asserts:
       - hasDocuments:
           count: 0
-  - it: renders an Ingress with cert-manager and nginx annotations
+  - it: renders an Ingress with cert-manager annotation and explicit className
     set:
       ingress.enabled: true
       ingress.host: tm.example.test
+      ingress.className: nginx
       ingress.clusterIssuer: letsencrypt-prod
     asserts:
       - isKind:
@@ -52,3 +53,19 @@ tests:
       - equal:
           path: spec.rules[0].http.paths[0].pathType
           value: ImplementationSpecific
+  - it: ingressClassName absent when className is empty (cluster-agnostic rule 14)
+    set:
+      ingress.enabled: true
+      ingress.host: tm.example.test
+    asserts:
+      - notExists:
+          path: spec.ingressClassName
+  - it: clusterIssuer annotation present when set by helmfile
+    set:
+      ingress.enabled: true
+      ingress.host: tm.example.test
+      ingress.clusterIssuer: letsencrypt-prod
+    asserts:
+      - equal:
+          path: metadata.annotations["cert-manager.io/cluster-issuer"]
+          value: letsencrypt-prod

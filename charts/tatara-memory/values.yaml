@@ -36,10 +36,10 @@ service:
 
 ingress:
   enabled: false
-  className: nginx
+  className: ""
   host: ""
   path: "/"
-  clusterIssuer: letsencrypt-prod
+  clusterIssuer: ""
   tlsSecretName: ""
 
 serviceMonitor:
