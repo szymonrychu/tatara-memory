@@ -1,6 +1,7 @@
 package analytics
 
 import (
+	"fmt"
 	"sort"
 	"testing"
 
@@ -85,6 +86,46 @@ func TestCompute_Deterministic(t *testing.T) {
 
 	require.Equal(t, r1.Nodes, r2.Nodes, "Nodes must be identical across runs")
 	require.Equal(t, r1.Communities, r2.Communities, "Communities must be identical across runs")
+}
+
+// largeClusteredGraph builds nClusters dense clusters of clusterSize nodes,
+// connected by a ring of bridge edges. Node IDs are stable strings; topology
+// is fully deterministic.
+func largeClusteredGraph(nClusters, clusterSize int) ([]string, []Edge) {
+	total := nClusters * clusterSize
+	ids := make([]string, total)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("n%d", i)
+	}
+	var edges []Edge
+	// Dense intra-cluster edges.
+	for c := 0; c < nClusters; c++ {
+		base := c * clusterSize
+		for i := 0; i < clusterSize; i++ {
+			for j := i + 1; j < clusterSize; j++ {
+				edges = append(edges, Edge{From: ids[base+i], To: ids[base+j]})
+			}
+		}
+	}
+	// Ring bridge: connect first node of cluster c to first node of cluster (c+1)%nClusters.
+	for c := 0; c < nClusters; c++ {
+		edges = append(edges, Edge{From: ids[c*clusterSize], To: ids[((c+1)%nClusters)*clusterSize]})
+	}
+	return ids, edges
+}
+
+// TestCompute_Deterministic_LargeGraph verifies betweenness determinism on a
+// 40-node graph (4 clusters x 10 nodes) across 10 repeated Compute calls.
+// Without the math.Round fix, gonum map-iteration order produces bit-different
+// float64 betweenness values across calls; this test exercises that path.
+func TestCompute_Deterministic_LargeGraph(t *testing.T) {
+	ids, edges := largeClusteredGraph(4, 10) // 40 nodes
+	first := Compute(ids, edges, Config{})
+	for i := 1; i < 10; i++ {
+		run := Compute(ids, edges, Config{})
+		require.Equal(t, first.Nodes, run.Nodes,
+			"Nodes (including Betweenness) must be identical on run %d", i+1)
+	}
 }
 
 // TestCompute_CommunitiesOrderedByID verifies outer slice is sorted by Community id.
