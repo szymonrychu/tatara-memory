@@ -50,7 +50,7 @@ func (f *FakeTombstoneStore) Delete(_ context.Context, id string) error {
 	return nil
 }
 
-func (f *FakeTombstoneStore) ListOlderThan(_ context.Context, _ time.Duration) ([]string, error) {
+func (f *FakeTombstoneStore) ListOlderThan(_ context.Context, _ time.Duration, _ int) ([]string, error) {
 	return nil, nil
 }
 
@@ -63,6 +63,11 @@ func NewReaperWithFakeStore(store reapStore, lr trackStatuser, logger *slog.Logg
 // ForceTickForTest runs only the forced-reap path (ListOlderThan per-id verify loop) of the reaper.
 func ForceTickForTest(r *Reaper, ctx context.Context) {
 	r.forceTick(ctx)
+}
+
+// SetReaperInterval sets the reaper tick interval (used to make per-tick timeout tests fast).
+func SetReaperInterval(r *Reaper, d time.Duration) {
+	r.interval = d
 }
 
 // FakeTombstoneStoreWithAged is a reapStore for testing the forced-reap path.
@@ -109,9 +114,13 @@ func (f *FakeTombstoneStoreWithAged) Delete(_ context.Context, id string) error 
 	return nil
 }
 
-// ListOlderThan returns the Aged IDs (ignores maxAge; the set is pre-populated by the test).
-func (f *FakeTombstoneStoreWithAged) ListOlderThan(_ context.Context, _ time.Duration) ([]string, error) {
-	return append([]string(nil), f.Aged...), nil
+// ListOlderThan returns up to limit Aged IDs (ignores maxAge; the set is pre-populated by the test).
+func (f *FakeTombstoneStoreWithAged) ListOlderThan(_ context.Context, _ time.Duration, limit int) ([]string, error) {
+	out := append([]string(nil), f.Aged...)
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 // HasAged reports whether id is still in the Aged set.

@@ -54,6 +54,17 @@ func (s *TombstoneStore) IsDeleted(ctx context.Context, trackID string) (bool, e
 	return exists, nil
 }
 
+// Unmark removes the tombstone for the given track_id, reversing a Mark call.
+// Used by Service.deleteMemoryRaw to roll back a pre-marked tombstone when
+// the upstream DeleteDocs call fails permanently, so a retry can re-attempt.
+func (s *TombstoneStore) Unmark(ctx context.Context, trackID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM deleted_memories WHERE track_id = $1`, trackID)
+	if err != nil {
+		return fmt.Errorf("tombstone unmark: %w", err)
+	}
+	return nil
+}
+
 // Delete removes the tombstone for the given track_id. Used by the
 // reaper after lightrag confirms the document is gone.
 func (s *TombstoneStore) Delete(ctx context.Context, trackID string) error {
@@ -64,15 +75,16 @@ func (s *TombstoneStore) Delete(ctx context.Context, trackID string) error {
 	return nil
 }
 
-// ListOlderThan returns track_ids of tombstones older than the given age,
-// without deleting them. Used by the reaper's forced path so it can verify each
-// id upstream before committing the delete.
-func (s *TombstoneStore) ListOlderThan(ctx context.Context, age time.Duration) ([]string, error) {
+// ListOlderThan returns up to limit track_ids of tombstones older than age,
+// oldest first. Passing TombstoneReapBatchSize as limit mirrors the fast path's
+// cap so a backlog never causes a single tick to load an unbounded set.
+func (s *TombstoneStore) ListOlderThan(ctx context.Context, age time.Duration, limit int) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT track_id FROM deleted_memories
 		 WHERE deleted_at < now() - ($1 * interval '1 second')
-		 ORDER BY deleted_at ASC`,
-		int64(age.Seconds()))
+		 ORDER BY deleted_at ASC
+		 LIMIT $2`,
+		int64(age.Seconds()), limit)
 	if err != nil {
 		return nil, fmt.Errorf("tombstone list older: %w", err)
 	}

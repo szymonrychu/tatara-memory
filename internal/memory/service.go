@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -28,6 +29,7 @@ var ErrInvalid = errors.New("memory: invalid input")
 // tombstoner is the minimal interface Service needs from TombstoneStore.
 type tombstoner interface {
 	Mark(ctx context.Context, trackID string) error
+	Unmark(ctx context.Context, trackID string) error
 	IsDeleted(ctx context.Context, trackID string) (bool, error)
 }
 
@@ -115,6 +117,19 @@ func wrapUpstream(err error) error {
 	return fmt.Errorf("%w: %v", ErrUpstream, err)
 }
 
+// filterTombstonedRefs removes references whose ReferenceID is tombstoned, so
+// Query and Describe do not surface content from logically-deleted memories.
+func filterTombstonedRefs(ctx context.Context, tomb tombstoner, refs []lightrag.ReferenceItem) []lightrag.ReferenceItem {
+	out := refs[:0]
+	for _, ref := range refs {
+		del, err := tomb.IsDeleted(ctx, ref.ReferenceID)
+		if err != nil || !del {
+			out = append(out, ref)
+		}
+	}
+	return out
+}
+
 // CreateMemory submits m to LightRAG and returns it with track_id as ID.
 // Ingest is asynchronous; the returned Memory's Text is what was submitted,
 // not what LightRAG will eventually summarise.
@@ -171,6 +186,14 @@ func (s *Service) GetMemory(ctx context.Context, trackID string) (Memory, error)
 		s.incOp("get", notFound)
 		return Memory{}, notFound
 	}
+	if len(ts.Documents) > 1 {
+		// Sort by doc ID (stable, ascending) so selection is deterministic across
+		// replicas and calls even when LightRAG returns docs in arbitrary order.
+		// Log a WARN so the 1:1 branch-per-track invariant violation is observable.
+		sortDocsByID(ts.Documents)
+		s.log.WarnContext(ctx, "memory.get: multi-doc track; picking first by doc_id",
+			"track_id", trackID, "doc_count", len(ts.Documents))
+	}
 	m, parseErr := FromDocStatus(trackID, ts.Documents[0])
 	if parseErr != nil {
 		s.log.WarnContext(ctx, "memory.get: unparseable created_at",
@@ -219,16 +242,27 @@ func (s *Service) deleteMemoryRaw(ctx context.Context, trackID string) error {
 		return fmt.Errorf("%w: track %s has no documents", ErrNotFound, trackID)
 	}
 	// Mark tombstone BEFORE the upstream delete so GET-after-DELETE returns
-	// ErrNotFound immediately even if DeleteDocs succeeds but the caller retries.
-	// If DeleteDocs subsequently fails the tombstone is still valid (logically
-	// deleted) and the reaper's 24h TTL reconciles it.
+	// ErrNotFound immediately. On failure we roll it back (Unmark) so a caller
+	// retry can re-attempt the upstream delete (finding 11).
 	if s.tomb != nil {
 		if err := s.tomb.Mark(ctx, trackID); err != nil {
 			return fmt.Errorf("tombstone: %w", err)
 		}
 	}
-	if _, err := s.lr.DeleteDocs(ctx, lightrag.DeleteDocRequest{DocIDs: docIDs}); err != nil {
+	resp, err := s.lr.DeleteDocs(ctx, lightrag.DeleteDocRequest{DocIDs: docIDs})
+	if err != nil {
+		if s.tomb != nil {
+			_ = s.tomb.Unmark(ctx, trackID)
+		}
 		return wrapUpstream(err)
+	}
+	// LightRAG v1.4.16 returns "deletion_started" (async) or "success" (sync) on accepted deletes.
+	// Any other status (e.g. "failure") is a logical upstream rejection even though HTTP returned 200.
+	if resp.Status != "deletion_started" && resp.Status != "success" {
+		if s.tomb != nil {
+			_ = s.tomb.Unmark(ctx, trackID)
+		}
+		return fmt.Errorf("%w: delete returned status=%q", ErrUpstream, resp.Status)
 	}
 	return nil
 }
@@ -305,6 +339,10 @@ func (s *Service) DeleteMemoriesBySource(ctx context.Context, repo, filePath str
 
 func t(b bool) *bool { return &b }
 
+func sortDocsByID(docs []lightrag.DocStatusResponse) {
+	sort.Slice(docs, func(i, j int) bool { return docs[i].ID < docs[j].ID })
+}
+
 // Query retrieves context references for the given query.
 // LightRAG's /query returns references rather than ranked matches;
 // Match.Score is zero in this mapping. include_references must be set
@@ -329,6 +367,9 @@ func (s *Service) Query(ctx context.Context, q Query) (QueryResult, error) {
 		wrapped := wrapUpstream(err)
 		s.incOp("query", wrapped)
 		return QueryResult{}, wrapped
+	}
+	if s.tomb != nil {
+		resp.References = filterTombstonedRefs(ctx, s.tomb, resp.References)
 	}
 	s.incOp("query", nil)
 	s.log.InfoContext(ctx, "memory.query",
@@ -357,6 +398,9 @@ func (s *Service) Describe(ctx context.Context, q Query) (DescribeResult, error)
 		wrapped := wrapUpstream(err)
 		s.incOp("describe", wrapped)
 		return DescribeResult{}, wrapped
+	}
+	if s.tomb != nil {
+		resp.References = filterTombstonedRefs(ctx, s.tomb, resp.References)
 	}
 	s.incOp("describe", nil)
 	s.log.InfoContext(ctx, "memory.describe",
@@ -415,11 +459,14 @@ func (s *Service) SearchEntities(ctx context.Context, q string) ([]Entity, error
 }
 
 // PatchEntity applies a partial update to the entity identified by name.
+// The returned Entity is built from UpdateEntity's response data to avoid a
+// second upstream round-trip (N+1) and the TOCTOU window that existed when
+// the previous implementation called GetEntity after the update.
 func (s *Service) PatchEntity(ctx context.Context, name string, patch Entity) (Entity, error) {
 	start := time.Now()
 	data := EntityUpdatePayload(patch)
 	allowRename := patch.Name != "" && patch.Name != name
-	_, err := s.lr.UpdateEntity(ctx, lightrag.EntityUpdateRequest{
+	resp, err := s.lr.UpdateEntity(ctx, lightrag.EntityUpdateRequest{
 		EntityName:  name,
 		UpdatedData: data,
 		AllowRename: allowRename,
@@ -428,15 +475,12 @@ func (s *Service) PatchEntity(ctx context.Context, name string, patch Entity) (E
 		s.incOp("patch_entity", err)
 		return Entity{}, wrapUpstream(err)
 	}
+	// Build the result from the response data without a second upstream call.
 	final := name
 	if allowRename {
 		final = patch.Name
 	}
-	out, err := s.GetEntity(ctx, final)
-	if err != nil {
-		s.incOp("patch_entity", err)
-		return Entity{}, err
-	}
+	out := entityFromUpdateResponse(resp, final)
 	s.incOp("patch_entity", nil)
 	s.log.InfoContext(ctx, "memory.patch_entity",
 		"action", "patch_entity",
@@ -470,14 +514,15 @@ func (s *Service) ListEdges(ctx context.Context) ([]Edge, error) {
 			return nil, wrapped
 		}
 		for _, e := range g.Edges {
-			// Edges are directed: deduplicate only on (source, target) so that
-			// A->B and B->A (distinct relations) both surface.
-			id := EncodeEdgeID(e.Source, e.Target)
-			if _, ok := seen[id]; ok {
+			edge := EdgeFromGraphEdge(e)
+			// Deduplicate on (source, target, relation): A->B with "owns" and A->B
+			// with "manages" are distinct edges. A->B and B->A are always distinct.
+			dedup := edge.ID + "\x00" + edge.Relation
+			if _, ok := seen[dedup]; ok {
 				continue
 			}
-			seen[id] = struct{}{}
-			out = append(out, EdgeFromGraphEdge(e))
+			seen[dedup] = struct{}{}
+			out = append(out, edge)
 		}
 	}
 	s.incOp("list_edges", nil)

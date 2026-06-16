@@ -30,7 +30,7 @@ type trackStatuser interface {
 type reapStore interface {
 	List(ctx context.Context, limit int) ([]string, error)
 	Delete(ctx context.Context, id string) error
-	ListOlderThan(ctx context.Context, maxAge time.Duration) ([]string, error)
+	ListOlderThan(ctx context.Context, maxAge time.Duration, limit int) ([]string, error)
 }
 
 // Reaper periodically removes tombstones once lightrag confirms the document
@@ -95,20 +95,25 @@ func (r *Reaper) Run(ctx context.Context) {
 }
 
 func (r *Reaper) tick(ctx context.Context) {
-	ids, err := r.store.List(ctx, TombstoneReapBatchSize)
+	// Bound the whole tick (fast + force paths) to the interval so a slow upstream
+	// cannot stretch a tick past the next scheduled fire.
+	tickCtx, cancel := context.WithTimeout(ctx, r.interval)
+	defer cancel()
+
+	ids, err := r.store.List(tickCtx, TombstoneReapBatchSize)
 	if err != nil {
 		r.logger.Error("tombstone list", "err", err)
 		return
 	}
 	for _, id := range ids {
-		if err := ctx.Err(); err != nil {
-			return // context cancelled; abort early to avoid serial timeouts
+		if err := tickCtx.Err(); err != nil {
+			return // per-tick deadline exhausted; next tick resumes
 		}
-		resp, err := r.lightrag.TrackStatus(ctx, id)
+		resp, err := r.lightrag.TrackStatus(tickCtx, id)
 		if err != nil {
 			var he *lightrag.HTTPError
 			if errors.As(err, &he) && he.Status == http.StatusNotFound {
-				r.reapConfirmed(ctx, id)
+				r.reapConfirmed(tickCtx, id)
 			} else {
 				r.metric.WithLabelValues("check_error").Inc()
 				r.logger.Warn("tombstone check error", "track_id", id, "err", err)
@@ -116,11 +121,11 @@ func (r *Reaper) tick(ctx context.Context) {
 		} else if resp == nil || len(resp.Documents) == 0 {
 			// HTTP 200 with empty (or nil) Documents: upstream has no record of this
 			// doc, treat as confirmed gone (mirrors GetMemory's own ErrNotFound path).
-			r.reapConfirmed(ctx, id)
+			r.reapConfirmed(tickCtx, id)
 		}
 		// else: err==nil and docs present -> still being deleted, leave tombstone
 	}
-	r.forceTick(ctx)
+	r.forceTick(tickCtx)
 }
 
 // forceTick is the 24h forced-reap path. Unlike the fast path, it calls
@@ -129,7 +134,7 @@ func (r *Reaper) tick(ctx context.Context) {
 // are skipped and counted as force_skipped_still_present so the resurrection is
 // observable without silently un-deleting content.
 func (r *Reaper) forceTick(ctx context.Context) {
-	aged, err := r.store.ListOlderThan(ctx, r.maxAge)
+	aged, err := r.store.ListOlderThan(ctx, r.maxAge, TombstoneReapBatchSize)
 	if err != nil {
 		r.logger.Error("tombstone list older", "err", err)
 		return

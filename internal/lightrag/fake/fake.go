@@ -19,16 +19,17 @@ type docState struct {
 
 // Client is an in-memory implementation of lightrag.Client.
 type Client struct {
-	mu       sync.Mutex
-	docs     map[string]docState       // doc_id -> state
-	tracks   map[string][]string       // track_id -> []doc_id
-	entities map[string]map[string]any // entity_name -> entity_data
-	edges    map[string]map[string]any // "src||tgt" -> relation_data
-	labels   []string                  // for /graph/label/search
-	queryRes lightrag.QueryResponse
-	dataRes  lightrag.QueryDataResponse
-	lastReq  lightrag.QueryRequest // most recent Query request, for assertions
-	nextID   int
+	mu         sync.Mutex
+	docs       map[string]docState       // doc_id -> state
+	tracks     map[string][]string       // track_id -> []doc_id
+	entities   map[string]map[string]any // entity_name -> entity_data
+	edges      map[string]map[string]any // "src||tgt" -> relation_data
+	extraEdges []lightrag.GraphEdge      // additional edges for multi-relation tests
+	labels     []string                  // for /graph/label/search
+	queryRes   lightrag.QueryResponse
+	dataRes    lightrag.QueryDataResponse
+	lastReq    lightrag.QueryRequest // most recent Query request, for assertions
+	nextID     int
 
 	// insertStatus controls what DocStatus InsertText assigns to new documents.
 	// Defaults to DocStatusProcessed (eager). Set to DocStatusPending or
@@ -391,6 +392,13 @@ func (c *Client) Graph(_ context.Context, label string, _, _ int) (*lightrag.Kno
 			}
 		}
 	}
+	for _, e := range c.extraEdges {
+		if e.Source == label || e.Target == label {
+			g.Edges = append(g.Edges, lightrag.GraphEdge{
+				Source: e.Source, Target: e.Target, Properties: copyMap(e.Properties),
+			})
+		}
+	}
 	return g, nil
 }
 
@@ -428,6 +436,34 @@ func (c *Client) DeleteRelation(_ context.Context, req lightrag.DeleteRelationRe
 
 // Health always returns nil.
 func (c *Client) Health(_ context.Context) error { return nil }
+
+// SeedMultiDocTrack pre-populates a track with multiple docs (test helper for
+// determinism testing when a track has more than one document).
+func (c *Client) SeedMultiDocTrack(trackID string, docs ...lightrag.DocStatusResponse) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := range docs {
+		docs[i].TrackID = trackID
+		c.docs[docs[i].ID] = docState{doc: docs[i], trackID: trackID}
+		c.tracks[trackID] = append(c.tracks[trackID], docs[i].ID)
+	}
+}
+
+// SeedMultiRelationEdges pre-populates two distinct directed edges between src and tgt
+// with different keywords, used to test that ListEdges dedup does not collapse distinct
+// relations between the same ordered pair.
+func (c *Client) SeedMultiRelationEdges(src, tgt, rel1, rel2 string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// Store the first edge under the standard key.
+	c.edges[edgeKey(src, tgt)] = map[string]any{"keywords": rel1, "src_id": src, "tgt_id": tgt}
+	// Store the second edge in extraEdges so the fake returns both when Graph is called.
+	c.extraEdges = append(c.extraEdges, lightrag.GraphEdge{
+		Source:     src,
+		Target:     tgt,
+		Properties: map[string]any{"keywords": rel2, "src_id": src, "tgt_id": tgt},
+	})
+}
 
 // LookupTracksForDoc returns the trackIDs that include a given doc_id (test helper).
 func (c *Client) LookupTracksForDoc(docID string) []string {

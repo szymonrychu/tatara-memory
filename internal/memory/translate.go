@@ -177,6 +177,21 @@ func RelationCreatePayload(e Edge) lightrag.RelationCreateRequest {
 	}
 }
 
+// entityFromUpdateResponse builds a domain Entity from an UpdateEntity response.
+// This avoids a second upstream GetEntity call (N+1 / TOCTOU) by reading the
+// entity fields directly from the response data map that LightRAG returns.
+func entityFromUpdateResponse(resp *lightrag.EntityResponse, fallbackName string) Entity {
+	if resp == nil || resp.Data == nil {
+		return Entity{ID: fallbackName, Name: fallbackName}
+	}
+	node := lightrag.GraphNode{ID: fallbackName, Properties: resp.Data}
+	// entity_name in the response data takes precedence over fallbackName.
+	if n, ok := stringProp(resp.Data, "entity_name"); ok && n != "" {
+		node.ID = n
+	}
+	return EntityFromGraphNode(node)
+}
+
 func stringProp(m map[string]any, key string) (string, bool) {
 	if m == nil {
 		return "", false

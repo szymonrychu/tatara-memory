@@ -81,8 +81,14 @@ func applyMigration(ctx context.Context, db *sql.DB, name, sqlStr string) error 
 	if _, err := tx.ExecContext(ctx, sqlStr); err != nil {
 		return fmt.Errorf("exec: %w", err)
 	}
+	// ON CONFLICT DO NOTHING makes the tracker insert idempotent so that two
+	// replicas racing through the same migration (TOCTOU between the applied
+	// check and the apply tx) do not conflict on the PK: both succeed, with one
+	// of them being a no-op on the tracker row. Migrations must remain strictly
+	// idempotent (CREATE ... IF NOT EXISTS / ADD COLUMN IF NOT EXISTS) for this
+	// to be safe.
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO memory_schema_migrations (name) VALUES ($1)`, name); err != nil {
+		`INSERT INTO memory_schema_migrations (name) VALUES ($1) ON CONFLICT (name) DO NOTHING`, name); err != nil {
 		return fmt.Errorf("record: %w", err)
 	}
 	return tx.Commit()
