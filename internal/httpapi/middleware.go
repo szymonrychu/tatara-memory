@@ -71,6 +71,27 @@ func generateRequestID() string {
 	return hex.EncodeToString(b[:])
 }
 
+// WithLogger stores logger in the request context so that helper functions
+// (e.g. mapServiceError) can emit structured logs without needing cfg access.
+func WithLogger(logger *slog.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := context.WithValue(r.Context(), ctxkeys.Logger, logger)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+// loggerFromContext retrieves the logger stored by WithLogger, falling back
+// to slog.Default() when the middleware was not in the chain (e.g. tests that
+// construct a plain http.Request).
+func loggerFromContext(ctx context.Context) *slog.Logger {
+	if l, ok := ctx.Value(ctxkeys.Logger).(*slog.Logger); ok && l != nil {
+		return l
+	}
+	return slog.Default()
+}
+
 type statusRecorder struct {
 	http.ResponseWriter
 	status      int

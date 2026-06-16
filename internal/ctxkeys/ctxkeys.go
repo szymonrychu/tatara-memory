@@ -7,7 +7,15 @@ package ctxkeys
 // requestIDKey is the unexported concrete type for context keys in this package.
 type requestIDKey struct{}
 
+// loggerKey is the unexported concrete type for the logger context key.
+type loggerKey struct{}
+
 // RequestID is the context key for the inbound HTTP request ID.
 // httpapi.RequestID middleware stores the value; any downstream package
 // (e.g. lightrag HTTPClient) reads it for structured-log correlation.
 var RequestID = requestIDKey{}
+
+// Logger is the context key for the request-scoped slog.Logger.
+// httpapi router stores the value via withLogger middleware so that
+// mapServiceError can emit ERROR logs without needing cfg access.
+var Logger = loggerKey{}

@@ -699,11 +699,11 @@ func scanEdgesWithConfidence(rows *sql.Rows) ([]Edge, error) {
 	return out, rows.Err()
 }
 
-// FileImports returns the import edges that originate in the given file.
-func (s *PGStore) FileImports(ctx context.Context, repo, path string) ([]Edge, error) {
+// FileImports returns the import edges that originate in the given file, capped at limit rows.
+func (s *PGStore) FileImports(ctx context.Context, repo, path string, limit int) ([]Edge, error) {
 	return s.queryEdges(ctx,
-		`SELECT from_id, to_id, relation, src_file, properties FROM code_edges WHERE repo=$1 AND src_file=$2 AND relation='imports'`,
-		repo, path)
+		`SELECT from_id, to_id, relation, src_file, properties FROM code_edges WHERE repo=$1 AND src_file=$2 AND relation='imports' ORDER BY from_id LIMIT $3`,
+		repo, path, limit)
 }
 
 // Consumers: others that REQUIRE a symbol this entity PROVIDES.
@@ -713,7 +713,8 @@ FROM cross_repo_symbols p
 JOIN cross_repo_symbols r
   ON r.symbol = p.symbol AND r.lang = p.lang AND r.role = 'requires'
 WHERE p.repo = $1 AND p.entity_id = $2 AND p.role = 'provides' AND r.repo <> $1
-ORDER BY r.repo, r.entity_id`
+ORDER BY r.repo, r.entity_id
+LIMIT $3`
 
 // Providers: others that PROVIDE a symbol this entity REQUIRES.
 const crossProvidersQuery = `
@@ -722,15 +723,16 @@ FROM cross_repo_symbols rq
 JOIN cross_repo_symbols q
   ON q.symbol = rq.symbol AND q.lang = rq.lang AND q.role = 'provides'
 WHERE rq.repo = $1 AND rq.entity_id = $2 AND rq.role = 'requires' AND q.repo <> $1
-ORDER BY q.repo, q.entity_id`
+ORDER BY q.repo, q.entity_id
+LIMIT $3`
 
-// CrossRepo returns the cross-repo consumers and providers for an entity.
-func (s *PGStore) CrossRepo(ctx context.Context, repo, id string) (CrossRepoLinks, error) {
-	consumers, err := s.queryCrossRefs(ctx, crossConsumersQuery, repo, id)
+// CrossRepo returns the cross-repo consumers and providers for an entity, capped at limit rows each.
+func (s *PGStore) CrossRepo(ctx context.Context, repo, id string, limit int) (CrossRepoLinks, error) {
+	consumers, err := s.queryCrossRefs(ctx, crossConsumersQuery, repo, id, limit)
 	if err != nil {
 		return CrossRepoLinks{}, err
 	}
-	providers, err := s.queryCrossRefs(ctx, crossProvidersQuery, repo, id)
+	providers, err := s.queryCrossRefs(ctx, crossProvidersQuery, repo, id, limit)
 	if err != nil {
 		return CrossRepoLinks{}, err
 	}
@@ -743,8 +745,8 @@ func (s *PGStore) CrossRepo(ctx context.Context, repo, id string) (CrossRepoLink
 	return CrossRepoLinks{Consumers: consumers, Providers: providers}, nil
 }
 
-func (s *PGStore) queryCrossRefs(ctx context.Context, query, repo, id string) ([]CrossRef, error) {
-	rows, err := s.db.QueryContext(ctx, query, repo, id)
+func (s *PGStore) queryCrossRefs(ctx context.Context, query, repo, id string, limit int) ([]CrossRef, error) {
+	rows, err := s.db.QueryContext(ctx, query, repo, id, limit)
 	if err != nil {
 		return nil, err
 	}

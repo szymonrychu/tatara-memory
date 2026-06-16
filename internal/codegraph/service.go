@@ -125,18 +125,18 @@ func (s *Service) ResourceGraph(ctx context.Context, repo, id string, depth int,
 	return s.Neighbors(ctx, repo, id, resourceRelations, "out", depth, 0, cf)
 }
 
-// FileImports returns the import edges originating in path.
-func (s *Service) FileImports(ctx context.Context, repo, path string) ([]Edge, error) {
+// FileImports returns the import edges originating in path, capped at limit rows.
+func (s *Service) FileImports(ctx context.Context, repo, path string, limit int) ([]Edge, error) {
 	start := time.Now()
-	out, err := s.store.FileImports(ctx, repo, path)
+	out, err := s.store.FileImports(ctx, repo, path, limit)
 	s.metrics.observeQuery(queryOpFileImports, start, err)
 	return out, err
 }
 
-// CrossRepo returns the cross-repo consumers and providers for an entity.
-func (s *Service) CrossRepo(ctx context.Context, repo, id string) (CrossRepoLinks, error) {
+// CrossRepo returns the cross-repo consumers and providers for an entity, capped at limit rows each.
+func (s *Service) CrossRepo(ctx context.Context, repo, id string, limit int) (CrossRepoLinks, error) {
 	start := time.Now()
-	out, err := s.store.CrossRepo(ctx, repo, id)
+	out, err := s.store.CrossRepo(ctx, repo, id, limit)
 	s.metrics.observeQuery(queryOpCrossRepo, start, err)
 	return out, err
 }

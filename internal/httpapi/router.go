@@ -35,6 +35,7 @@ func NewRouter(cfg Config) *chi.Mux {
 
 	r := chi.NewRouter()
 	r.Use(RequestID)
+	r.Use(WithLogger(cfg.Logger))
 	r.Use(RecoverWithLogger(cfg.Logger, metrics.PanicCounter()))
 	r.Use(AccessLog(cfg.Logger))
 	r.Use(metrics.Middleware)

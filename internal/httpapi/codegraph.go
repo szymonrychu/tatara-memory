@@ -360,17 +360,13 @@ func handleFileImports(cfg Config) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		edges, err := cfg.CodeGraph.FileImports(r.Context(), repo, path)
+		edges, err := cfg.CodeGraph.FileImports(r.Context(), repo, path, clampListLimit(limit))
 		if err != nil {
 			mapServiceError(w, r, err)
 			return
 		}
 		if edges == nil {
 			edges = []codegraph.Edge{}
-		}
-		lim := clampListLimit(limit)
-		if len(edges) > lim {
-			edges = edges[:lim]
 		}
 		WriteJSON(w, http.StatusOK, map[string]interface{}{"edges": edges})
 	}
@@ -386,7 +382,11 @@ func handleCrossRepo(cfg Config) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		links, err := cfg.CodeGraph.CrossRepo(r.Context(), repo, id)
+		limit, ok := limitParam(w, r)
+		if !ok {
+			return
+		}
+		links, err := cfg.CodeGraph.CrossRepo(r.Context(), repo, id, clampListLimit(limit))
 		if err != nil {
 			mapServiceError(w, r, err)
 			return
@@ -486,7 +486,7 @@ func handleRelated(cfg Config) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		results, err := cfg.CodeGraph.Related(r.Context(), repo, id, relations, minConf, clampListLimit(limit))
+		results, err := cfg.CodeGraph.Related(r.Context(), repo, id, relations, minConf, limit)
 		if err != nil {
 			mapServiceError(w, r, err)
 			return
@@ -508,7 +508,7 @@ func handleHyperedges(cfg Config) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		hes, err := cfg.CodeGraph.Hyperedges(r.Context(), repo, r.URL.Query().Get("entity"), clampListLimit(limit))
+		hes, err := cfg.CodeGraph.Hyperedges(r.Context(), repo, r.URL.Query().Get("entity"), limit)
 		if err != nil {
 			mapServiceError(w, r, err)
 			return
@@ -590,7 +590,7 @@ func handleCommunities(cfg Config) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		comms, err := cfg.CodeGraph.Communities(r.Context(), repo, clampListLimit(limit))
+		comms, err := cfg.CodeGraph.Communities(r.Context(), repo, limit)
 		if err != nil {
 			mapServiceError(w, r, err)
 			return
@@ -622,7 +622,7 @@ func handleCommunity(cfg Config) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		members, err := cfg.CodeGraph.Community(r.Context(), repo, cid, clampListLimit(limit))
+		members, err := cfg.CodeGraph.Community(r.Context(), repo, cid, limit)
 		if err != nil {
 			mapServiceError(w, r, err)
 			return

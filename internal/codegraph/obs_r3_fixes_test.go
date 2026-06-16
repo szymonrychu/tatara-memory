@@ -70,7 +70,7 @@ func TestService_ObserveQuery_Entity(t *testing.T) {
 
 func TestService_ObserveQuery_FileImports(t *testing.T) {
 	svc, reg := newSvcForObs()
-	_, err := svc.FileImports(context.Background(), "r", "f.go")
+	_, err := svc.FileImports(context.Background(), "r", "f.go", 100)
 	require.NoError(t, err)
 	require.InDelta(t, 1.0, queryCountFor(t, reg, "file_imports", "success"), 0.001,
 		"FileImports must increment code_graph_query_total{op=file_imports}")
@@ -78,7 +78,7 @@ func TestService_ObserveQuery_FileImports(t *testing.T) {
 
 func TestService_ObserveQuery_CrossRepo(t *testing.T) {
 	svc, reg := newSvcForObs()
-	_, err := svc.CrossRepo(context.Background(), "r", "id")
+	_, err := svc.CrossRepo(context.Background(), "r", "id", 100)
 	require.NoError(t, err)
 	require.InDelta(t, 1.0, queryCountFor(t, reg, "cross_repo", "success"), 0.001,
 		"CrossRepo must increment code_graph_query_total{op=cross_repo}")

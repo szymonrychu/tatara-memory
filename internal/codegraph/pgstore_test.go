@@ -123,7 +123,7 @@ func TestCrossRepoJoinQuery(t *testing.T) {
 	require.NoError(t, err)
 
 	// CrossRepo for repo-a/ea1: should find repo-b as consumer
-	linksA, err := s.CrossRepo(ctx, "repo-a", "ea1")
+	linksA, err := s.CrossRepo(ctx, "repo-a", "ea1", 100)
 	require.NoError(t, err)
 	require.Len(t, linksA.Consumers, 1)
 	require.Equal(t, "repo-b", linksA.Consumers[0].Repo)
@@ -131,7 +131,7 @@ func TestCrossRepoJoinQuery(t *testing.T) {
 	require.Empty(t, linksA.Providers)
 
 	// CrossRepo for repo-b/eb1: should find repo-a as provider
-	linksB, err := s.CrossRepo(ctx, "repo-b", "eb1")
+	linksB, err := s.CrossRepo(ctx, "repo-b", "eb1", 100)
 	require.NoError(t, err)
 	require.Len(t, linksB.Providers, 1)
 	require.Equal(t, "repo-a", linksB.Providers[0].Repo)

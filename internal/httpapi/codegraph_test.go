@@ -66,10 +66,10 @@ func (s *stubCodeGraph) ResourceGraph(_ context.Context, _, _ string, _ int, cf 
 	s.lastCF = cf
 	return s.nodes, nil
 }
-func (s *stubCodeGraph) FileImports(_ context.Context, _, _ string) ([]codegraph.Edge, error) {
+func (s *stubCodeGraph) FileImports(_ context.Context, _, _ string, _ int) ([]codegraph.Edge, error) {
 	return []codegraph.Edge{{From: "p", To: "q", Relation: "imports"}}, nil
 }
-func (s *stubCodeGraph) CrossRepo(_ context.Context, _, _ string) (codegraph.CrossRepoLinks, error) {
+func (s *stubCodeGraph) CrossRepo(_ context.Context, _, _ string, _ int) (codegraph.CrossRepoLinks, error) {
 	return codegraph.CrossRepoLinks{
 		Consumers: []codegraph.CrossRef{{Repo: "repo-b", EntityID: "eb1", Symbol: "Foo", Lang: "go"}},
 		Providers: []codegraph.CrossRef{},

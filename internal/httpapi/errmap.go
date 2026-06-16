@@ -31,12 +31,20 @@ func mapServiceError(w http.ResponseWriter, r *http.Request, err error) {
 		// prevents inflating the error rate with non-actionable client drops.
 		WriteError(w, 499, "client closed request", reqID)
 	case errors.Is(err, memory.ErrUpstream):
+		loggerFromContext(r.Context()).ErrorContext(r.Context(), "upstream error",
+			"request_id", reqID,
+			"error", err,
+		)
 		WriteError(w, http.StatusBadGateway, "upstream error", reqID)
 	case errors.Is(err, ingest.ErrDuplicateKey):
 		// Duplicate idempotency key is a permanent client error (identical content
 		// always produces the same key); 400 prevents retries.
 		WriteError(w, http.StatusBadRequest, "duplicate idempotency key in batch", reqID)
 	default:
+		loggerFromContext(r.Context()).ErrorContext(r.Context(), "internal server error",
+			"request_id", reqID,
+			"error", err,
+		)
 		WriteError(w, http.StatusInternalServerError, "internal error", reqID)
 	}
 }
