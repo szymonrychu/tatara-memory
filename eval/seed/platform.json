@@ -1,0 +1,127 @@
+[
+  {
+    "idempotency_key": "eval-seed-go-version",
+    "text": "Hard rule: use the newest stable Go for any Go service in the tatara platform. Pin the Go directive to the exact minor version in go.mod.",
+    "metadata": { "source": "CLAUDE.md", "type": "hard-rule" }
+  },
+  {
+    "idempotency_key": "eval-seed-kiss",
+    "text": "Hard rule KISS: prefer simplicity over cleverness. Three similar lines is better than a premature abstraction.",
+    "metadata": { "source": "CLAUDE.md", "type": "hard-rule" }
+  },
+  {
+    "idempotency_key": "eval-seed-boyscout",
+    "text": "Hard rule boy-scout: if you see something easy to fix alongside current work, fix it. Do not ask first.",
+    "metadata": { "source": "CLAUDE.md", "type": "hard-rule" }
+  },
+  {
+    "idempotency_key": "eval-seed-tech-debt",
+    "text": "Hard rule: never introduce tech-debt. If a thing is complex, call it out in MEMORY.md with the rationale. Never defer cleanup to later.",
+    "metadata": { "source": "CLAUDE.md", "type": "hard-rule" }
+  },
+  {
+    "idempotency_key": "eval-seed-charts",
+    "text": "Hard rule: charts are created via helm create then edited. Never hand-rolled.",
+    "metadata": { "source": "CLAUDE.md", "type": "hard-rule" }
+  },
+  {
+    "idempotency_key": "eval-seed-values",
+    "text": "Hard rule: no plain ENVs in values.yaml and no lists in values.yaml. All inputs map a camelCase scalar in values.yaml to a kebab-case key in ConfigMap or Secret, consumed via envFrom. Genuinely list-shaped data is rendered into a templated ConfigMap and read at runtime.",
+    "metadata": { "source": "CLAUDE.md", "type": "hard-rule" }
+  },
+  {
+    "idempotency_key": "eval-seed-models",
+    "text": "Hard rule: Sonnet for implementation, Opus for merges. Implementation subagents are claude-sonnet-4-6. The merge subagent that integrates parallel work is opus. Plan and review work runs in opus.",
+    "metadata": { "source": "CLAUDE.md", "type": "hard-rule" }
+  },
+  {
+    "idempotency_key": "eval-seed-json-logs",
+    "text": "Hard rule: JSON logs only. Use stdlib log/slog in Go with the same logger structure everywhere.",
+    "metadata": { "source": "CLAUDE.md", "type": "hard-rule" }
+  },
+  {
+    "idempotency_key": "eval-seed-log-info",
+    "text": "Hard rule: log every business action at INFO with structured fields request_id, user, action, resource_id, duration_ms where relevant. WARN and ERROR used appropriately.",
+    "metadata": { "source": "CLAUDE.md", "type": "hard-rule" }
+  },
+  {
+    "idempotency_key": "eval-seed-metrics-rule",
+    "text": "Hard rule: metrics for everything that counts, times out, or can fail. Counters for events, histograms for durations, gauges for in-flight. Expose a /metrics Prometheus endpoint on every service.",
+    "metadata": { "source": "CLAUDE.md", "type": "hard-rule" }
+  },
+  {
+    "idempotency_key": "eval-seed-kubectl",
+    "text": "Hard rule: never kubectl set image, kubectl edit, or kubectl patch spec fields on a helm-managed resource. Bump chart appVersion and helm upgrade instead. Direct kubectl mutations leave orphan field-managers that block helm 4 server-side apply on the next sync. This burned the v0.1.1 to v0.1.2 tatara-memory upgrade.",
+    "metadata": { "source": "CLAUDE.md", "type": "hard-rule" }
+  },
+  {
+    "idempotency_key": "eval-seed-branch-flow",
+    "text": "Hard rule branch flow: worktree off main, develop in the worktree, merge back to source repo main, cleanup the worktree, then build and deploy from main only. Never build or deploy from a worktree.",
+    "metadata": { "source": "CLAUDE.md", "type": "hard-rule" }
+  },
+  {
+    "idempotency_key": "eval-seed-score-zero",
+    "text": "Decision 2026-05-27: QueryMatch.Score remains 0. lightrag v1.4.16 /query and /query/data expose no per-match relevance, score, or similarity field. relationships.weight is a graph edge weight, not retrieval rank. Score cannot be populated until lightrag exposes a per-match ranking field.",
+    "metadata": { "source": "MEMORY.md", "type": "decision" }
+  },
+  {
+    "idempotency_key": "eval-seed-codegraph-store",
+    "text": "Decision 2026-06-06: the deterministic structural code graph (code_entities and code_edges, jsonb props) lives in tatara-memory's Postgres; semantic text chunks stay in LightRAG. POST /code-graph:bulk is synchronous returning 200 plus counts, deliberately not the async ingest_jobs path. Re-ingest replaces at file granularity.",
+    "metadata": { "source": "MEMORY.md", "type": "decision" }
+  },
+  {
+    "idempotency_key": "eval-seed-migrations-startup",
+    "text": "Decision 2026-06-06: migrations are applied at startup in run() via app.migrate (ingest plus codegraph). Previously ingest.Migrate was never called in prod. migrate() lives in run(), not newAppWithDeps, to keep app construction side-effect-free.",
+    "metadata": { "source": "MEMORY.md", "type": "decision" }
+  },
+  {
+    "idempotency_key": "eval-seed-version-strip",
+    "text": "Decision 2026-05-27: the Makefile VERSION strips the leading v from git describe --tags. Chart appVersion and image tag now match without manual re-tagging.",
+    "metadata": { "source": "MEMORY.md", "type": "decision" }
+  },
+  {
+    "idempotency_key": "eval-seed-golangci",
+    "text": "Decision 2026-05-24: golangci-lint pinned to v2.11, not v1.62. v1.62 built with go1.23 cannot process go1.25 modules.",
+    "metadata": { "source": "MEMORY.md", "type": "decision" }
+  },
+  {
+    "idempotency_key": "eval-seed-fileless-entity",
+    "text": "Finding 2026-06-08 (0.2.1): /code-graph:bulk Push rejected fileless entities. A go_package entity legitimately has no single owning file (FilePath empty). Fix: skip the membership check for empty FilePath on entities; edge and symbol SrcFile checks stay strict.",
+    "metadata": { "source": "MEMORY.md", "type": "finding" }
+  },
+  {
+    "idempotency_key": "eval-seed-empty-filepath-reconcile",
+    "text": "Finding 2026-06-16 audit-r2: empty-FilePath entities (repo or package scoped like go_package) are not reclaimed by file-granular reconcile. Reconcile deletes only via DELETE WHERE file_path per touched file. Renamed or removed repo-scoped entities orphan forever; an intentional trade-off.",
+    "metadata": { "source": "MEMORY.md", "type": "finding" }
+  },
+  {
+    "idempotency_key": "eval-seed-ingest-metrics",
+    "text": "Issue #30 2026-06-14: instrumented the ingest worker Pool which had zero Prometheus metrics. New internal/ingest/metrics.go adds ingest_items_total, ingest_item_duration_seconds, ingest_jobs_total, ingest_items_in_flight, and ingest_notify_dropped_total. Wired via a WithMetrics(reg) option.",
+    "metadata": { "source": "MEMORY.md", "type": "finding" }
+  },
+  {
+    "idempotency_key": "eval-seed-tombstone",
+    "text": "Decision 2026-06-06: adopted the v0.2.0 consolidation branch with tombstone deletes and opaque Edge.ID into main. All three migrations (ingest, memory, codegraph) run in app.migrate in run().",
+    "metadata": { "source": "MEMORY.md", "type": "decision" }
+  },
+  {
+    "idempotency_key": "eval-seed-lightrag-idempotent",
+    "text": "Fix #44: treat lightrag duplicated and partial_success insert statuses as idempotent success so retries do not fail a bulk ingest.",
+    "metadata": { "source": "MEMORY.md", "type": "finding" }
+  },
+  {
+    "idempotency_key": "eval-seed-platform-repos",
+    "text": "The tatara platform is split into eight independent GitHub repositories under szymonrychu: tatara, tatara-memory, tatara-cli, tatara-memory-repo-ingester, tatara-claude-code-wrapper, tatara-operator, tatara-chat, tatara-helmfile. Not a monorepo; each component has its own CI, helm chart, Dockerfile, MEMORY.md and ROADMAP.md.",
+    "metadata": { "source": "CLAUDE.md", "type": "reference" }
+  },
+  {
+    "idempotency_key": "eval-seed-query-tools",
+    "text": "Memory recall is the platform's core value loop: every autonomous agent turn calls the query and describe MCP tools in tatara-cli, which hit tatara-memory's POST /queries and POST /queries:describe endpoints. If retrieval returns the wrong memories, every downstream agent decision degrades silently.",
+    "metadata": { "source": "tatara-memory#41", "type": "reference" }
+  },
+  {
+    "idempotency_key": "eval-seed-topk-clamp",
+    "text": "tatara-memory clamps the top_k field on query requests: defaultTopK is 10 when omitted, maxTopK is 500 to prevent unbounded LightRAG retrievals. A negative top_k is rejected with 400.",
+    "metadata": { "source": "internal/httpapi/queries.go", "type": "reference" }
+  }
+]
