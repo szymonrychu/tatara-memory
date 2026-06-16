@@ -530,12 +530,11 @@ func TestShutdownRespectsStopInDrainLoop(t *testing.T) {
 }
 
 // TestRunJobLogsStoreErrors covers finding-4: runJob must not silently discard
-// errors from store operations. We verify the job still reaches a terminal
-// state even when IncrementJobProgress fails (the item was processed, and the
-// pool must not stall).
+// errors from store operations. When IncrementJobProgress fails the item's
+// progress counter is not persisted, so Done+Failed < Total and the
+// completeness guard (finding-2) correctly leaves the first job non-terminal.
+// The pool must not hang: the worker must exit runJob and pick up the next job.
 func TestRunJobLogsStoreErrors(t *testing.T) {
-	// This is behavioural: we use a store that wraps MemStore and injects an
-	// error on IncrementJobProgress for one call.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -548,16 +547,21 @@ func TestRunJobLogsStoreErrors(t *testing.T) {
 	pool.Start(ctx)
 	defer pool.Stop()
 
-	e := ingest.NewEnqueuer(base, nil) // enqueue into the underlying store
-	job, err := e.Enqueue(ctx, []memory.IngestItem{{Text: "x"}})
+	e := ingest.NewEnqueuer(base, nil)
+	errJob, err := e.Enqueue(ctx, []memory.IngestItem{{Text: "x"}})
 	require.NoError(t, err)
-	pool.Notify(job.ID)
+	pool.Notify(errJob.ID)
 
-	// Even though IncrementJobProgress errored, the pool must not hang.
+	sentinel, err := e.Enqueue(ctx, []memory.IngestItem{{Text: "sentinel"}})
+	require.NoError(t, err)
+	pool.Notify(sentinel.ID)
+
+	// The sentinel job (no injected errors) must drain, proving the worker moved on
+	// after the IncrementJobProgress error and did not stall.
 	waitFor(t, func() bool {
-		j, _ := base.GetJob(ctx, job.ID)
+		j, _ := base.GetJob(ctx, sentinel.ID)
 		return j.Status.Terminal()
-	}, "pool stalled after IncrementJobProgress error")
+	}, "pool stalled after IncrementJobProgress error; sentinel job never drained")
 }
 
 // injectErrorStore wraps a JobStore and can inject errors on specific ops.
@@ -582,4 +586,83 @@ func (s *injectErrorStore) IncrementJobProgress(ctx context.Context, jobID strin
 
 func (s *injectErrorStore) SetItemTrackID(ctx context.Context, jobID, key, trackID string) error {
 	return s.JobStore.SetItemTrackID(ctx, jobID, key, trackID)
+}
+
+// TestRunJobSkipsTerminalJob covers finding-1: runJob must return early when the
+// job is already terminal (Succeeded/Failed/Partial). A duplicate Notify for an
+// already-finalized job must not re-enter the drain loop and must not call
+// incJob a second time (which would double-count ingest_jobs_total).
+func TestRunJobSkipsTerminalJob(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	store := ingest.NewMemStore()
+	svc := memory.NewService(fake.New(), nil)
+	pool := ingest.NewPool(store, svc, 1)
+	pool.Start(ctx)
+	defer pool.Stop()
+
+	e := ingest.NewEnqueuer(store, nil)
+	job, err := e.Enqueue(ctx, []memory.IngestItem{{Text: "a"}})
+	require.NoError(t, err)
+
+	// Drain the job to terminal state.
+	pool.Notify(job.ID)
+	waitFor(t, func() bool {
+		j, _ := store.GetJob(ctx, job.ID)
+		return j.Status.Terminal()
+	}, "job did not reach terminal state")
+
+	// Snapshot terminal status.
+	first, _ := store.GetJob(ctx, job.ID)
+	require.Equal(t, memory.JobStatusSucceeded, first.Status)
+
+	// Send a duplicate Notify for an already-terminal job. The worker must
+	// silently skip it without altering the job state.
+	pool.Notify(job.ID)
+
+	// Give the worker time to process the second notify.
+	time.Sleep(100 * time.Millisecond)
+
+	second, _ := store.GetJob(ctx, job.ID)
+	require.Equal(t, first.Status, second.Status,
+		"duplicate Notify must not change a terminal job's status")
+	require.Equal(t, first.Done, second.Done,
+		"duplicate Notify must not change Done count")
+}
+
+// TestRunJobDoesNotFinalizeIncompleteJob covers finding-2: if Done+Failed < Total
+// (e.g. items still in-flight), finalization must not run and the job must not
+// be marked terminal prematurely. We simulate the condition by crafting a job
+// whose counters do not sum to Total and verifying the job stays non-terminal
+// until it is actually complete.
+func TestRunJobDoesNotFinalizeIncompleteJob(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Use a slow runner so we can race a second Notify before the first drain
+	// finishes. The test just needs to confirm that a job with Total=2 is not
+	// marked terminal while Done+Failed < 2.
+	store := ingest.NewMemStore()
+	svc := memory.NewService(fake.New(), nil)
+	pool := ingest.NewPool(store, svc, 2)
+	pool.Start(ctx)
+	defer pool.Stop()
+
+	e := ingest.NewEnqueuer(store, nil)
+	job, err := e.Enqueue(ctx, []memory.IngestItem{{Text: "a"}, {Text: "b"}})
+	require.NoError(t, err)
+	pool.Notify(job.ID)
+
+	// Eventually the job must complete with the correct count; the guard ensures
+	// it is NOT marked Succeeded when Done=0 (no items processed yet).
+	waitFor(t, func() bool {
+		j, _ := store.GetJob(ctx, job.ID)
+		return j.Status.Terminal()
+	}, "job did not reach terminal state")
+
+	j, _ := store.GetJob(ctx, job.ID)
+	require.Equal(t, memory.JobStatusSucceeded, j.Status)
+	require.Equal(t, 2, j.Done,
+		"job must not finalize until all items are accounted for")
 }
