@@ -259,10 +259,16 @@ func (c *Client) Query(_ context.Context, req lightrag.QueryRequest) (*lightrag.
 }
 
 // QueryData returns the seeded data response.
+// Mirrors the real HTTPClient envelope check: a non-success (non-empty) status
+// in the seeded response is returned as a *lightrag.LogicalError so consumer
+// tests can exercise the failure path with fake-vs-real parity.
 func (c *Client) QueryData(_ context.Context, _ lightrag.QueryRequest) (*lightrag.QueryDataResponse, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	cp := c.dataRes
+	if cp.Status != "success" {
+		return nil, &lightrag.LogicalError{Op: lightrag.OpQueryData, Status: cp.Status, Message: cp.Message}
+	}
 	return &cp, nil
 }
 

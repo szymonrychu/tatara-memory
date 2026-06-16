@@ -27,6 +27,9 @@ const (
 	retryMax = 3
 	// retryBaseDelay is the initial backoff delay before the first retry.
 	retryBaseDelay = 200 * time.Millisecond
+	// maxRetryAfter caps the server-directed Retry-After sleep so a misbehaving
+	// or compromised upstream cannot wedge a worker indefinitely with a huge value.
+	maxRetryAfter = 30 * time.Second
 )
 
 // HTTPConfig holds constructor parameters for HTTPClient.
@@ -224,6 +227,9 @@ func (c *HTTPClient) roundTrip(ctx context.Context, method, path string, body io
 					} else if t, parseErr := http.ParseTime(ra); parseErr == nil && t.After(time.Now()) {
 						wait = time.Until(t)
 					}
+					if wait > maxRetryAfter {
+						wait = maxRetryAfter
+					}
 					if wait > 0 {
 						select {
 						case <-ctx.Done():
@@ -352,7 +358,7 @@ func (c *HTTPClient) QueryData(ctx context.Context, req QueryRequest) (*QueryDat
 		c.logCall(ctx, OpQueryData, http.MethodPost, "/query/data", dur, transportErr)
 		return nil, transportErr
 	}
-	if out.Status != "" && out.Status != "success" {
+	if out.Status != "success" {
 		logicalErr := &LogicalError{Op: OpQueryData, Status: out.Status, Message: out.Message}
 		c.metrics.observe(OpQueryData, dur, logicalErr)
 		c.log.WarnContext(ctx, "lightrag: query_data logical failure",

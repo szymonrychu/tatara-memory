@@ -234,3 +234,35 @@ func TestFake_InsertText_DefaultIsProcessed(t *testing.T) {
 	ts, _ := f.TrackStatus(context.Background(), resp.TrackID)
 	require.Equal(t, lightrag.DocStatusProcessed, ts.Documents[0].Status)
 }
+
+// Finding 5 (audit-r3): fake.QueryData must return *lightrag.LogicalError when
+// the seeded response carries a non-success (non-empty) status, mirroring the
+// real HTTPClient envelope check so consumer tests exercise the failure path.
+func TestFake_QueryData_LogicalFailureOnNonSuccessStatus(t *testing.T) {
+	f := fake.New()
+	f.SeedQueryDataResponse(lightrag.QueryDataResponse{
+		Status:  "failure",
+		Message: "upstream error",
+	})
+
+	_, err := f.QueryData(context.Background(), lightrag.QueryRequest{Query: "x"})
+	require.Error(t, err, "non-success status must produce an error")
+	var le *lightrag.LogicalError
+	require.ErrorAs(t, err, &le, "must be a *lightrag.LogicalError")
+	require.Equal(t, lightrag.OpQueryData, le.Op)
+	require.Equal(t, "failure", le.Status)
+}
+
+// Finding 5 (audit-r3): success status must still return data without error.
+func TestFake_QueryData_SuccessStatusReturnsData(t *testing.T) {
+	f := fake.New()
+	f.SeedQueryDataResponse(lightrag.QueryDataResponse{
+		Status: "success",
+		Data:   map[string]any{"k": "v"},
+	})
+
+	resp, err := f.QueryData(context.Background(), lightrag.QueryRequest{Query: "x"})
+	require.NoError(t, err)
+	require.Equal(t, "success", resp.Status)
+	require.Equal(t, "v", resp.Data["k"])
+}
