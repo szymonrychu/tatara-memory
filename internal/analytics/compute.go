@@ -32,7 +32,6 @@ type Edge struct {
 type NodeSignal struct {
 	ID          string
 	Community   int
-	Degree      int
 	Betweenness float64
 }
 
@@ -41,7 +40,7 @@ type CommunitySignal struct {
 	Community int
 	Size      int
 	Cohesion  float64
-	Members   []string // entity IDs; first non-empty member name used as fallback label
+	Members   []string // entity IDs, in deterministic community-member order
 }
 
 // Config controls optional behaviour in Compute.
@@ -156,7 +155,6 @@ func Compute(ids []string, edges []Edge, cfg Config) Result {
 		nodes = append(nodes, NodeSignal{
 			ID:          id,
 			Community:   nodeCommunity[id],
-			Degree:      g.From(idToNode[id]).Len(),
 			Betweenness: betweenness[idToNode[id]],
 		})
 	}

@@ -39,15 +39,6 @@ func TestCompute_TwoClustersCommunitiesAndCentrality(t *testing.T) {
 	require.Equal(t, comm["e"], comm["f"])
 	require.NotEqual(t, comm["a"], comm["d"])
 
-	// Degree: c and d have degree 3 (two intra + one bridge); a has degree 2.
-	deg := map[string]int{}
-	for _, n := range res.Nodes {
-		deg[n.ID] = n.Degree
-	}
-	require.Equal(t, 3, deg["c"])
-	require.Equal(t, 3, deg["d"])
-	require.Equal(t, 2, deg["a"])
-
 	// Betweenness: the bridge endpoints c and d are strictly higher than a.
 	bw := map[string]float64{}
 	for _, n := range res.Nodes {
@@ -73,7 +64,6 @@ func TestCompute_IsolatedNode(t *testing.T) {
 	res := Compute([]string{"x"}, nil, Config{})
 	require.Len(t, res.Nodes, 1)
 	require.Equal(t, "x", res.Nodes[0].ID)
-	require.Equal(t, 0, res.Nodes[0].Degree)
 }
 
 // TestCompute_Deterministic verifies that two runs on the same graph produce
@@ -169,19 +159,16 @@ func TestCompute_CohesionFullyConnected(t *testing.T) {
 	require.InDelta(t, 1.0, res.Communities[0].Cohesion, 1e-9)
 }
 
-// TestCompute_DegreeViaGonum verifies degree is read from the graph (not a hand map).
-func TestCompute_DegreeViaGonum(t *testing.T) {
-	// a-b-c chain: a and c have degree 1, b has degree 2.
-	res := Compute([]string{"a", "b", "c"}, []Edge{
-		{From: "a", To: "b"}, {From: "b", To: "c"},
-	}, Config{})
-	deg := map[string]int{}
-	for _, n := range res.Nodes {
-		deg[n.ID] = n.Degree
-	}
-	require.Equal(t, 1, deg["a"])
-	require.Equal(t, 2, deg["b"])
-	require.Equal(t, 1, deg["c"])
+// TestCompute_NodeSignalNoDegreeField verifies that NodeSignal no longer carries
+// the Degree field (dropped: degree is served live from SQL by ImportantEntities;
+// keeping it in the struct was dead weight, hard rule 2+4).
+func TestCompute_NodeSignalNoDegreeField(t *testing.T) {
+	// The compile-time check is sufficient: if NodeSignal had a Degree field,
+	// this function would reference it and any accidental re-addition would cause
+	// a compilation error in tests that do NOT reference it. The struct literal
+	// below names only the fields that SHOULD exist; if Degree were re-added and
+	// unnamed it would need to appear here to compile.
+	_ = NodeSignal{ID: "x", Community: 0, Betweenness: 0.0}
 }
 
 // TestCompute_ResultCarriesTelemetry verifies that Result.NodeCount, EdgeCount,
