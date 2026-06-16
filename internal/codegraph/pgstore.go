@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 )
 
@@ -43,9 +44,9 @@ func scanProps(raw []byte) map[string]string {
 	}
 	var m map[string]string
 	if err := json.Unmarshal(raw, &m); err != nil {
-		// Corrupt DB cell: log at WARN so the problem is observable; return nil
-		// so callers get no-properties rather than a hard error on an otherwise
-		// valid row.
+		// Corrupt DB cell: return nil so callers get no-properties rather than a
+		// hard error on an otherwise valid row.
+		slog.Warn("codegraph: corrupt properties jsonb", "err", err)
 		return nil
 	}
 	return m

@@ -5,7 +5,6 @@
 package analytics
 
 import (
-	"log/slog"
 	"math/rand/v2"
 	"sort"
 	"time"
@@ -52,10 +51,18 @@ type Config struct {
 	MaxNodes int
 }
 
-// Result bundles the computed node and community signals.
+// Result bundles the computed node and community signals and telemetry the
+// caller uses for logging and Prometheus metrics (findings 3, 6, 8).
 type Result struct {
 	Nodes       []NodeSignal
 	Communities []CommunitySignal
+
+	// Telemetry: returned so the pure Compute function stays dependency-free
+	// while callers can record metrics and structured logs.
+	NodeCount          int
+	EdgeCount          int
+	DurationMs         int64
+	BetweennessSkipped bool
 }
 
 // Compute builds an undirected graph from ids+edges and returns community,
@@ -161,15 +168,15 @@ func Compute(ids []string, edges []Edge, cfg Config) Result {
 	}
 
 	durationMs := time.Since(start).Milliseconds()
-	slog.Info("analytics.Compute",
-		"nodes", n,
-		"edges", edgeCount,
-		"communities", len(communities),
-		"betweenness_skipped", betweennessSkipped,
-		"duration_ms", durationMs,
-	)
 
-	return Result{Nodes: nodes, Communities: communities}
+	return Result{
+		Nodes:              nodes,
+		Communities:        communities,
+		NodeCount:          n,
+		EdgeCount:          edgeCount,
+		DurationMs:         durationMs,
+		BetweennessSkipped: betweennessSkipped,
+	}
 }
 
 // cohesion is the intra-community edge density: 2*(internal edges) / (n*(n-1)).

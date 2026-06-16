@@ -18,6 +18,10 @@ type AnalyticsMetrics struct {
 	duration   prometheus.Histogram
 	inFlight   prometheus.Gauge
 	dirtyRepos prometheus.Gauge
+	// Per-Compute instruments (findings 3, 6): track how long the pure Compute
+	// function runs and how often betweenness is skipped due to graph size.
+	betweennessSkipped prometheus.Counter
+	computeDuration    prometheus.Histogram
 }
 
 // NewAnalyticsMetrics builds the analytics worker instruments. reg may be nil,
@@ -41,9 +45,21 @@ func NewAnalyticsMetrics(reg prometheus.Registerer) *AnalyticsMetrics {
 			Name: "code_graph_analytics_dirty_repos",
 			Help: "Number of dirty, settled repos awaiting analytics recompute, set each tick.",
 		}),
+		betweennessSkipped: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "code_graph_betweenness_skipped_total",
+			Help: "Count of analytics.Compute calls where betweenness was skipped (graph too large).",
+		}),
+		computeDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "code_graph_compute_duration_seconds",
+			Help:    "Wall time of analytics.Compute (CPU-bound Louvain+Brandes), excluding DB I/O.",
+			Buckets: prometheus.DefBuckets,
+		}),
 	}
 	if reg != nil {
-		reg.MustRegister(m.runs, m.duration, m.inFlight, m.dirtyRepos)
+		reg.MustRegister(
+			m.runs, m.duration, m.inFlight, m.dirtyRepos,
+			m.betweennessSkipped, m.computeDuration,
+		)
 	}
 	for _, result := range []string{analyticsResultSuccess, analyticsResultError} {
 		m.runs.WithLabelValues(result)
@@ -51,8 +67,10 @@ func NewAnalyticsMetrics(reg prometheus.Registerer) *AnalyticsMetrics {
 	return m
 }
 
-func (m *AnalyticsMetrics) incRun(result string)        { m.runs.WithLabelValues(result).Inc() }
-func (m *AnalyticsMetrics) observeDuration(sec float64) { m.duration.Observe(sec) }
-func (m *AnalyticsMetrics) incInFlight()                { m.inFlight.Inc() }
-func (m *AnalyticsMetrics) decInFlight()                { m.inFlight.Dec() }
-func (m *AnalyticsMetrics) setDirtyRepos(n int)         { m.dirtyRepos.Set(float64(n)) }
+func (m *AnalyticsMetrics) incRun(result string)               { m.runs.WithLabelValues(result).Inc() }
+func (m *AnalyticsMetrics) observeDuration(sec float64)        { m.duration.Observe(sec) }
+func (m *AnalyticsMetrics) incInFlight()                       { m.inFlight.Inc() }
+func (m *AnalyticsMetrics) decInFlight()                       { m.inFlight.Dec() }
+func (m *AnalyticsMetrics) setDirtyRepos(n int)                { m.dirtyRepos.Set(float64(n)) }
+func (m *AnalyticsMetrics) incBetweennessSkipped()             { m.betweennessSkipped.Inc() }
+func (m *AnalyticsMetrics) observeComputeDuration(sec float64) { m.computeDuration.Observe(sec) }

@@ -34,6 +34,12 @@ func (s *PGStore) DirtyRepos(ctx context.Context, debounceSecs int) ([]string, e
 type RecomputeResult struct {
 	Entities    int
 	Communities int
+	// Compute telemetry forwarded from analytics.Result so the worker can
+	// record per-compute metrics and a structured INFO log (findings 3, 6, 8).
+	NodeCount          int
+	EdgeCount          int
+	ComputeDurationMs  int64
+	BetweennessSkipped bool
 }
 
 // RecomputeAnalytics loads the repo's graph, computes signals via gonum, persists
@@ -106,7 +112,14 @@ func (s *PGStore) RecomputeAnalytics(ctx context.Context, repo string, labeler C
 	if err := tx.Commit(); err != nil {
 		return RecomputeResult{}, err
 	}
-	return RecomputeResult{Entities: len(res.Nodes), Communities: len(res.Communities)}, nil
+	return RecomputeResult{
+		Entities:           len(res.Nodes),
+		Communities:        len(res.Communities),
+		NodeCount:          res.NodeCount,
+		EdgeCount:          res.EdgeCount,
+		ComputeDurationMs:  res.DurationMs,
+		BetweennessSkipped: res.BetweennessSkipped,
+	}, nil
 }
 
 // labelCommunity returns an LLM label when a labeler is set and succeeds,

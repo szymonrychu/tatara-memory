@@ -158,10 +158,20 @@ func (w *AnalyticsWorker) recompute(ctx context.Context, repo string) error {
 		return err
 	}
 	w.metrics.incRun(analyticsResultSuccess)
+	w.metrics.observeComputeDuration(float64(res.ComputeDurationMs) / 1000.0)
+	if res.BetweennessSkipped {
+		w.metrics.incBetweennessSkipped()
+	}
 	w.log.Info("analytics recompute",
+		"action", "recompute_analytics",
+		"resource_id", repo,
 		"repo", repo,
 		"entities", res.Entities,
 		"communities", res.Communities,
+		"nodes", res.NodeCount,
+		"edges", res.EdgeCount,
+		"betweenness_skipped", res.BetweennessSkipped,
+		"compute_duration_ms", res.ComputeDurationMs,
 		"duration_ms", dur.Milliseconds(),
 	)
 	return nil

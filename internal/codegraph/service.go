@@ -3,6 +3,7 @@ package codegraph
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
 const (
@@ -87,7 +88,10 @@ func (s *Service) Entity(ctx context.Context, repo, id string) (EntityDetail, er
 // normalized direction. limit bounds the number of distinct nodes returned;
 // zero applies the default cap.
 func (s *Service) Neighbors(ctx context.Context, repo, id string, relations []string, dir string, depth, limit int, cf ConfidenceFilter) ([]PathNode, error) {
-	return s.store.Neighbors(ctx, repo, id, relations, normalizeDir(dir), clampDepth(depth), clampNeighborLimit(limit), cf)
+	start := time.Now()
+	out, err := s.store.Neighbors(ctx, repo, id, relations, normalizeDir(dir), clampDepth(depth), clampNeighborLimit(limit), cf)
+	s.metrics.observeQuery(queryOpNeighbors, start, err)
+	return out, err
 }
 
 // Callers returns entities that call id (reverse "calls").
@@ -127,7 +131,10 @@ func (s *Service) CrossRepo(ctx context.Context, repo, id string) (CrossRepoLink
 
 // ShortestPath returns the ordered entity chain from fromID to toID, or empty if unreachable.
 func (s *Service) ShortestPath(ctx context.Context, repo, fromID, toID string, relations []string, depth int) ([]Entity, error) {
-	return s.store.ShortestPath(ctx, repo, fromID, toID, relations, clampDepth(depth))
+	start := time.Now()
+	out, err := s.store.ShortestPath(ctx, repo, fromID, toID, relations, clampDepth(depth))
+	s.metrics.observeQuery(queryOpShortestPath, start, err)
+	return out, err
 }
 
 // ImportantEntities returns entities ranked by degree DESC.
@@ -143,7 +150,10 @@ func (s *Service) ImportantEntities(ctx context.Context, repo string, limit int)
 
 // Stats returns aggregate counts for a repo's code graph.
 func (s *Service) Stats(ctx context.Context, repo string) (GraphStats, error) {
-	return s.store.Stats(ctx, repo)
+	start := time.Now()
+	out, err := s.store.Stats(ctx, repo)
+	s.metrics.observeQuery(queryOpStats, start, err)
+	return out, err
 }
 
 // AmbiguousEdges returns edges with low confidence.
@@ -154,12 +164,18 @@ func (s *Service) AmbiguousEdges(ctx context.Context, repo string, limit int) ([
 	if limit > maxAmbiguousLimit {
 		limit = maxAmbiguousLimit
 	}
-	return s.store.AmbiguousEdges(ctx, repo, limit)
+	start := time.Now()
+	out, err := s.store.AmbiguousEdges(ctx, repo, limit)
+	s.metrics.observeQuery(queryOpAmbiguous, start, err)
+	return out, err
 }
 
 // EntityExplain returns EntityDetail plus labeled neighbor entities.
 func (s *Service) EntityExplain(ctx context.Context, repo, id string) (EntityExplain, error) {
-	return s.store.EntityExplain(ctx, repo, id)
+	start := time.Now()
+	out, err := s.store.EntityExplain(ctx, repo, id)
+	s.metrics.observeQuery(queryOpEntityExplain, start, err)
+	return out, err
 }
 
 // SemanticMisses returns the files whose cached content_sha differs or is absent.
@@ -169,7 +185,10 @@ func (s *Service) SemanticMisses(ctx context.Context, repo string, files []FileS
 
 // Related returns semantic neighbors of id filtered by relations and minConfidence.
 func (s *Service) Related(ctx context.Context, repo, id string, relations []string, minConfidence float64) ([]RelatedResult, error) {
-	return s.store.Related(ctx, repo, id, relations, minConfidence)
+	start := time.Now()
+	out, err := s.store.Related(ctx, repo, id, relations, minConfidence)
+	s.metrics.observeQuery(queryOpRelated, start, err)
+	return out, err
 }
 
 // Hyperedges returns the hyperedges in repo, optionally filtered by member entity.
@@ -200,7 +219,10 @@ func (s *Service) Bridges(ctx context.Context, repo string, limit int) ([]Bridge
 	if limit > maxImportantLimit {
 		limit = maxImportantLimit
 	}
-	return s.store.Bridges(ctx, repo, limit)
+	start := time.Now()
+	out, err := s.store.Bridges(ctx, repo, limit)
+	s.metrics.observeQuery(queryOpBridges, start, err)
+	return out, err
 }
 
 // ImportantEntitiesBy ranks entities by degree (default) or betweenness.
@@ -211,5 +233,8 @@ func (s *Service) ImportantEntitiesBy(ctx context.Context, repo, by string, limi
 	if limit > maxImportantLimit {
 		limit = maxImportantLimit
 	}
-	return s.store.ImportantEntitiesBy(ctx, repo, by, limit)
+	start := time.Now()
+	out, err := s.store.ImportantEntitiesBy(ctx, repo, by, limit)
+	s.metrics.observeQuery(queryOpImportantBy, start, err)
+	return out, err
 }

@@ -299,6 +299,7 @@ func (c *HTTPClient) QueryData(ctx context.Context, req QueryRequest) (*QueryDat
 		return nil, err
 	}
 	if out.Status != "" && out.Status != "success" {
+		c.metrics.incError(OpQueryData)
 		return nil, &LogicalError{Op: OpQueryData, Status: out.Status, Message: out.Message}
 	}
 	return &out, nil
