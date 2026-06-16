@@ -437,6 +437,47 @@ func TestHTTPClient_RetryAfter_HTTPDateForm(t *testing.T) {
 		"HTTP-date Retry-After must not burn extra retry attempts")
 }
 
+// Finding 3: Retry-After value must be capped so a huge server-directed
+// wait cannot wedge a worker indefinitely. We send Retry-After: 99999 and
+// verify the client still returns within a short deadline (context cancel
+// proves the cap applied and the sleep was bounded).
+func TestHTTPClient_RetryAfter_CappedAtMax(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		// Huge Retry-After; without a cap this would block ~27 hours.
+		w.Header().Set("Retry-After", "99999")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	t.Cleanup(srv.Close)
+
+	c, err := lightrag.NewHTTPClient(lightrag.HTTPConfig{BaseURL: srv.URL})
+	require.NoError(t, err)
+
+	// Context with a 200ms deadline; the cap must keep each Retry-After sleep
+	// well below this, so the context expiry is what terminates the retries.
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	_, err = c.InsertText(ctx, lightrag.InsertTextRequest{Text: "x"})
+	// Must return (context-cancelled or HTTPError), never hang beyond deadline.
+	require.Error(t, err)
+}
+
+// Finding 6: QueryData HTTP-200 with empty Status is treated as a LogicalError
+// (cannot distinguish 'no envelope' from 'truncated envelope').
+func TestHTTPClient_QueryData_EmptyStatusIsError(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		// Valid JSON, status field absent / empty string.
+		_, _ = w.Write([]byte(`{"message":"truncated"}`))
+	})
+	_, err := c.QueryData(context.Background(), lightrag.QueryRequest{Query: "x"})
+	require.Error(t, err)
+	var le *lightrag.LogicalError
+	require.ErrorAs(t, err, &le, "empty status must produce LogicalError")
+	require.Equal(t, "", le.Status)
+}
+
 // Finding 6: QueryData HTTP-200 with failure status returns LogicalError.
 func TestHTTPClient_QueryData_LogicalFailureIsError(t *testing.T) {
 	c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {

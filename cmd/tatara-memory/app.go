@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -46,14 +47,23 @@ func (a *app) shutdown(ctx context.Context) error {
 	if a.reaperCancel != nil {
 		a.reaperCancel()
 	}
+	var errs []error
 	if a.server != nil {
-		_ = a.server.Shutdown(shutdownCtx)
+		if err := a.server.Shutdown(shutdownCtx); err != nil {
+			errs = append(errs, fmt.Errorf("server shutdown: %w", err))
+		}
 	}
 	if a.pool != nil {
 		a.pool.Stop()
 	}
 	if a.db != nil {
-		_ = a.db.Close()
+		if err := a.db.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("db close: %w", err))
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		a.log.Warn("shutdown completed with errors", "error", err)
+		return err
 	}
 	return nil
 }
@@ -159,7 +169,7 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 	pool := ingest.NewPoolWithSources(store, memSvc, cfg.WorkerPoolSize, srcStore, ingest.WithItemTimeout(cfg.IngestItemTimeout), ingest.WithMetrics(reg), ingest.WithLogger(logger))
 	pool.Start(ctx)
 	if n, err := pool.Resume(ctx); err != nil {
-		logger.Warn("ingest pool resume failed", "error", err)
+		logger.Error("ingest pool resume failed", "error", err)
 	} else if n > 0 {
 		logger.Info("ingest pool resumed unfinished jobs", "jobs", n)
 	}

@@ -14,6 +14,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/szymonrychu/tatara-memory/internal/ctxkeys"
 )
 
 // requestIDRe accepts only safe characters for X-Request-Id.
@@ -35,13 +37,11 @@ func routeLabel(r *http.Request) string {
 	return "unmatched"
 }
 
-type ctxKey int
-
-const requestIDKey ctxKey = 0
-
 // RequestIDFromContext retrieves the request ID from the context.
+// The key is defined in internal/ctxkeys so that downstream packages
+// (e.g. lightrag HTTPClient) can read the same value for log correlation.
 func RequestIDFromContext(ctx context.Context) string {
-	v, _ := ctx.Value(requestIDKey).(string)
+	v, _ := ctx.Value(ctxkeys.RequestID).(string)
 	return v
 }
 
@@ -56,7 +56,7 @@ func RequestID(next http.Handler) http.Handler {
 			id = generateRequestID()
 		}
 		w.Header().Set("X-Request-Id", id)
-		ctx := context.WithValue(r.Context(), requestIDKey, id)
+		ctx := context.WithValue(r.Context(), ctxkeys.RequestID, id)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -69,6 +69,27 @@ func generateRequestID() string {
 		return fmt.Sprintf("%016x", requestIDCounter.Add(1))
 	}
 	return hex.EncodeToString(b[:])
+}
+
+// WithLogger stores logger in the request context so that helper functions
+// (e.g. mapServiceError) can emit structured logs without needing cfg access.
+func WithLogger(logger *slog.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := context.WithValue(r.Context(), ctxkeys.Logger, logger)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+// loggerFromContext retrieves the logger stored by WithLogger, falling back
+// to slog.Default() when the middleware was not in the chain (e.g. tests that
+// construct a plain http.Request).
+func loggerFromContext(ctx context.Context) *slog.Logger {
+	if l, ok := ctx.Value(ctxkeys.Logger).(*slog.Logger); ok && l != nil {
+		return l
+	}
+	return slog.Default()
 }
 
 type statusRecorder struct {

@@ -32,6 +32,11 @@ type JobStore interface {
 	// maxErrors entries. The increment is atomic so concurrent workers draining
 	// the same job cannot clobber each other's counts.
 	IncrementJobProgress(ctx context.Context, jobID string, itemErr *memory.IngestItemError) error
+	// MarkItemDoneAndProgress atomically marks the item terminal and bumps the
+	// job's done/failed counter in a single transaction, so a partial failure
+	// cannot leave the item done but the counter un-bumped (or vice versa).
+	// On an item already in a terminal state the item write is a no-op (idempotent).
+	MarkItemDoneAndProgress(ctx context.Context, jobID, idemKey string, runErr error) error
 	ListUnfinishedJobs(ctx context.Context) ([]string, error)
 	// ResetRunningItems moves items stuck in 'running' (a worker crashed
 	// mid-item, before MarkItemDone) back to 'pending' for all unfinished

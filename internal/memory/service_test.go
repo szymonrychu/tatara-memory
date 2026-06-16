@@ -31,6 +31,13 @@ func (t *inMemTombstone) Mark(_ context.Context, id string) error {
 	return nil
 }
 
+func (t *inMemTombstone) Unmark(_ context.Context, id string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.deleted, id)
+	return nil
+}
+
 func (t *inMemTombstone) IsDeleted(_ context.Context, id string) (bool, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()

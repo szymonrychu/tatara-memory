@@ -130,6 +130,43 @@ func (s *MemStore) MarkItemDone(_ context.Context, jobID, key string, runErr err
 	return nil
 }
 
+// MarkItemDoneAndProgress atomically marks the item terminal and bumps the job
+// counter under a single lock acquisition, preventing counter/item divergence.
+func (s *MemStore) MarkItemDoneAndProgress(_ context.Context, jobID, key string, runErr error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, ok := s.jobs[jobID]
+	if !ok {
+		return ErrJobNotFound
+	}
+	for _, it := range b.items {
+		if it.IdempotencyKey == key {
+			// Idempotent: if the item is already terminal skip the counter bump
+			// so a re-run on an already-counted item does not double-count.
+			if it.status == "done" || it.status == "failed" {
+				return nil
+			}
+			if runErr != nil {
+				it.status = "failed"
+				it.err = runErr.Error()
+				b.job.Failed++
+				if len(b.job.Errors) < maxErrors {
+					b.job.Errors = append(b.job.Errors, memory.IngestItemError{
+						IdempotencyKey: key,
+						Error:          runErr.Error(),
+					})
+				}
+			} else {
+				it.status = "done"
+				b.job.Done++
+			}
+			b.job.UpdatedAt = time.Now()
+			return nil
+		}
+	}
+	return nil
+}
+
 // IncrementJobProgress atomically bumps done or failed under the store lock.
 func (s *MemStore) IncrementJobProgress(_ context.Context, jobID string, itemErr *memory.IngestItemError) error {
 	s.mu.Lock()

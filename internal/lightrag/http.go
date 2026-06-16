@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/szymonrychu/tatara-memory/internal/ctxkeys"
 )
 
 const (
@@ -25,6 +27,9 @@ const (
 	retryMax = 3
 	// retryBaseDelay is the initial backoff delay before the first retry.
 	retryBaseDelay = 200 * time.Millisecond
+	// maxRetryAfter caps the server-directed Retry-After sleep so a misbehaving
+	// or compromised upstream cannot wedge a worker indefinitely with a huge value.
+	maxRetryAfter = 30 * time.Second
 )
 
 // HTTPConfig holds constructor parameters for HTTPClient.
@@ -90,17 +95,43 @@ func (c *HTTPClient) do(ctx context.Context, op, method, path string, body io.Re
 	err := c.roundTrip(ctx, method, path, body, out)
 	dur := time.Since(start).Seconds()
 	c.metrics.observe(op, dur, err)
+	c.logCall(ctx, op, method, path, dur, err)
+	return err
+}
+
+// doAndObserve executes the round-trip and returns the duration so the caller
+// can observe once with the true outcome (e.g. after an envelope check that may
+// convert an HTTP-200 into a logical error). The transport-level error (if any)
+// is returned; the caller must pass the final err to metrics.observe.
+func (c *HTTPClient) doAndObserve(ctx context.Context, op, method, path string, body io.Reader, out any) (float64, error) {
+	start := time.Now()
+	err := c.roundTrip(ctx, method, path, body, out)
+	return time.Since(start).Seconds(), err
+}
+
+// requestIDFromCtx retrieves the inbound HTTP request ID placed in ctx by the
+// httpapi RequestID middleware (via internal/ctxkeys). Returns empty string when
+// not in an HTTP request context (e.g. background tasks).
+func requestIDFromCtx(ctx context.Context) string {
+	v, _ := ctx.Value(ctxkeys.RequestID).(string)
+	return v
+}
+
+func (c *HTTPClient) logCall(ctx context.Context, op, method, path string, dur float64, err error) {
+	reqID := requestIDFromCtx(ctx)
 	attrs := []slog.Attr{
 		slog.String("op", op),
 		slog.String("method", method),
 		slog.String("path", path),
 		slog.Float64("duration_s", dur),
 	}
+	if reqID != "" {
+		attrs = append(attrs, slog.String("request_id", reqID))
+	}
 	if err != nil {
 		attrs = append(attrs, slog.Any("error", err))
 	}
 	c.log.LogAttrs(ctx, levelFor(op, err), "lightrag_call", attrs...)
-	return err
 }
 
 func levelFor(op string, err error) slog.Level {
@@ -196,6 +227,9 @@ func (c *HTTPClient) roundTrip(ctx context.Context, method, path string, body io
 					} else if t, parseErr := http.ParseTime(ra); parseErr == nil && t.After(time.Now()) {
 						wait = time.Until(t)
 					}
+					if wait > maxRetryAfter {
+						wait = maxRetryAfter
+					}
 					if wait > 0 {
 						select {
 						case <-ctx.Done():
@@ -279,6 +313,10 @@ func (c *HTTPClient) DeleteDocs(ctx context.Context, req DeleteDocRequest) (*Del
 // status/failure envelope (LightRAG v1.4.16), so no LogicalError check is needed.
 func (c *HTTPClient) Query(ctx context.Context, req QueryRequest) (*QueryResponse, error) {
 	if req.Mode != "" && !req.Mode.Valid() {
+		c.log.WarnContext(ctx, "lightrag: invalid query mode",
+			"op", OpQuery,
+			"mode", string(req.Mode),
+		)
 		c.metrics.incError(OpQuery)
 		return nil, fmt.Errorf("lightrag: invalid query mode %q", req.Mode)
 	}
@@ -295,8 +333,17 @@ func (c *HTTPClient) Query(ctx context.Context, req QueryRequest) (*QueryRespons
 
 // QueryData executes a structured query and returns entities, relationships, and chunks.
 // A HTTP-200 response with a non-success Status envelope is treated as a LogicalError.
+// Finding 2: do() is bypassed so that exactly one of success/error is recorded per
+// call. do() would have recorded success for the HTTP-200 transport leg, and then the
+// logical-failure branch would have added a second error increment - double-counting.
+// Instead doAndObserve is used: it runs the round-trip and returns the duration without
+// recording any metric, then QueryData calls metrics.observe once with the true outcome.
 func (c *HTTPClient) QueryData(ctx context.Context, req QueryRequest) (*QueryDataResponse, error) {
 	if req.Mode != "" && !req.Mode.Valid() {
+		c.log.WarnContext(ctx, "lightrag: invalid query mode",
+			"op", OpQueryData,
+			"mode", string(req.Mode),
+		)
 		c.metrics.incError(OpQueryData)
 		return nil, fmt.Errorf("lightrag: invalid query mode %q", req.Mode)
 	}
@@ -305,13 +352,25 @@ func (c *HTTPClient) QueryData(ctx context.Context, req QueryRequest) (*QueryDat
 		return nil, err
 	}
 	var out QueryDataResponse
-	if err := c.do(ctx, OpQueryData, http.MethodPost, "/query/data", body, &out); err != nil {
-		return nil, err
+	dur, transportErr := c.doAndObserve(ctx, OpQueryData, http.MethodPost, "/query/data", body, &out)
+	if transportErr != nil {
+		c.metrics.observe(OpQueryData, dur, transportErr)
+		c.logCall(ctx, OpQueryData, http.MethodPost, "/query/data", dur, transportErr)
+		return nil, transportErr
 	}
-	if out.Status != "" && out.Status != "success" {
-		c.metrics.incError(OpQueryData)
-		return nil, &LogicalError{Op: OpQueryData, Status: out.Status, Message: out.Message}
+	if out.Status != "success" {
+		logicalErr := &LogicalError{Op: OpQueryData, Status: out.Status, Message: out.Message}
+		c.metrics.observe(OpQueryData, dur, logicalErr)
+		c.log.WarnContext(ctx, "lightrag: query_data logical failure",
+			"op", OpQueryData,
+			"status", out.Status,
+			"message", out.Message,
+			"duration_s", dur,
+		)
+		return nil, logicalErr
 	}
+	c.metrics.observe(OpQueryData, dur, nil)
+	c.logCall(ctx, OpQueryData, http.MethodPost, "/query/data", dur, nil)
 	return &out, nil
 }
 

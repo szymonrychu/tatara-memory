@@ -103,17 +103,18 @@ tests:
           path: spec.template.spec.containers[0].image
           pattern: "sk-leak-canary"
 
-  - it: pod securityContext runs non-root with fsGroup
+  - it: pod securityContext runs non-root with fsGroup but no fixed runAsUser (third-party image)
     asserts:
       - equal:
           path: spec.template.spec.securityContext.runAsNonRoot
           value: true
       - equal:
-          path: spec.template.spec.securityContext.runAsUser
-          value: 65532
-      - equal:
           path: spec.template.spec.securityContext.fsGroup
           value: 65532
+      - isNull:
+          path: spec.template.spec.securityContext.runAsUser
+      - isNull:
+          path: spec.template.spec.securityContext.runAsGroup
 
   - it: container securityContext drops all caps and no privilege escalation
     asserts:

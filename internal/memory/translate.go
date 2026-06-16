@@ -2,7 +2,6 @@ package memory
 
 import (
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -18,8 +17,12 @@ func ToInsertText(m Memory) lightrag.InsertTextRequest {
 // trackID becomes Memory.ID; ContentSummary becomes Text. LightRAG's
 // metadata values are heterogeneous; non-strings are rendered via fmt.Sprint
 // into the string-valued domain map.
-func FromDocStatus(trackID string, d lightrag.DocStatusResponse) Memory {
+// A non-empty but unparseable CreatedAt is returned as the second value so the
+// caller can log via its context-aware/injectable logger (rule 11/12). A zero
+// CreatedAt in the returned Memory signals the parse failed or the field was absent.
+func FromDocStatus(trackID string, d lightrag.DocStatusResponse) (Memory, error) {
 	var createdAt time.Time
+	var parseErr error
 	if d.CreatedAt != "" {
 		var err error
 		createdAt, err = time.Parse(time.RFC3339, d.CreatedAt)
@@ -27,7 +30,7 @@ func FromDocStatus(trackID string, d lightrag.DocStatusResponse) Memory {
 			// Try RFC3339Nano before giving up.
 			createdAt, err = time.Parse(time.RFC3339Nano, d.CreatedAt)
 			if err != nil {
-				slog.Warn("memory: unparseable created_at", "track_id", trackID, "raw", d.CreatedAt)
+				parseErr = fmt.Errorf("memory: unparseable created_at %q for track %s: %w", d.CreatedAt, trackID, err)
 			}
 		}
 	}
@@ -47,7 +50,7 @@ func FromDocStatus(trackID string, d lightrag.DocStatusResponse) Memory {
 		Text:      d.ContentSummary,
 		Metadata:  md,
 		CreatedAt: createdAt,
-	}
+	}, parseErr
 }
 
 // QueryResultFromQuery maps a LightRAG QueryResponse to a domain QueryResult.
@@ -172,6 +175,21 @@ func RelationCreatePayload(e Edge) lightrag.RelationCreateRequest {
 		TargetEntity: e.To,
 		RelationData: data,
 	}
+}
+
+// entityFromUpdateResponse builds a domain Entity from an UpdateEntity response.
+// This avoids a second upstream GetEntity call (N+1 / TOCTOU) by reading the
+// entity fields directly from the response data map that LightRAG returns.
+func entityFromUpdateResponse(resp *lightrag.EntityResponse, fallbackName string) Entity {
+	if resp == nil || resp.Data == nil {
+		return Entity{ID: fallbackName, Name: fallbackName}
+	}
+	node := lightrag.GraphNode{ID: fallbackName, Properties: resp.Data}
+	// entity_name in the response data takes precedence over fallbackName.
+	if n, ok := stringProp(resp.Data, "entity_name"); ok && n != "" {
+		node.ID = n
+	}
+	return EntityFromGraphNode(node)
 }
 
 func stringProp(m map[string]any, key string) (string, bool) {

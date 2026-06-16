@@ -27,6 +27,32 @@ tests:
       - equal:
           path: spec.tls[0].secretName
           value: lightrag-tls
+  - it: nginx configuration-snippet is applied when supplied via annotations map
+    set:
+      ingress:
+        enabled: true
+        host: lightrag.example.com
+        className: nginx
+        annotations:
+          nginx.ingress.kubernetes.io/rewrite-target: /$2
+          nginx.ingress.kubernetes.io/configuration-snippet: "sub_filter '\"/webui' '\"/lightrag/webui';"
+    asserts:
       - matchRegex:
           path: metadata.annotations["nginx.ingress.kubernetes.io/configuration-snippet"]
           pattern: "sub_filter '\"/webui'"
+  - it: ingressClassName absent when className is empty (cluster-agnostic rule 14)
+    set:
+      ingress:
+        enabled: true
+        host: lightrag.example.com
+    asserts:
+      - notExists:
+          path: spec.ingressClassName
+  - it: cert-manager annotation absent when certManagerClusterIssuer is empty (cluster-agnostic rule 14)
+    set:
+      ingress:
+        enabled: true
+        host: lightrag.example.com
+    asserts:
+      - notExists:
+          path: metadata.annotations["cert-manager.io/cluster-issuer"]

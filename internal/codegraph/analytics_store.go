@@ -93,15 +93,32 @@ func (s *PGStore) RecomputeAnalytics(ctx context.Context, repo string, labeler C
 		betweennesses[i] = n.Betweenness
 	}
 	if len(nodeIDs) > 0 {
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE code_entities AS e
-			SET community = u.community, betweenness = u.betweenness
-			FROM (SELECT unnest($2::text[]) AS id,
-			             unnest($3::int[])  AS community,
-			             unnest($4::float8[]) AS betweenness) AS u
-			WHERE e.repo = $1 AND e.id = u.id`,
-			repo, nodeIDs, communities, betweennesses); err != nil {
-			return RecomputeResult{}, err
+		if res.BetweennessSkipped {
+			// When betweenness was skipped (graph exceeded BetweennessMaxNodes),
+			// every node's Betweenness is 0.0. Writing those zeros would clobber
+			// any previously-computed real betweenness values in the column
+			// (findings 2, 4). Update only community so prior betweenness is
+			// preserved until the graph shrinks back below the cap.
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE code_entities AS e
+				SET community = u.community
+				FROM (SELECT unnest($2::text[]) AS id,
+				             unnest($3::int[])  AS community) AS u
+				WHERE e.repo = $1 AND e.id = u.id`,
+				repo, nodeIDs, communities); err != nil {
+				return RecomputeResult{}, err
+			}
+		} else {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE code_entities AS e
+				SET community = u.community, betweenness = u.betweenness
+				FROM (SELECT unnest($2::text[]) AS id,
+				             unnest($3::int[])  AS community,
+				             unnest($4::float8[]) AS betweenness) AS u
+				WHERE e.repo = $1 AND e.id = u.id`,
+				repo, nodeIDs, communities, betweennesses); err != nil {
+				return RecomputeResult{}, err
+			}
 		}
 	}
 
@@ -183,8 +200,13 @@ func (s *PGStore) loadEntityIDs(ctx context.Context, repo string) ([]string, map
 	return ids, names, rows.Err()
 }
 
+// loadEdgePairsQuery selects only AST-extractor edges for community/betweenness
+// computation. Mixing semantic (LLM-inferred) edges with structural AST edges
+// corrupts community and god-node signals with noisy LLM associations (finding 3).
+const loadEdgePairsQuery = `SELECT from_id, to_id FROM code_edges WHERE repo=$1 AND extractor='ast'`
+
 func (s *PGStore) loadEdgePairs(ctx context.Context, repo string) ([]analytics.Edge, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT from_id, to_id FROM code_edges WHERE repo=$1`, repo)
+	rows, err := s.db.QueryContext(ctx, loadEdgePairsQuery, repo)
 	if err != nil {
 		return nil, err
 	}

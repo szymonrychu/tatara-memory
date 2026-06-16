@@ -97,7 +97,15 @@ func (l *OpenAILabeler) Label(ctx context.Context, memberNames []string) (string
 		return "", fmt.Errorf("openai label: empty choices")
 	}
 	lbl := strings.TrimSpace(cr.Choices[0].Message.Content)
-	lbl = strings.TrimPrefix(lbl, `"`)
-	lbl = strings.TrimSuffix(lbl, `"`)
-	return lbl, nil
+	return stripLabel(lbl), nil
+}
+
+// stripLabel removes surrounding double-quotes from a label only when BOTH the
+// first and last character are '"' (balanced). Unbalanced leading or trailing
+// quotes are preserved to avoid silently altering content (finding 10).
+func stripLabel(s string) string {
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		return s[1 : len(s)-1]
+	}
+	return s
 }

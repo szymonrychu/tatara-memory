@@ -47,7 +47,7 @@ func TestOpenAILabeler_Label_Trimming(t *testing.T) {
 		{"trailing newline", "Auth\n", "Auth"},
 		{"leading and trailing spaces", "  Auth  ", "Auth"},
 		{"quoted", `"Auth"`, "Auth"},
-		{"quoted with whitespace", `"Auth"\n`, `Auth"\n`}, // TrimPrefix strips leading quote; trailing \n is not a real newline
+		{"quoted with whitespace", `"Auth"\n`, `"Auth"\n`}, // unbalanced (ends with \n not "), quotes NOT stripped
 		{"quoted and trimmed", `  "Auth"  `, "Auth"},
 		{"quoted with real newline", "\"Auth\"\n", "Auth"},
 		{"mixed spaces and quotes", "  \"Payment Processing\"  \n", "Payment Processing"},

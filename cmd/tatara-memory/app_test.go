@@ -6,8 +6,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
+
+	"log/slog"
 
 	"github.com/stretchr/testify/require"
 )
@@ -119,4 +122,51 @@ func TestApp_AnalyticsWorkerCancelOnShutdown(t *testing.T) {
 	require.NoError(t, a.shutdown(ctx))
 	// After shutdown the analytics context must be cancelled.
 	require.Error(t, workerCtx.Err(), "analytics context should be cancelled after shutdown")
+}
+
+// TestApp_Shutdown_SurfacesServerError verifies that a timed-out server.Shutdown is
+// returned by app.shutdown (finding 3: shutdown must not swallow drain errors).
+func TestApp_Shutdown_SurfacesServerError(t *testing.T) {
+	// Start an HTTP server with a handler that blocks until unblocked.
+	blockCh := make(chan struct{})
+
+	srv := &http.Server{ //nolint:gosec
+		Addr: "127.0.0.1:0",
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			<-blockCh
+		}),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	ln, err := newListener("127.0.0.1:0")
+	require.NoError(t, err)
+	go func() { _ = srv.Serve(ln) }() //nolint:errcheck
+
+	// Send a request that will hold the connection open inside the handler.
+	go func() {
+		_, _ = http.Get("http://" + ln.Addr().String() + "/") //nolint:noctx,errcheck
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	a := &app{
+		log:    slog.New(slog.NewJSONHandler(os.Stdout, nil)),
+		server: srv,
+	}
+	// Pass an already-cancelled context so shutdownCtx (child) is also cancelled;
+	// server.Shutdown will return ctx.Err() because the in-flight request is not drained.
+	alreadyCancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	shutdownErr := a.shutdown(alreadyCancelled)
+	// Unblock the handler now that shutdown has returned.
+	close(blockCh)
+	require.Error(t, shutdownErr, "shutdown must return an error when server.Shutdown times out")
+}
+
+// TestApp_Shutdown_NilLoggerNoServerError verifies that a clean shutdown with a nil
+// logger does not panic (finding 3: log.Warn is only called when there are errors).
+func TestApp_Shutdown_NilLoggerNoServerError(t *testing.T) {
+	db, _ := fakeDeps{}.openDB("")
+	a := &app{log: nil, db: db}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, a.shutdown(ctx))
 }

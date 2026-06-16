@@ -62,7 +62,7 @@ Create the name of the service account to use
 {{- end }}
 
 {{/*
-Map camelCase values.* scalars to kebab-case ConfigMap keys.
+Map camelCase values.* scalars to SCREAMING_SNAKE ConfigMap keys.
 Strict: values.yaml carries only scalars; this macro is the single mapping point.
 */}}
 {{- define "tatara-memory.envConfig" -}}

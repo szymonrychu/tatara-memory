@@ -25,20 +25,26 @@ type SourceSink interface {
 	Add(ctx context.Context, repo, filePath, trackID string) error
 }
 
+// defaultResumeInterval is the period between periodic Resume sweeps.
+// A dropped/queued job is picked up within this window without requiring a restart.
+const defaultResumeInterval = 5 * time.Minute
+
 // Pool is an async worker pool that processes queued ingest jobs.
 type Pool struct {
-	store       JobStore
-	runner      itemRunner
-	size        int
-	sources     SourceSink
-	itemTimeout time.Duration
-	metrics     *metrics
-	log         *slog.Logger
-	notify      chan string
-	stop        chan struct{}
-	wg          sync.WaitGroup
-	mu          sync.Mutex
-	started     bool
+	store          JobStore
+	runner         itemRunner
+	size           int
+	sources        SourceSink
+	itemTimeout    time.Duration
+	resumeInterval time.Duration
+	metrics        *metrics
+	log            *slog.Logger
+	notify         chan string
+	stop           chan struct{}
+	wg             sync.WaitGroup
+	mu             sync.Mutex
+	started        bool
+	stopped        bool
 }
 
 // Option configures a Pool at construction time.
@@ -85,14 +91,15 @@ func newPool(store JobStore, runner itemRunner, size, buf int, sources SourceSin
 		buf = 1
 	}
 	p := &Pool{
-		store:   store,
-		runner:  runner,
-		size:    size,
-		sources: sources,
-		metrics: newMetrics(nil),
-		log:     slog.Default(),
-		notify:  make(chan string, buf),
-		stop:    make(chan struct{}),
+		store:          store,
+		runner:         runner,
+		size:           size,
+		sources:        sources,
+		resumeInterval: defaultResumeInterval,
+		metrics:        newMetrics(nil),
+		log:            slog.Default(),
+		notify:         make(chan string, buf),
+		stop:           make(chan struct{}),
 	}
 	for _, o := range opts {
 		o(p)
@@ -100,7 +107,8 @@ func newPool(store JobStore, runner itemRunner, size, buf int, sources SourceSin
 	return p
 }
 
-// Start launches the worker goroutines. Calling Start more than once is a no-op.
+// Start launches the worker goroutines and the periodic resume sweeper.
+// Calling Start more than once is a no-op.
 func (p *Pool) Start(ctx context.Context) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -112,19 +120,54 @@ func (p *Pool) Start(ctx context.Context) {
 		p.wg.Add(1)
 		go p.worker(ctx)
 	}
+	// Periodic sweeper: re-queues any dropped/stuck jobs so starvation resolves
+	// without a manual restart (finding 7). Resume is idempotent and cheap.
+	p.wg.Add(1)
+	go p.periodicResume(ctx)
+}
+
+func (p *Pool) periodicResume(ctx context.Context) {
+	defer p.wg.Done()
+	ticker := time.NewTicker(p.resumeInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-p.stop:
+			return
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			n, err := p.Resume(ctx)
+			if err != nil {
+				p.log.ErrorContext(ctx, "ingest.pool.periodic_resume_failed", "err", err)
+			} else if n > 0 {
+				p.log.InfoContext(ctx, "ingest.pool.periodic_resume",
+					"action", "periodic_resume",
+					"requeued", n,
+				)
+			}
+		}
+	}
 }
 
 // Stop signals all workers to exit and waits for them to finish.
+// Calling Stop more than once is a no-op (mirrors the idempotency of Start).
 func (p *Pool) Stop() {
+	p.mu.Lock()
+	if !p.started || p.stopped {
+		p.mu.Unlock()
+		return
+	}
+	p.stopped = true
+	p.mu.Unlock()
 	close(p.stop)
 	p.wg.Wait()
 }
 
 // Notify queues the given job ID for processing. When the notify channel is
 // full the job ID is dropped and counted in ingest_notify_dropped_total.
-// Dropped jobs are NOT recovered in-process: they remain 'queued' until the
-// next process start, when Resume re-queues all unfinished jobs. The metric is
-// the only signal that a drop occurred; alert on it so starvation is visible.
+// Dropped jobs are recovered within defaultResumeInterval by the periodic
+// Resume sweeper launched by Start; no manual restart is required.
 func (p *Pool) Notify(jobID string) {
 	select {
 	case p.notify <- jobID:
@@ -227,7 +270,9 @@ func (p *Pool) runJob(ctx context.Context, jobID string) {
 		start := time.Now()
 		runErr := p.runItem(ctx, jobID, item)
 		dur := time.Since(start).Seconds()
-		if err := p.store.MarkItemDone(ctx, jobID, item.IdempotencyKey, runErr); err != nil {
+		// MarkItemDoneAndProgress updates the item status and bumps the job
+		// counter atomically, so a crash between the two cannot strand the job.
+		if err := p.store.MarkItemDoneAndProgress(ctx, jobID, item.IdempotencyKey, runErr); err != nil {
 			p.log.ErrorContext(ctx, "ingest.item.mark_done_failed",
 				"job_id", jobID,
 				"idempotency_key", item.IdempotencyKey,
@@ -238,25 +283,12 @@ func (p *Pool) runJob(ctx context.Context, jobID string) {
 		p.metrics.decInFlight()
 		p.metrics.observeItem(dur, itemResult(runErr))
 
-		var itemErr *memory.IngestItemError
 		if runErr != nil {
-			itemErr = &memory.IngestItemError{
-				IdempotencyKey: item.IdempotencyKey,
-				Error:          runErr.Error(),
-			}
 			p.log.WarnContext(ctx, "ingest.item.error",
 				"job_id", jobID,
 				"idempotency_key", item.IdempotencyKey,
 				"err", runErr,
 			)
-		}
-		if err := p.store.IncrementJobProgress(ctx, jobID, itemErr); err != nil {
-			p.log.ErrorContext(ctx, "ingest.item.progress_failed",
-				"job_id", jobID,
-				"idempotency_key", item.IdempotencyKey,
-				"err", err,
-			)
-			p.metrics.incStoreOpError()
 		}
 	}
 	final, err := p.store.GetJob(ctx, jobID)
@@ -265,6 +297,13 @@ func (p *Pool) runJob(ctx context.Context, jobID string) {
 			"job_id", jobID,
 			"err", err,
 		)
+		return
+	}
+	// Guard against a concurrent worker that already finalized this job (duplicate
+	// Notify or two workers racing to the end). A terminal status means the
+	// counter has already been recorded; returning here prevents double-counting
+	// ingest_jobs_total and a spurious UpdateJob call.
+	if final.Status.Terminal() {
 		return
 	}
 	// Only finalize when every item is accounted for. If items are still
@@ -319,7 +358,7 @@ func itemResult(err error) string {
 }
 
 // runItem processes a single item, applying the per-item timeout when one is
-// configured. MarkItemDone/IncrementJobProgress use the parent ctx so progress
+// configured. MarkItemDoneAndProgress uses the parent ctx so progress
 // is recorded even when the item's own deadline fired.
 func (p *Pool) runItem(ctx context.Context, jobID string, it memory.IngestItem) error {
 	if p.itemTimeout <= 0 {

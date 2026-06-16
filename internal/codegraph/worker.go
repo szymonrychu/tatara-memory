@@ -128,13 +128,17 @@ func (w *AnalyticsWorker) processOnce(ctx context.Context) {
 	}
 	w.metrics.setDirtyRepos(len(repos))
 	for _, repo := range repos {
-		// Check single-flight BEFORE acquiring the semaphore (finding 7): skip
-		// repos already in-flight so we do not waste a slot on an immediate no-op.
+		// Claim the repo under the lock before acquiring the semaphore (finding 9).
+		// Setting inflight=true here (not only inside recompute) closes the race
+		// window where a tick N+1 pre-check observed inflight=false between the
+		// goroutine launch and the inner recompute() guard, consuming a slot for an
+		// immediate no-op. recompute() still double-checks under its own lock.
 		w.mu.Lock()
 		if w.inflight[repo] {
 			w.mu.Unlock()
 			continue
 		}
+		w.inflight[repo] = true
 		w.mu.Unlock()
 
 		// Acquire semaphore slot with ctx awareness so shutdown is not delayed by
@@ -143,6 +147,11 @@ func (w *AnalyticsWorker) processOnce(ctx context.Context) {
 		select {
 		case w.sem <- struct{}{}:
 		case <-ctx.Done():
+			// Clear the claim we just set so DirtyRepos can return this repo on the
+			// next tick if it restarts.
+			w.mu.Lock()
+			delete(w.inflight, repo)
+			w.mu.Unlock()
 			return
 		}
 		w.wg.Add(1)
@@ -156,18 +165,11 @@ func (w *AnalyticsWorker) processOnce(ctx context.Context) {
 	}
 }
 
-// recompute runs RecomputeAnalytics for one repo under a single-flight guard.
-// If a recompute for repo is already running, recompute returns nil immediately.
-// processOnce pre-checks inflight before acquiring the semaphore, but the guard
-// here is retained to be safe against any future direct calls.
+// recompute runs RecomputeAnalytics for one repo. processOnce sets
+// inflight[repo]=true before calling this goroutine and clears it via the defer
+// here. The inner guard was removed: processOnce is the single entry point and
+// it already holds the inflight claim when this function starts.
 func (w *AnalyticsWorker) recompute(ctx context.Context, repo string) error {
-	w.mu.Lock()
-	if w.inflight[repo] {
-		w.mu.Unlock()
-		return nil
-	}
-	w.inflight[repo] = true
-	w.mu.Unlock()
 	defer func() {
 		w.mu.Lock()
 		delete(w.inflight, repo)

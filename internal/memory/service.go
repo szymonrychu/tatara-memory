@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -28,6 +29,7 @@ var ErrInvalid = errors.New("memory: invalid input")
 // tombstoner is the minimal interface Service needs from TombstoneStore.
 type tombstoner interface {
 	Mark(ctx context.Context, trackID string) error
+	Unmark(ctx context.Context, trackID string) error
 	IsDeleted(ctx context.Context, trackID string) (bool, error)
 }
 
@@ -78,7 +80,7 @@ func newServiceOps(reg prometheus.Registerer) *prometheus.CounterVec {
 	if reg != nil {
 		reg.MustRegister(c)
 	}
-	for _, op := range []string{"create", "delete", "delete_by_source", "patch_entity", "create_edge", "delete_edge", "delete_by_sources"} {
+	for _, op := range []string{"create", "delete", "delete_by_source", "patch_entity", "create_edge", "delete_edge", "delete_by_sources", "get", "query", "describe", "get_entity", "search_entities", "list_edges"} {
 		for _, r := range []string{"success", "error"} {
 			c.WithLabelValues(op, r)
 		}
@@ -115,6 +117,19 @@ func wrapUpstream(err error) error {
 	return fmt.Errorf("%w: %v", ErrUpstream, err)
 }
 
+// filterTombstonedRefs removes references whose ReferenceID is tombstoned, so
+// Query and Describe do not surface content from logically-deleted memories.
+func filterTombstonedRefs(ctx context.Context, tomb tombstoner, refs []lightrag.ReferenceItem) []lightrag.ReferenceItem {
+	out := refs[:0]
+	for _, ref := range refs {
+		del, err := tomb.IsDeleted(ctx, ref.ReferenceID)
+		if err != nil || !del {
+			out = append(out, ref)
+		}
+	}
+	return out
+}
+
 // CreateMemory submits m to LightRAG and returns it with track_id as ID.
 // Ingest is asynchronous; the returned Memory's Text is what was submitted,
 // not what LightRAG will eventually summarise.
@@ -149,31 +164,74 @@ func (s *Service) CreateMemory(ctx context.Context, m Memory) (Memory, error) {
 // Returns a Memory derived from the first document associated with the track.
 // LightRAG does not expose original document text; Text holds content_summary.
 func (s *Service) GetMemory(ctx context.Context, trackID string) (Memory, error) {
+	start := time.Now()
 	if s.tomb != nil {
 		deleted, err := s.tomb.IsDeleted(ctx, trackID)
 		if err != nil {
 			return Memory{}, fmt.Errorf("tombstone check: %w", err)
 		}
 		if deleted {
+			s.incOp("get", ErrNotFound)
 			return Memory{}, ErrNotFound
 		}
 	}
 	ts, err := s.lr.TrackStatus(ctx, trackID)
 	if err != nil {
-		return Memory{}, wrapUpstream(err)
+		wrapped := wrapUpstream(err)
+		s.incOp("get", wrapped)
+		return Memory{}, wrapped
 	}
 	if len(ts.Documents) == 0 {
-		return Memory{}, fmt.Errorf("%w: track %s has no documents", ErrNotFound, trackID)
+		notFound := fmt.Errorf("%w: track %s has no documents", ErrNotFound, trackID)
+		s.incOp("get", notFound)
+		return Memory{}, notFound
 	}
-	return FromDocStatus(trackID, ts.Documents[0]), nil
+	if len(ts.Documents) > 1 {
+		// Sort by doc ID (stable, ascending) so selection is deterministic across
+		// replicas and calls even when LightRAG returns docs in arbitrary order.
+		// Log a WARN so the 1:1 branch-per-track invariant violation is observable.
+		sortDocsByID(ts.Documents)
+		s.log.WarnContext(ctx, "memory.get: multi-doc track; picking first by doc_id",
+			"track_id", trackID, "doc_count", len(ts.Documents))
+	}
+	m, parseErr := FromDocStatus(trackID, ts.Documents[0])
+	if parseErr != nil {
+		s.log.WarnContext(ctx, "memory.get: unparseable created_at",
+			"track_id", trackID,
+			"error", parseErr,
+		)
+	}
+	s.incOp("get", nil)
+	s.log.InfoContext(ctx, "memory.get",
+		"action", "get_memory",
+		"resource_id", trackID,
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
+	return m, nil
 }
 
 // DeleteMemory removes all documents associated with the given track_id.
 func (s *Service) DeleteMemory(ctx context.Context, trackID string) error {
 	start := time.Now()
+	err := s.deleteMemoryRaw(ctx, trackID)
+	s.incOp("delete", err)
+	if err != nil {
+		return err
+	}
+	s.log.InfoContext(ctx, "memory.delete",
+		"action", "delete_memory",
+		"resource_id", trackID,
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
+	return nil
+}
+
+// deleteMemoryRaw is the unmetered core used by DeleteMemory and the source-purge
+// loop in DeleteMemoriesBySource, so that each public entry point owns exactly one
+// op label increment (finding 6: no double-counting).
+func (s *Service) deleteMemoryRaw(ctx context.Context, trackID string) error {
 	ts, err := s.lr.TrackStatus(ctx, trackID)
 	if err != nil {
-		s.incOp("delete", err)
 		return wrapUpstream(err)
 	}
 	docIDs := make([]string, 0, len(ts.Documents))
@@ -181,30 +239,31 @@ func (s *Service) DeleteMemory(ctx context.Context, trackID string) error {
 		docIDs = append(docIDs, d.ID)
 	}
 	if len(docIDs) == 0 {
-		err := fmt.Errorf("%w: track %s has no documents", ErrNotFound, trackID)
-		s.incOp("delete", err)
-		return err
+		return fmt.Errorf("%w: track %s has no documents", ErrNotFound, trackID)
 	}
 	// Mark tombstone BEFORE the upstream delete so GET-after-DELETE returns
-	// ErrNotFound immediately even if DeleteDocs succeeds but the caller retries.
-	// If DeleteDocs subsequently fails the tombstone is still valid (logically
-	// deleted) and the reaper's 24h TTL reconciles it.
+	// ErrNotFound immediately. On failure we roll it back (Unmark) so a caller
+	// retry can re-attempt the upstream delete (finding 11).
 	if s.tomb != nil {
 		if err := s.tomb.Mark(ctx, trackID); err != nil {
-			s.incOp("delete", err)
 			return fmt.Errorf("tombstone: %w", err)
 		}
 	}
-	if _, err := s.lr.DeleteDocs(ctx, lightrag.DeleteDocRequest{DocIDs: docIDs}); err != nil {
-		s.incOp("delete", err)
+	resp, err := s.lr.DeleteDocs(ctx, lightrag.DeleteDocRequest{DocIDs: docIDs})
+	if err != nil {
+		if s.tomb != nil {
+			_ = s.tomb.Unmark(ctx, trackID)
+		}
 		return wrapUpstream(err)
 	}
-	s.incOp("delete", nil)
-	s.log.InfoContext(ctx, "memory.delete",
-		"action", "delete_memory",
-		"resource_id", trackID,
-		"duration_ms", time.Since(start).Milliseconds(),
-	)
+	// LightRAG v1.4.16 returns "deletion_started" (async) or "success" (sync) on accepted deletes.
+	// Any other status (e.g. "failure") is a logical upstream rejection even though HTTP returned 200.
+	if resp.Status != "deletion_started" && resp.Status != "success" {
+		if s.tomb != nil {
+			_ = s.tomb.Unmark(ctx, trackID)
+		}
+		return fmt.Errorf("%w: delete returned status=%q", ErrUpstream, resp.Status)
+	}
 	return nil
 }
 
@@ -251,7 +310,7 @@ func (s *Service) DeleteMemoriesBySource(ctx context.Context, repo, filePath str
 	}
 	purged := 0
 	for _, id := range ids {
-		if err := s.DeleteMemory(ctx, id); err != nil {
+		if err := s.deleteMemoryRaw(ctx, id); err != nil {
 			if errors.Is(err, ErrNotFound) {
 				continue // already gone upstream; index cleanup below still runs
 			}
@@ -280,14 +339,21 @@ func (s *Service) DeleteMemoriesBySource(ctx context.Context, repo, filePath str
 
 func t(b bool) *bool { return &b }
 
+func sortDocsByID(docs []lightrag.DocStatusResponse) {
+	sort.Slice(docs, func(i, j int) bool { return docs[i].ID < docs[j].ID })
+}
+
 // Query retrieves context references for the given query.
 // LightRAG's /query returns references rather than ranked matches;
 // Match.Score is zero in this mapping. include_references must be set
 // or LightRAG omits the reference list entirely and Matches comes back
 // empty even when only_need_context is true.
 func (s *Service) Query(ctx context.Context, q Query) (QueryResult, error) {
+	start := time.Now()
 	if !q.Mode.Valid() {
-		return QueryResult{}, fmt.Errorf("invalid query mode: %s", q.Mode)
+		err := fmt.Errorf("invalid query mode: %s", q.Mode)
+		s.incOp("query", err)
+		return QueryResult{}, err
 	}
 	resp, err := s.lr.Query(ctx, lightrag.QueryRequest{
 		Mode:              lightrag.QueryMode(q.Mode),
@@ -298,15 +364,28 @@ func (s *Service) Query(ctx context.Context, q Query) (QueryResult, error) {
 		Stream:            t(false),
 	})
 	if err != nil {
-		return QueryResult{}, wrapUpstream(err)
+		wrapped := wrapUpstream(err)
+		s.incOp("query", wrapped)
+		return QueryResult{}, wrapped
 	}
+	if s.tomb != nil {
+		resp.References = filterTombstonedRefs(ctx, s.tomb, resp.References)
+	}
+	s.incOp("query", nil)
+	s.log.InfoContext(ctx, "memory.query",
+		"action", "query",
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
 	return QueryResultFromQuery(*resp), nil
 }
 
 // Describe returns a generative answer plus source file paths.
 func (s *Service) Describe(ctx context.Context, q Query) (DescribeResult, error) {
+	start := time.Now()
 	if !q.Mode.Valid() {
-		return DescribeResult{}, fmt.Errorf("invalid query mode: %s", q.Mode)
+		err := fmt.Errorf("invalid query mode: %s", q.Mode)
+		s.incOp("describe", err)
+		return DescribeResult{}, err
 	}
 	resp, err := s.lr.Query(ctx, lightrag.QueryRequest{
 		Mode:              lightrag.QueryMode(q.Mode),
@@ -316,45 +395,78 @@ func (s *Service) Describe(ctx context.Context, q Query) (DescribeResult, error)
 		Stream:            t(false),
 	})
 	if err != nil {
-		return DescribeResult{}, wrapUpstream(err)
+		wrapped := wrapUpstream(err)
+		s.incOp("describe", wrapped)
+		return DescribeResult{}, wrapped
 	}
+	if s.tomb != nil {
+		resp.References = filterTombstonedRefs(ctx, s.tomb, resp.References)
+	}
+	s.incOp("describe", nil)
+	s.log.InfoContext(ctx, "memory.describe",
+		"action", "describe",
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
 	return DescribeResultFromQuery(*resp), nil
 }
 
 // GetEntity retrieves an entity by name (Entity.ID == Entity.Name in this model).
 func (s *Service) GetEntity(ctx context.Context, name string) (Entity, error) {
+	start := time.Now()
 	g, err := s.lr.Graph(ctx, name, 1, 1)
 	if err != nil {
-		return Entity{}, wrapUpstream(err)
+		wrapped := wrapUpstream(err)
+		s.incOp("get_entity", wrapped)
+		return Entity{}, wrapped
 	}
 	for _, n := range g.Nodes {
 		if n.ID == name {
+			s.incOp("get_entity", nil)
+			s.log.InfoContext(ctx, "memory.get_entity",
+				"action", "get_entity",
+				"resource_id", name,
+				"duration_ms", time.Since(start).Milliseconds(),
+			)
 			return EntityFromGraphNode(n), nil
 		}
 	}
-	return Entity{}, fmt.Errorf("%w: entity %s", ErrNotFound, name)
+	notFound := fmt.Errorf("%w: entity %s", ErrNotFound, name)
+	s.incOp("get_entity", notFound)
+	return Entity{}, notFound
 }
 
 // SearchEntities returns entities matching q by label.
 // Labels carry only names; other fields are zero.
 func (s *Service) SearchEntities(ctx context.Context, q string) ([]Entity, error) {
+	start := time.Now()
 	labels, err := s.lr.LabelSearch(ctx, q)
 	if err != nil {
-		return nil, wrapUpstream(err)
+		wrapped := wrapUpstream(err)
+		s.incOp("search_entities", wrapped)
+		return nil, wrapped
 	}
 	out := make([]Entity, 0, len(labels))
 	for _, l := range labels {
 		out = append(out, Entity{ID: l, Name: l})
 	}
+	s.incOp("search_entities", nil)
+	s.log.InfoContext(ctx, "memory.search_entities",
+		"action", "search_entities",
+		"count", len(out),
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
 	return out, nil
 }
 
 // PatchEntity applies a partial update to the entity identified by name.
+// The returned Entity is built from UpdateEntity's response data to avoid a
+// second upstream round-trip (N+1) and the TOCTOU window that existed when
+// the previous implementation called GetEntity after the update.
 func (s *Service) PatchEntity(ctx context.Context, name string, patch Entity) (Entity, error) {
 	start := time.Now()
 	data := EntityUpdatePayload(patch)
 	allowRename := patch.Name != "" && patch.Name != name
-	_, err := s.lr.UpdateEntity(ctx, lightrag.EntityUpdateRequest{
+	resp, err := s.lr.UpdateEntity(ctx, lightrag.EntityUpdateRequest{
 		EntityName:  name,
 		UpdatedData: data,
 		AllowRename: allowRename,
@@ -363,15 +475,12 @@ func (s *Service) PatchEntity(ctx context.Context, name string, patch Entity) (E
 		s.incOp("patch_entity", err)
 		return Entity{}, wrapUpstream(err)
 	}
+	// Build the result from the response data without a second upstream call.
 	final := name
 	if allowRename {
 		final = patch.Name
 	}
-	out, err := s.GetEntity(ctx, final)
-	if err != nil {
-		s.incOp("patch_entity", err)
-		return Entity{}, err
-	}
+	out := entityFromUpdateResponse(resp, final)
 	s.incOp("patch_entity", nil)
 	s.log.InfoContext(ctx, "memory.patch_entity",
 		"action", "patch_entity",
@@ -384,9 +493,12 @@ func (s *Service) PatchEntity(ctx context.Context, name string, patch Entity) (E
 // ListEdges returns all edges by iterating every known label and collecting its incident edges.
 // See MEMORY.md for the O(N) graph-read trade-off rationale.
 func (s *Service) ListEdges(ctx context.Context) ([]Edge, error) {
+	start := time.Now()
 	labels, err := s.lr.LabelSearch(ctx, "")
 	if err != nil {
-		return nil, wrapUpstream(err)
+		wrapped := wrapUpstream(err)
+		s.incOp("list_edges", wrapped)
+		return nil, wrapped
 	}
 	seen := map[string]struct{}{}
 	out := []Edge{}
@@ -397,19 +509,29 @@ func (s *Service) ListEdges(ctx context.Context) ([]Edge, error) {
 			if errors.As(err, &he) && he.Status == http.StatusNotFound {
 				continue
 			}
-			return nil, wrapUpstream(err)
+			wrapped := wrapUpstream(err)
+			s.incOp("list_edges", wrapped)
+			return nil, wrapped
 		}
 		for _, e := range g.Edges {
-			// Edges are directed: deduplicate only on (source, target) so that
-			// A->B and B->A (distinct relations) both surface.
-			id := EncodeEdgeID(e.Source, e.Target)
-			if _, ok := seen[id]; ok {
+			edge := EdgeFromGraphEdge(e)
+			// Deduplicate on (source, target, relation): A->B with "owns" and A->B
+			// with "manages" are distinct edges. A->B and B->A are always distinct.
+			dedup := edge.ID + "\x00" + edge.Relation
+			if _, ok := seen[dedup]; ok {
 				continue
 			}
-			seen[id] = struct{}{}
-			out = append(out, EdgeFromGraphEdge(e))
+			seen[dedup] = struct{}{}
+			out = append(out, edge)
 		}
 	}
+	s.incOp("list_edges", nil)
+	s.log.InfoContext(ctx, "memory.list_edges",
+		"action", "list_edges",
+		"labels_scanned", len(labels),
+		"edges_found", len(out),
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
 	return out, nil
 }
 

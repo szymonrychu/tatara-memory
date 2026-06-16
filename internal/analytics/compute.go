@@ -32,7 +32,6 @@ type Edge struct {
 type NodeSignal struct {
 	ID          string
 	Community   int
-	Degree      int
 	Betweenness float64
 }
 
@@ -41,7 +40,7 @@ type CommunitySignal struct {
 	Community int
 	Size      int
 	Cohesion  float64
-	Members   []string // entity IDs; first non-empty member name used as fallback label
+	Members   []string // entity IDs, in deterministic community-member order
 }
 
 // Config controls optional behaviour in Compute.
@@ -61,7 +60,8 @@ type Result struct {
 	// Telemetry: returned so the pure Compute function stays dependency-free
 	// while callers can record metrics and structured logs.
 	NodeCount          int
-	EdgeCount          int
+	EdgeCount          int // edges that passed the filter (both endpoints present, no self-loop, no duplicate)
+	RawEdgeCount       int // total edges in the input before filtering; a large gap vs EdgeCount signals data-quality issues
 	DurationMs         int64
 	BetweennessSkipped bool
 }
@@ -96,6 +96,7 @@ func Compute(ids []string, edges []Edge, cfg Config) Result {
 		g.AddNode(simple.Node(nid))
 	}
 
+	rawEdgeCount := len(edges)
 	edgeCount := 0
 	for _, e := range edges {
 		fn, okf := idToNode[e.From]
@@ -154,7 +155,6 @@ func Compute(ids []string, edges []Edge, cfg Config) Result {
 		nodes = append(nodes, NodeSignal{
 			ID:          id,
 			Community:   nodeCommunity[id],
-			Degree:      g.From(idToNode[id]).Len(),
 			Betweenness: betweenness[idToNode[id]],
 		})
 	}
@@ -184,6 +184,7 @@ func Compute(ids []string, edges []Edge, cfg Config) Result {
 		Communities:        communities,
 		NodeCount:          n,
 		EdgeCount:          edgeCount,
+		RawEdgeCount:       rawEdgeCount,
 		DurationMs:         durationMs,
 		BetweennessSkipped: betweennessSkipped,
 	}

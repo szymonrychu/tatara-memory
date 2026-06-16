@@ -33,11 +33,11 @@ func (f *fakeStore) Neighbors(_ context.Context, _, _ string, relations []string
 	f.lastRel, f.lastDir, f.lastDep, f.lastLim, f.lastCF = relations, dir, depth, limit, cf
 	return nil, nil
 }
-func (f *fakeStore) FileImports(_ context.Context, _, _ string) ([]codegraph.Edge, error) {
+func (f *fakeStore) FileImports(_ context.Context, _, _ string, _ int) ([]codegraph.Edge, error) {
 	return nil, nil
 }
 func (f *fakeStore) CountEntities(_ context.Context, _ string) (int, error) { return 0, nil }
-func (f *fakeStore) CrossRepo(_ context.Context, _, _ string) (codegraph.CrossRepoLinks, error) {
+func (f *fakeStore) CrossRepo(_ context.Context, _, _ string, _ int) (codegraph.CrossRepoLinks, error) {
 	return codegraph.CrossRepoLinks{Consumers: []codegraph.CrossRef{}, Providers: []codegraph.CrossRef{}}, nil
 }
 func (f *fakeStore) ShortestPath(_ context.Context, _, _, _ string, _ []string, _ int) ([]codegraph.Entity, error) {
@@ -193,7 +193,7 @@ func TestPushWithValidSymbols(t *testing.T) {
 
 func TestCrossRepoPassThrough(t *testing.T) {
 	svc, _ := newSvc()
-	links, err := svc.CrossRepo(context.Background(), "r", "e1")
+	links, err := svc.CrossRepo(context.Background(), "r", "e1", 100)
 	require.NoError(t, err)
 	// fakeStore returns zero value
 	require.NotNil(t, links.Consumers)

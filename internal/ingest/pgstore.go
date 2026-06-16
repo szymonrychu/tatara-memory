@@ -165,6 +165,75 @@ func (s *PGStore) MarkItemDone(ctx context.Context, jobID, key string, runErr er
 	return nil
 }
 
+// MarkItemDoneAndProgress atomically marks the item terminal and bumps the job
+// counter in a single transaction, preventing counter/item divergence on crash.
+// The item write uses WHERE status NOT IN ('done','failed') so a re-run on an
+// already-terminal item is a no-op and the counter bump is skipped.
+func (s *PGStore) MarkItemDoneAndProgress(ctx context.Context, jobID, key string, runErr error) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("ingest: mark done and progress %q/%q: begin tx: %w", jobID, key, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	status := "done"
+	errStr := ""
+	if runErr != nil {
+		status = "failed"
+		errStr = runErr.Error()
+	}
+	// Only update if the item is not already terminal (idempotency).
+	res, err := tx.ExecContext(ctx, `
+		UPDATE ingest_job_items SET status=$3, error=$4
+		WHERE job_id=$1 AND idempotency_key=$2
+		  AND status NOT IN ('done','failed')`,
+		jobID, key, status, errStr)
+	if err != nil {
+		return fmt.Errorf("ingest: mark done and progress %q/%q: item update: %w", jobID, key, err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		// Item was already terminal; counter was already bumped on the first run.
+		return tx.Commit()
+	}
+
+	if runErr == nil {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE ingest_jobs SET done = done + 1, updated_at = $2 WHERE id = $1`,
+			jobID, time.Now()); err != nil {
+			return fmt.Errorf("ingest: mark done and progress %q: bump done: %w", jobID, err)
+		}
+		return tx.Commit()
+	}
+
+	// Failure path: lock the job row, append the capped error, bump failed.
+	row := tx.QueryRowContext(ctx, `SELECT errors_json FROM ingest_jobs WHERE id = $1 FOR UPDATE`, jobID)
+	var errJSON string
+	if err := row.Scan(&errJSON); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrJobNotFound
+		}
+		return fmt.Errorf("ingest: mark done and progress %q: scan errors_json: %w", jobID, err)
+	}
+	var errs []memory.IngestItemError
+	if errJSON != "" {
+		_ = json.Unmarshal([]byte(errJSON), &errs)
+	}
+	if len(errs) < maxErrors {
+		errs = append(errs, memory.IngestItemError{IdempotencyKey: key, Error: runErr.Error()})
+	}
+	out, _ := json.Marshal(errs)
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE ingest_jobs SET failed = failed + 1, errors_json = $2, updated_at = $3 WHERE id = $1`,
+		jobID, string(out), time.Now()); err != nil {
+		return fmt.Errorf("ingest: mark done and progress %q: bump failed: %w", jobID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("ingest: mark done and progress %q: commit: %w", jobID, err)
+	}
+	return nil
+}
+
 // IncrementJobProgress atomically bumps done or failed for one processed item.
 // On success it is a single counter UPDATE. On failure it locks the job row so
 // the failed bump and the capped error append happen as one critical section,
@@ -177,7 +246,11 @@ func (s *PGStore) IncrementJobProgress(ctx context.Context, jobID string, itemEr
 		if err != nil {
 			return fmt.Errorf("ingest: increment done %q: %w", jobID, err)
 		}
-		if n, _ := res.RowsAffected(); n == 0 {
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("ingest: increment done %q: rows affected: %w", jobID, err)
+		}
+		if n == 0 {
 			return ErrJobNotFound
 		}
 		return nil

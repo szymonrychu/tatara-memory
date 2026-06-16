@@ -264,11 +264,11 @@ func (f *fakeStoreForMetrics) GetEntity(_ context.Context, _, _ string) (EntityD
 func (f *fakeStoreForMetrics) Neighbors(_ context.Context, _, _ string, _ []string, _ string, _, _ int, _ ConfidenceFilter) ([]PathNode, error) {
 	return nil, nil
 }
-func (f *fakeStoreForMetrics) FileImports(_ context.Context, _, _ string) ([]Edge, error) {
+func (f *fakeStoreForMetrics) FileImports(_ context.Context, _, _ string, _ int) ([]Edge, error) {
 	return nil, nil
 }
 func (f *fakeStoreForMetrics) CountEntities(_ context.Context, _ string) (int, error) { return 0, nil }
-func (f *fakeStoreForMetrics) CrossRepo(_ context.Context, _, _ string) (CrossRepoLinks, error) {
+func (f *fakeStoreForMetrics) CrossRepo(_ context.Context, _, _ string, _ int) (CrossRepoLinks, error) {
 	return CrossRepoLinks{Consumers: []CrossRef{}, Providers: []CrossRef{}}, nil
 }
 func (f *fakeStoreForMetrics) ShortestPath(_ context.Context, _, _, _ string, _ []string, _ int) ([]Entity, error) {
