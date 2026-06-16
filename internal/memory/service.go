@@ -140,10 +140,13 @@ func (s *Service) CreateMemory(ctx context.Context, m Memory) (Memory, error) {
 		s.incOp("create", err)
 		return Memory{}, wrapUpstream(err)
 	}
-	// Treat a non-success status or an empty track_id as a logical upstream failure.
-	// LightRAG may return HTTP 200 with status="failure" when ingest is rejected
-	// (e.g. string_too_short). An empty track_id makes the returned Memory unusable.
-	if resp.Status != "success" || resp.TrackID == "" {
+	// "duplicated" (content already indexed) and "partial_success" are idempotent
+	// successes per the LightRAG contract: re-ingesting unchanged content returns
+	// "duplicated" with the existing, reusable track_id. Only a genuine "failure"
+	// status (e.g. string_too_short) or an empty track_id is a logical upstream
+	// error. Treating "duplicated" as a failure made every re-ingest job fail.
+	accepted := resp.Status == "success" || resp.Status == "duplicated" || resp.Status == "partial_success"
+	if !accepted || resp.TrackID == "" {
 		logicalErr := fmt.Errorf("%w: insert returned status=%q track_id=%q",
 			ErrUpstream, resp.Status, resp.TrackID)
 		s.incOp("create", logicalErr)
