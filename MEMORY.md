@@ -51,6 +51,8 @@ Format: `YYYY-MM-DD - decision/finding`
   stay strict - every edge/symbol carries a real file). Only `go_package` is
   fileless today (golang.go + golang_fallback.go).
 
+- 2026-06-16 audit-r2 codegraph: empty-FilePath entities (repo/package-scoped, e.g. go_package) are NOT reclaimed by file-granular reconcile. Reconcile deletes only via DELETE WHERE file_path=$2 for each f in p.Files; an entity with file_path='' is only refreshed when re-pushed with the same ID (upsert). For stable IDs this is benign; renamed/removed repo-scoped entities orphan forever. Intentional trade-off: requiring a sentinel owning file would complicate extractor contract. If reclamation needed: add extractor-scoped DELETE WHERE file_path='' when push declares repo-root scope.
+
 ---
 
 ## Decisions
