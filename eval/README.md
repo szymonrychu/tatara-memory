@@ -91,13 +91,36 @@ so it can gate in CI.
 
 ## Running
 
-The runner (`cmd/eval`, added in a later subtask) needs a live, seeded
-tatara-memory deployment. It is opt-in, like the `-tags integration`
-suite, and is not part of unit `make test`:
+The runner (`cmd/eval`) seeds this corpus into a live tatara-memory
+deployment, runs the golden cases, and scores retrieval. It is opt-in,
+like the `-tags integration` suite, and is NOT part of unit `make test`:
 
 ```
 MEMORY_BASE_URL=https://memory.example MEMORY_TOKEN=<oidc-token> make eval
 ```
+
+`make eval` fails fast with a clear message if `MEMORY_BASE_URL` is unset.
+It exits non-zero when aggregate recall@k falls below the floor, so CI can
+gate on it.
+
+### Configuration
+
+Every flag has an env fallback; the flag wins when both are set.
+
+| Flag | Env | Default | Meaning |
+| --- | --- | --- | --- |
+| `-base-url` | `MEMORY_BASE_URL` | (required) | tatara-memory base URL |
+| `-token` | `MEMORY_TOKEN` | "" | pre-fetched OIDC bearer token |
+| `-recall-floor` | `EVAL_RECALL_FLOOR` | `0.7` | min mean recall@k before non-zero exit |
+| `-k` | `EVAL_K` | `10` | k for recall@k |
+| `-golden-dir` | `EVAL_GOLDEN_DIR` | (embedded) | override dir of golden `*.json` |
+| `-seed-dir` | `EVAL_SEED_DIR` | (embedded) | override dir of seed `*.json` |
+| `-metrics-file` | `EVAL_METRICS_FILE` | "" | optional Prometheus textfile of aggregate scores |
+| `-job-timeout` | `EVAL_JOB_TIMEOUT` | `5m` | max wait for the seed ingest job |
+
+The token is never logged. Output is slog JSON: one INFO line per case
+(name, query, mode, recall@k, mrr, hits) and a final aggregate line
+(cases, k, mean recall@k, mean MRR, floor, pass).
 
 ## Adding cases
 
