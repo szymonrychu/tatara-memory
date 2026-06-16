@@ -76,12 +76,18 @@ func (s *Service) Search(ctx context.Context, repo, q, typ string, limit int) ([
 	if limit > maxSearchLimit {
 		limit = maxSearchLimit
 	}
-	return s.store.SearchEntities(ctx, repo, q, typ, limit)
+	start := time.Now()
+	out, err := s.store.SearchEntities(ctx, repo, q, typ, limit)
+	s.metrics.observeQuery(queryOpSearch, start, err)
+	return out, err
 }
 
 // Entity returns one entity with its immediate edges.
 func (s *Service) Entity(ctx context.Context, repo, id string) (EntityDetail, error) {
-	return s.store.GetEntity(ctx, repo, id)
+	start := time.Now()
+	out, err := s.store.GetEntity(ctx, repo, id)
+	s.metrics.observeQuery(queryOpEntity, start, err)
+	return out, err
 }
 
 // Neighbors walks the given relations from id with capped depth and breadth and
@@ -121,12 +127,18 @@ func (s *Service) ResourceGraph(ctx context.Context, repo, id string, depth int,
 
 // FileImports returns the import edges originating in path.
 func (s *Service) FileImports(ctx context.Context, repo, path string) ([]Edge, error) {
-	return s.store.FileImports(ctx, repo, path)
+	start := time.Now()
+	out, err := s.store.FileImports(ctx, repo, path)
+	s.metrics.observeQuery(queryOpFileImports, start, err)
+	return out, err
 }
 
 // CrossRepo returns the cross-repo consumers and providers for an entity.
 func (s *Service) CrossRepo(ctx context.Context, repo, id string) (CrossRepoLinks, error) {
-	return s.store.CrossRepo(ctx, repo, id)
+	start := time.Now()
+	out, err := s.store.CrossRepo(ctx, repo, id)
+	s.metrics.observeQuery(queryOpCrossRepo, start, err)
+	return out, err
 }
 
 // ShortestPath returns the ordered entity chain from fromID to toID, or empty if unreachable.
@@ -145,7 +157,10 @@ func (s *Service) ImportantEntities(ctx context.Context, repo string, limit int)
 	if limit > maxImportantLimit {
 		limit = maxImportantLimit
 	}
-	return s.store.ImportantEntities(ctx, repo, limit)
+	start := time.Now()
+	out, err := s.store.ImportantEntities(ctx, repo, limit)
+	s.metrics.observeQuery(queryOpImportantEntities, start, err)
+	return out, err
 }
 
 // Stats returns aggregate counts for a repo's code graph.
@@ -180,7 +195,10 @@ func (s *Service) EntityExplain(ctx context.Context, repo, id string) (EntityExp
 
 // SemanticMisses returns the files whose cached content_sha differs or is absent.
 func (s *Service) SemanticMisses(ctx context.Context, repo string, files []FileSHA) ([]string, error) {
-	return s.store.SemanticMisses(ctx, repo, files)
+	start := time.Now()
+	out, err := s.store.SemanticMisses(ctx, repo, files)
+	s.metrics.observeQuery(queryOpSemanticMisses, start, err)
+	return out, err
 }
 
 // Related returns semantic neighbors of id filtered by relations and minConfidence,
@@ -207,12 +225,18 @@ func (s *Service) Hyperedges(ctx context.Context, repo, entityID string, limit i
 	if limit > maxImportantLimit {
 		limit = maxImportantLimit
 	}
-	return s.store.Hyperedges(ctx, repo, entityID, limit)
+	start := time.Now()
+	out, err := s.store.Hyperedges(ctx, repo, entityID, limit)
+	s.metrics.observeQuery(queryOpHyperedges, start, err)
+	return out, err
 }
 
 // Hyperedge returns a single hyperedge with its members.
 func (s *Service) Hyperedge(ctx context.Context, repo, id string) (Hyperedge, error) {
-	return s.store.Hyperedge(ctx, repo, id)
+	start := time.Now()
+	out, err := s.store.Hyperedge(ctx, repo, id)
+	s.metrics.observeQuery(queryOpHyperedge, start, err)
+	return out, err
 }
 
 // Communities returns the detected communities for a repo, capped at limit rows.
@@ -223,7 +247,10 @@ func (s *Service) Communities(ctx context.Context, repo string, limit int) ([]Co
 	if limit > maxImportantLimit {
 		limit = maxImportantLimit
 	}
-	return s.store.Communities(ctx, repo, limit)
+	start := time.Now()
+	out, err := s.store.Communities(ctx, repo, limit)
+	s.metrics.observeQuery(queryOpCommunities, start, err)
+	return out, err
 }
 
 // Community returns the member entities of one community, capped at limit rows.
@@ -234,7 +261,10 @@ func (s *Service) Community(ctx context.Context, repo string, community, limit i
 	if limit > maxImportantLimit {
 		limit = maxImportantLimit
 	}
-	return s.store.Community(ctx, repo, community, limit)
+	start := time.Now()
+	out, err := s.store.Community(ctx, repo, community, limit)
+	s.metrics.observeQuery(queryOpCommunity, start, err)
+	return out, err
 }
 
 // Bridges returns high-betweenness multi-community connectors, capped by limit.

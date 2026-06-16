@@ -61,7 +61,8 @@ type Result struct {
 	// Telemetry: returned so the pure Compute function stays dependency-free
 	// while callers can record metrics and structured logs.
 	NodeCount          int
-	EdgeCount          int
+	EdgeCount          int // edges that passed the filter (both endpoints present, no self-loop, no duplicate)
+	RawEdgeCount       int // total edges in the input before filtering; a large gap vs EdgeCount signals data-quality issues
 	DurationMs         int64
 	BetweennessSkipped bool
 }
@@ -96,6 +97,7 @@ func Compute(ids []string, edges []Edge, cfg Config) Result {
 		g.AddNode(simple.Node(nid))
 	}
 
+	rawEdgeCount := len(edges)
 	edgeCount := 0
 	for _, e := range edges {
 		fn, okf := idToNode[e.From]
@@ -184,6 +186,7 @@ func Compute(ids []string, edges []Edge, cfg Config) Result {
 		Communities:        communities,
 		NodeCount:          n,
 		EdgeCount:          edgeCount,
+		RawEdgeCount:       rawEdgeCount,
 		DurationMs:         durationMs,
 		BetweennessSkipped: betweennessSkipped,
 	}

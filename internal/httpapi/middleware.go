@@ -14,6 +14,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/szymonrychu/tatara-memory/internal/ctxkeys"
 )
 
 // requestIDRe accepts only safe characters for X-Request-Id.
@@ -35,13 +37,11 @@ func routeLabel(r *http.Request) string {
 	return "unmatched"
 }
 
-type ctxKey int
-
-const requestIDKey ctxKey = 0
-
 // RequestIDFromContext retrieves the request ID from the context.
+// The key is defined in internal/ctxkeys so that downstream packages
+// (e.g. lightrag HTTPClient) can read the same value for log correlation.
 func RequestIDFromContext(ctx context.Context) string {
-	v, _ := ctx.Value(requestIDKey).(string)
+	v, _ := ctx.Value(ctxkeys.RequestID).(string)
 	return v
 }
 
@@ -56,7 +56,7 @@ func RequestID(next http.Handler) http.Handler {
 			id = generateRequestID()
 		}
 		w.Header().Set("X-Request-Id", id)
-		ctx := context.WithValue(r.Context(), requestIDKey, id)
+		ctx := context.WithValue(r.Context(), ctxkeys.RequestID, id)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

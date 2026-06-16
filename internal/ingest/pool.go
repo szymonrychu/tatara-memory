@@ -25,20 +25,25 @@ type SourceSink interface {
 	Add(ctx context.Context, repo, filePath, trackID string) error
 }
 
+// defaultResumeInterval is the period between periodic Resume sweeps.
+// A dropped/queued job is picked up within this window without requiring a restart.
+const defaultResumeInterval = 5 * time.Minute
+
 // Pool is an async worker pool that processes queued ingest jobs.
 type Pool struct {
-	store       JobStore
-	runner      itemRunner
-	size        int
-	sources     SourceSink
-	itemTimeout time.Duration
-	metrics     *metrics
-	log         *slog.Logger
-	notify      chan string
-	stop        chan struct{}
-	wg          sync.WaitGroup
-	mu          sync.Mutex
-	started     bool
+	store          JobStore
+	runner         itemRunner
+	size           int
+	sources        SourceSink
+	itemTimeout    time.Duration
+	resumeInterval time.Duration
+	metrics        *metrics
+	log            *slog.Logger
+	notify         chan string
+	stop           chan struct{}
+	wg             sync.WaitGroup
+	mu             sync.Mutex
+	started        bool
 }
 
 // Option configures a Pool at construction time.
@@ -85,14 +90,15 @@ func newPool(store JobStore, runner itemRunner, size, buf int, sources SourceSin
 		buf = 1
 	}
 	p := &Pool{
-		store:   store,
-		runner:  runner,
-		size:    size,
-		sources: sources,
-		metrics: newMetrics(nil),
-		log:     slog.Default(),
-		notify:  make(chan string, buf),
-		stop:    make(chan struct{}),
+		store:          store,
+		runner:         runner,
+		size:           size,
+		sources:        sources,
+		resumeInterval: defaultResumeInterval,
+		metrics:        newMetrics(nil),
+		log:            slog.Default(),
+		notify:         make(chan string, buf),
+		stop:           make(chan struct{}),
 	}
 	for _, o := range opts {
 		o(p)
@@ -100,7 +106,8 @@ func newPool(store JobStore, runner itemRunner, size, buf int, sources SourceSin
 	return p
 }
 
-// Start launches the worker goroutines. Calling Start more than once is a no-op.
+// Start launches the worker goroutines and the periodic resume sweeper.
+// Calling Start more than once is a no-op.
 func (p *Pool) Start(ctx context.Context) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -111,6 +118,34 @@ func (p *Pool) Start(ctx context.Context) {
 	for i := 0; i < p.size; i++ {
 		p.wg.Add(1)
 		go p.worker(ctx)
+	}
+	// Periodic sweeper: re-queues any dropped/stuck jobs so starvation resolves
+	// without a manual restart (finding 7). Resume is idempotent and cheap.
+	p.wg.Add(1)
+	go p.periodicResume(ctx)
+}
+
+func (p *Pool) periodicResume(ctx context.Context) {
+	defer p.wg.Done()
+	ticker := time.NewTicker(p.resumeInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-p.stop:
+			return
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			n, err := p.Resume(ctx)
+			if err != nil {
+				p.log.ErrorContext(ctx, "ingest.pool.periodic_resume_failed", "err", err)
+			} else if n > 0 {
+				p.log.InfoContext(ctx, "ingest.pool.periodic_resume",
+					"action", "periodic_resume",
+					"requeued", n,
+				)
+			}
+		}
 	}
 }
 

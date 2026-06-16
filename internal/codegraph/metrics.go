@@ -16,6 +16,17 @@ const (
 	queryOpEntityExplain = "entity_explain"
 	queryOpImportantBy   = "important_by"
 	queryOpAmbiguous     = "ambiguous"
+	// Finding 4: read paths that were previously uninstrumented.
+	queryOpSearch            = "search"
+	queryOpEntity            = "entity"
+	queryOpFileImports       = "file_imports"
+	queryOpCrossRepo         = "cross_repo"
+	queryOpImportantEntities = "important_entities"
+	queryOpSemanticMisses    = "semantic_misses"
+	queryOpHyperedges        = "hyperedges"
+	queryOpHyperedge         = "hyperedge"
+	queryOpCommunities       = "communities"
+	queryOpCommunity         = "community"
 )
 
 var queryOps = []string{
@@ -27,6 +38,16 @@ var queryOps = []string{
 	queryOpEntityExplain,
 	queryOpImportantBy,
 	queryOpAmbiguous,
+	queryOpSearch,
+	queryOpEntity,
+	queryOpFileImports,
+	queryOpCrossRepo,
+	queryOpImportantEntities,
+	queryOpSemanticMisses,
+	queryOpHyperedges,
+	queryOpHyperedge,
+	queryOpCommunities,
+	queryOpCommunity,
 }
 
 // Metrics holds the code-graph domain counters.

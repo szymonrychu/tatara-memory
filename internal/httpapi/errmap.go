@@ -25,6 +25,11 @@ func mapServiceError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, memory.ErrTransient), errors.Is(err, context.DeadlineExceeded):
 		w.Header().Set("Retry-After", "5")
 		WriteError(w, http.StatusServiceUnavailable, "upstream temporarily unavailable", reqID)
+	case errors.Is(err, context.Canceled):
+		// Client disconnected mid-request (499 Client Closed Request). This is
+		// not a server error; writing 499 keeps it off the 5xx dashboards and
+		// prevents inflating the error rate with non-actionable client drops.
+		WriteError(w, 499, "client closed request", reqID)
 	case errors.Is(err, memory.ErrUpstream):
 		WriteError(w, http.StatusBadGateway, "upstream error", reqID)
 	case errors.Is(err, ingest.ErrDuplicateKey):

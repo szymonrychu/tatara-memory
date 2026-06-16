@@ -117,23 +117,27 @@ func TestCreateMemory_NoThrowawayIDGenerated(t *testing.T) {
 	require.Equal(t, "hello", got.Text)
 }
 
-// Finding 8: FromDocStatus must not silently swallow a non-empty, unparseable CreatedAt.
-// An empty CreatedAt is tolerated (leaves zero time); non-empty-but-invalid must NOT produce zero time silently.
+// Finding 8 / obs-r3 finding 10: FromDocStatus must return the parse error to the
+// caller (not log via slog.Warn package-global) so the caller can log through its
+// own context-aware/injectable logger (rule 11/12).
 func TestFromDocStatus_MalformedCreatedAt(t *testing.T) {
-	// Empty string -> zero time is acceptable (field simply absent).
-	m := memory.FromDocStatus("tid", lightrag.DocStatusResponse{CreatedAt: ""})
+	// Empty string -> zero time is acceptable (field simply absent), no error.
+	m, err := memory.FromDocStatus("tid", lightrag.DocStatusResponse{CreatedAt: ""})
+	require.NoError(t, err, "empty created_at must not return an error")
 	require.True(t, m.CreatedAt.IsZero(), "empty created_at should yield zero time")
 
-	// Valid RFC3339 -> correct time.
+	// Valid RFC3339 -> correct time, no error.
 	ts := time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC)
-	m2 := memory.FromDocStatus("tid", lightrag.DocStatusResponse{CreatedAt: ts.Format(time.RFC3339)})
+	m2, err2 := memory.FromDocStatus("tid", lightrag.DocStatusResponse{CreatedAt: ts.Format(time.RFC3339)})
+	require.NoError(t, err2, "valid RFC3339 must not return an error")
 	require.False(t, m2.CreatedAt.IsZero(), "valid created_at must parse correctly")
 	require.Equal(t, ts.Unix(), m2.CreatedAt.Unix())
 
-	// Non-empty unparseable string -> zero time is the current behaviour, but
-	// callers must be aware. We confirm the behaviour is deterministic (no panic).
-	m3 := memory.FromDocStatus("tid", lightrag.DocStatusResponse{CreatedAt: "not-a-date"})
-	require.True(t, m3.CreatedAt.IsZero(), "malformed created_at should yield zero time (logged as WARN)")
+	// Non-empty unparseable string -> zero time AND a non-nil error so the caller
+	// can log via its context-aware logger instead of the package-global slog.Warn.
+	m3, err3 := memory.FromDocStatus("tid", lightrag.DocStatusResponse{CreatedAt: "not-a-date"})
+	require.Error(t, err3, "malformed created_at must return an error")
+	require.True(t, m3.CreatedAt.IsZero(), "malformed created_at should yield zero time")
 }
 
 // Finding 9: EdgeFromGraphEdge must use keywords as the PRIMARY source for Relation,
