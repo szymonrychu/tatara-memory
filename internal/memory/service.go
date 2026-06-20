@@ -260,10 +260,15 @@ func (s *Service) deleteMemoryRaw(ctx context.Context, trackID string) error {
 		return wrapUpstream(err)
 	}
 	// LightRAG v1.4.16 returns "deletion_started" (async) or "success" (sync) on accepted deletes.
-	// Any other status (e.g. "failure") is a logical upstream rejection even though HTTP returned 200.
+	// "busy" means the pipeline lock is held (LightRAG is mid-ingest): transient, so callers
+	// must retry, not fail permanently. Any other status (e.g. "failure") is a logical upstream
+	// rejection even though HTTP returned 200.
 	if resp.Status != "deletion_started" && resp.Status != "success" {
 		if s.tomb != nil {
 			_ = s.tomb.Unmark(ctx, trackID)
+		}
+		if resp.Status == "busy" {
+			return fmt.Errorf("%w: delete returned status=%q", ErrTransient, resp.Status)
 		}
 		return fmt.Errorf("%w: delete returned status=%q", ErrUpstream, resp.Status)
 	}

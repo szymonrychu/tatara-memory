@@ -301,10 +301,42 @@ func (c *HTTPClient) DeleteDocs(ctx context.Context, req DeleteDocRequest) (*Del
 	if err != nil {
 		return nil, err
 	}
+	// status="busy" is a logical 200 (the pipeline lock is held mid-ingest), so the
+	// HTTP-level retry in roundTrip does not see it. Retry it here on the same
+	// backoff schedule (no Retry-After to honour on a 200); if still busy after
+	// retryMax attempts, return the busy response so the memory service maps it to
+	// ErrTransient. doAndObserve is used so the whole busy-retry sequence records a
+	// single metric + log line with the final outcome, instead of one per attempt.
 	var out DeleteDocByIdResponse
-	if err := c.do(ctx, OpDeleteDocs, http.MethodDelete, "/documents/delete_document", body, &out); err != nil {
-		return nil, err
+	var totalDur float64
+	for attempt := 0; attempt <= retryMax; attempt++ {
+		if attempt > 0 {
+			delay := retryBaseDelay * (1 << (attempt - 1))
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+		out = DeleteDocByIdResponse{}
+		dur, transportErr := c.doAndObserve(ctx, OpDeleteDocs, http.MethodDelete, "/documents/delete_document", body, &out)
+		totalDur += dur
+		if transportErr != nil {
+			c.metrics.observe(OpDeleteDocs, totalDur, transportErr)
+			c.logCall(ctx, OpDeleteDocs, http.MethodDelete, "/documents/delete_document", totalDur, transportErr)
+			return nil, transportErr
+		}
+		if out.Status != "busy" {
+			c.metrics.observe(OpDeleteDocs, totalDur, nil)
+			c.logCall(ctx, OpDeleteDocs, http.MethodDelete, "/documents/delete_document", totalDur, nil)
+			return &out, nil
+		}
+		c.log.LogAttrs(ctx, slog.LevelDebug, "lightrag_delete_busy_retry",
+			slog.Int("attempt", attempt+1),
+		)
 	}
+	c.metrics.observe(OpDeleteDocs, totalDur, nil)
+	c.logCall(ctx, OpDeleteDocs, http.MethodDelete, "/documents/delete_document", totalDur, nil)
 	return &out, nil
 }
 
