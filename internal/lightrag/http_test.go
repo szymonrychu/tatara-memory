@@ -99,6 +99,45 @@ func TestHTTPClient_DeleteDocs(t *testing.T) {
 	require.Equal(t, "deletion_started", resp.Status)
 }
 
+func TestHTTPClient_DeleteDocs_RetriesOnBusy(t *testing.T) {
+	// LightRAG returns HTTP 200 with status="busy" while its pipeline lock is
+	// held (mid-ingest). DeleteDocs must retry transparently and succeed once the
+	// lock frees, instead of surfacing "busy" to the caller as a permanent state.
+	var calls int
+	c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		status := "busy"
+		if calls >= 3 {
+			status = "deletion_started"
+		}
+		_ = json.NewEncoder(w).Encode(lightrag.DeleteDocByIdResponse{
+			Status: status, Message: "ok", DocID: "doc-1",
+		})
+	})
+
+	resp, err := c.DeleteDocs(context.Background(), lightrag.DeleteDocRequest{DocIDs: []string{"doc-1"}})
+	require.NoError(t, err)
+	require.Equal(t, "deletion_started", resp.Status)
+	require.Equal(t, 3, calls, "DeleteDocs must retry on status=busy until the pipeline frees")
+}
+
+func TestHTTPClient_DeleteDocs_BusyExhaustsRetriesReturnsBusy(t *testing.T) {
+	// If LightRAG stays busy across all attempts, DeleteDocs returns the last
+	// busy response (not an error): the memory service maps busy -> ErrTransient.
+	var calls int
+	c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		_ = json.NewEncoder(w).Encode(lightrag.DeleteDocByIdResponse{
+			Status: "busy", Message: "still busy", DocID: "doc-1",
+		})
+	})
+
+	resp, err := c.DeleteDocs(context.Background(), lightrag.DeleteDocRequest{DocIDs: []string{"doc-1"}})
+	require.NoError(t, err)
+	require.Equal(t, "busy", resp.Status)
+	require.Equal(t, 4, calls, "DeleteDocs must try initial + retryMax(3) attempts before giving up")
+}
+
 func TestHTTPClient_Query(t *testing.T) {
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodPost, r.Method)
