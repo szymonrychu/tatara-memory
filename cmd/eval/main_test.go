@@ -1,8 +1,11 @@
 package main
 
 import (
-	"os"
-	"path/filepath"
+	"context"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -61,17 +64,77 @@ func TestParseConfig_Rejects(t *testing.T) {
 	require.Error(t, err, "k must be >= 1")
 }
 
-func TestWriteMetricsFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "eval.prom")
-	sum := eval.Summary{Cases: 20, MeanRecallAtK: 0.8, MeanMRR: 0.65}
-	require.NoError(t, writeMetricsFile(path, sum, 10, 0.7))
-
-	data, err := os.ReadFile(path)
+func TestParseConfig_PushDefaults(t *testing.T) {
+	cfg, err := parseConfig(nil, env(map[string]string{
+		"MEMORY_BASE_URL": "https://x",
+		"EVAL_PUSH_URL":   "http://op:8082/internal/metrics/push",
+	}))
 	require.NoError(t, err)
-	out := string(data)
+	require.Equal(t, "http://op:8082/internal/metrics/push", cfg.pushURL)
+	require.Equal(t, "memory-eval", cfg.runID, "run_id defaults to memory-eval when EVAL_RUN_ID unset")
+
+	cfg, err = parseConfig([]string{"-run-id", "tick-7"}, env(map[string]string{"MEMORY_BASE_URL": "https://x"}))
+	require.NoError(t, err)
+	require.Equal(t, "tick-7", cfg.runID)
+}
+
+func TestBuildExposition(t *testing.T) {
+	sum := eval.Summary{Cases: 20, MeanRecallAtK: 0.8, MeanMRR: 0.65}
+	out := buildExposition(sum, 10, 0.7, true)
 	require.Contains(t, out, "memory_eval_recall_at_k{k=\"10\"} 0.8")
 	require.Contains(t, out, "memory_eval_mrr 0.65")
 	require.Contains(t, out, "memory_eval_cases 20")
 	require.Contains(t, out, "memory_eval_recall_floor 0.7")
 	require.Contains(t, out, "# TYPE memory_eval_recall_at_k gauge")
+	require.Contains(t, out, "memory_eval_pass 1")
+
+	require.Contains(t, buildExposition(sum, 10, 0.7, false), "memory_eval_pass 0")
+}
+
+func TestBuildPushURL(t *testing.T) {
+	got := buildPushURL("http://op:8082/internal/metrics/push", "tick-7", "memory-eval", "eval-pod-1")
+	require.Contains(t, got, "/internal/metrics/push?")
+	require.Contains(t, got, "run_id=tick-7")
+	require.Contains(t, got, "job=memory-eval")
+	require.Contains(t, got, "pod=eval-pod-1")
+
+	// Pod is omitted when empty; an existing query string uses & as separator.
+	got = buildPushURL("http://op:8082/x?a=1", "r", "memory-eval", "")
+	require.Contains(t, got, "x?a=1&")
+	require.NotContains(t, got, "pod=")
+}
+
+func TestPushAggregateMetrics(t *testing.T) {
+	type capture struct {
+		method, path, query, body, ct string
+	}
+	var got capture
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		got = capture{r.Method, r.URL.Path, r.URL.RawQuery, string(b), r.Header.Get("Content-Type")}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	cfg := config{pushURL: srv.URL + "/internal/metrics/push", runID: "tick-7", k: 10, recallFloor: 0.7}
+	exposition := buildExposition(eval.Summary{Cases: 20, MeanRecallAtK: 0.8, MeanMRR: 0.65}, cfg.k, cfg.recallFloor, true)
+	pushAggregateMetrics(context.Background(), cfg, exposition, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	require.Equal(t, http.MethodPost, got.method)
+	require.Equal(t, "/internal/metrics/push", got.path)
+	require.Contains(t, got.query, "run_id=tick-7")
+	require.Contains(t, got.query, "job=memory-eval")
+	require.Contains(t, got.body, "memory_eval_recall_at_k{k=\"10\"} 0.8")
+	require.Contains(t, got.body, "memory_eval_pass 1")
+	require.Contains(t, got.ct, "text/plain")
+}
+
+// A push endpoint that is down must not crash the eval or change its result:
+// the push is best-effort and only logged.
+func TestPushAggregateMetrics_BestEffortOnError(t *testing.T) {
+	cfg := config{pushURL: "http://127.0.0.1:1/internal/metrics/push", runID: "tick-7", k: 10}
+	exposition := buildExposition(eval.Summary{Cases: 1, MeanRecallAtK: 1, MeanMRR: 1}, cfg.k, 0.7, true)
+	require.NotPanics(t, func() {
+		pushAggregateMetrics(context.Background(), cfg, exposition, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	})
 }

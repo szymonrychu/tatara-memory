@@ -10,6 +10,8 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -29,6 +31,8 @@ type config struct {
 	goldenDir   string
 	seedDir     string
 	metricsFile string
+	pushURL     string
+	runID       string
 	jobTimeout  time.Duration
 }
 
@@ -60,6 +64,8 @@ func parseConfig(args []string, getenv func(string) string) (config, error) {
 	fs.StringVar(&cfg.goldenDir, "golden-dir", getenv("EVAL_GOLDEN_DIR"), "override dir of golden *.json (default embedded)")
 	fs.StringVar(&cfg.seedDir, "seed-dir", getenv("EVAL_SEED_DIR"), "override dir of seed *.json (default embedded)")
 	fs.StringVar(&cfg.metricsFile, "metrics-file", getenv("EVAL_METRICS_FILE"), "optional Prometheus textfile to write aggregate scores")
+	fs.StringVar(&cfg.pushURL, "push-url", getenv("EVAL_PUSH_URL"), "optional operator push-receiver URL to POST aggregate scores to (env EVAL_PUSH_URL)")
+	fs.StringVar(&cfg.runID, "run-id", envDefault(getenv, "EVAL_RUN_ID", "memory-eval"), "run_id identity stamped on pushed metrics (env EVAL_RUN_ID)")
 	fs.DurationVar(&cfg.jobTimeout, "job-timeout", envDuration(getenv, "EVAL_JOB_TIMEOUT", 5*time.Minute), "max wait for the seed ingest job (env EVAL_JOB_TIMEOUT)")
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
@@ -153,11 +159,18 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 		"pass", pass,
 	)
 
+	exposition := buildExposition(sum, cfg.k, cfg.recallFloor, pass)
 	if cfg.metricsFile != "" {
-		if err := writeMetricsFile(cfg.metricsFile, sum, cfg.k, cfg.recallFloor); err != nil {
+		if err := os.WriteFile(cfg.metricsFile, []byte(exposition), 0o600); err != nil {
 			return fmt.Errorf("write metrics file: %w", err)
 		}
 		logger.InfoContext(ctx, "eval.metrics_file", "action", "write_metrics", "path", cfg.metricsFile)
+	}
+	if cfg.pushURL != "" {
+		// Best-effort: a push failure is logged but does not change the binary's
+		// exit code, which stays the recall-floor CI gate (matches the wrapper's
+		// best-effort push contract).
+		pushAggregateMetrics(ctx, cfg, exposition, logger)
 	}
 
 	if !pass {
@@ -180,9 +193,14 @@ func loadSeed(cfg config) ([]eval.SeedItem, error) {
 	return eval.LoadSeed()
 }
 
-// writeMetricsFile emits the aggregate scores in Prometheus textfile-collector
-// format so the existing /metrics infra can surface trends later.
-func writeMetricsFile(path string, sum eval.Summary, k int, floor float64) error {
+// evalPushJob is the stable job identity stamped on pushed eval metrics so the
+// operator push-receiver keys this producer distinctly from wrapper/ingest runs.
+const evalPushJob = "memory-eval"
+
+// buildExposition renders the aggregate scores in Prometheus text-exposition
+// format. The same bytes are written to -metrics-file and POSTed to -push-url so
+// the textfile and pushed series are always identical.
+func buildExposition(sum eval.Summary, k int, floor float64, pass bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# HELP memory_eval_recall_at_k Mean recall@k over the golden set.\n")
 	fmt.Fprintf(&b, "# TYPE memory_eval_recall_at_k gauge\n")
@@ -196,7 +214,76 @@ func writeMetricsFile(path string, sum eval.Summary, k int, floor float64) error
 	fmt.Fprintf(&b, "# HELP memory_eval_recall_floor Configured pass/fail floor for recall@k.\n")
 	fmt.Fprintf(&b, "# TYPE memory_eval_recall_floor gauge\n")
 	fmt.Fprintf(&b, "memory_eval_recall_floor %g\n", floor)
-	return os.WriteFile(path, []byte(b.String()), 0o600)
+	passVal := 0
+	if pass {
+		passVal = 1
+	}
+	fmt.Fprintf(&b, "# HELP memory_eval_pass 1 when mean recall@k met the floor, else 0.\n")
+	fmt.Fprintf(&b, "# TYPE memory_eval_pass gauge\n")
+	fmt.Fprintf(&b, "memory_eval_pass %d\n", passVal)
+	return b.String()
+}
+
+// pushAggregateMetrics POSTs the exposition to the operator push-receiver with a
+// stable identity (run_id/job/pod). Unlike the wrapper it does NOT delete on
+// exit: the eval is a one-shot snapshot, so deleting immediately would erase it
+// before Prometheus could scrape it. The receiver's TTL ages the series out
+// instead, keeping the snapshot scrapeable (issue #46 goal: alert on recall@k <
+// floor). Best-effort: failures are logged, not fatal.
+func pushAggregateMetrics(ctx context.Context, cfg config, exposition string, logger *slog.Logger) {
+	endpoint := buildPushURL(cfg.pushURL, cfg.runID, evalPushJob, hostname())
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(exposition))
+	if err != nil {
+		logger.WarnContext(ctx, "eval.push_build", "action", "push_metrics", "error", err.Error())
+		return
+	}
+	req.Header.Set("Content-Type", "text/plain; version=0.0.4")
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		logger.WarnContext(ctx, "eval.push_failed", "action", "push_metrics", "url", cfg.pushURL, "error", err.Error())
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		logger.WarnContext(ctx, "eval.push_rejected", "action", "push_metrics", "url", cfg.pushURL, "status", resp.StatusCode)
+		return
+	}
+	logger.InfoContext(ctx, "eval.pushed", "action", "push_metrics", "url", cfg.pushURL, "run_id", cfg.runID, "job", evalPushJob, "status", resp.StatusCode)
+}
+
+// buildPushURL appends the identity query parameters the push-receiver keys each
+// run by (run_id, job, and optional pod) to the configured push URL.
+func buildPushURL(base, runID, job, pod string) string {
+	q := url.Values{}
+	q.Set("run_id", runID)
+	q.Set("job", job)
+	if pod != "" {
+		q.Set("pod", pod)
+	}
+	sep := "?"
+	if strings.ContainsRune(base, '?') {
+		sep = "&"
+	}
+	return base + sep + q.Encode()
+}
+
+// hostname returns the pod name (HOSTNAME in k8s) for the pod identity label,
+// falling back to os.Hostname.
+func hostname() string {
+	if h := os.Getenv("HOSTNAME"); h != "" {
+		return h
+	}
+	h, _ := os.Hostname()
+	return h
+}
+
+// envDefault returns the env value for key or def when it is unset/empty.
+func envDefault(getenv func(string) string, key, def string) string {
+	if v := getenv(key); v != "" {
+		return v
+	}
+	return def
 }
 
 func envFloat(getenv func(string) string, key string, def float64) float64 {

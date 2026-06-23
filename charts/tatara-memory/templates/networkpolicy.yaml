@@ -10,6 +10,18 @@ spec:
   podSelector:
     matchLabels:
       {{- include "tatara-memory.selectorLabels" . | nindent 6 }}
+    {{- if .Values.eval.enabled }}
+    # The eval CronJob pod (component=eval, issue #46) shares the app's selector
+    # labels but has different, cluster-specific egress needs (the operator
+    # push-receiver and a dedicated eval-target), which a cluster-agnostic chart
+    # (rule 14) cannot encode. Exclude it from this API-server policy; governing
+    # its egress is a deploy/NetworkPolicy concern. Deployment pods carry no
+    # component label and so still match (NotIn admits the absent label).
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: NotIn
+        values: ["eval"]
+    {{- end }}
   policyTypes:
     - Ingress
     - Egress

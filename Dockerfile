@@ -26,8 +26,18 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -o /out/tatara-memory \
     ./cmd/tatara-memory
 
+# The retrieval-quality eval (issue #46) ships in the same image as a second
+# binary so the scheduled CronJob needs no separate build/repo; it runs as the
+# /eval entrypoint. Embeds the golden/seed corpora via go:embed.
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -trimpath \
+    -ldflags "-s -w" \
+    -o /out/eval \
+    ./cmd/eval
+
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=builder /out/tatara-memory /tatara-memory
+COPY --from=builder /out/eval /eval
 USER nonroot:nonroot
 EXPOSE 8080
 ENTRYPOINT ["/tatara-memory"]

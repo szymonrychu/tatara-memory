@@ -89,6 +89,32 @@ The runner aggregates mean recall@k and mean MRR across all cases and
 exits non-zero when aggregate recall@k falls below a configurable floor,
 so it can gate in CI.
 
+The aggregate gauges emitted to `-metrics-file` and `-push-url` (identical
+exposition) are `memory_eval_recall_at_k{k}`, `memory_eval_mrr`,
+`memory_eval_cases`, `memory_eval_recall_floor`, and `memory_eval_pass`
+(1 when mean recall@k met the floor, else 0).
+
+### Pushing scores to the operator (scheduled runs)
+
+With `-push-url` set (e.g. the operator push-receiver at
+`http://tatara-operator-internal.tatara.svc:8082/internal/metrics/push`) the
+runner POSTs the same exposition with a stable identity
+(`run_id`/`job=memory-eval`/`pod`). The operator's receiver only admits metric
+names matching its configured prefix allowlist, so `memory_` must be present in
+the operator's `pushMetricsAllowedPrefixes` (it ships there by default).
+
+Unlike the wrapper, the eval does NOT delete its series on exit: it is a
+one-shot snapshot, so deleting immediately would erase it before Prometheus
+could scrape it. The receiver's TTL ages the series out instead, keeping the
+snapshot scrapeable. For a continuously-present gauge, set the operator's
+`PUSH_METRICS_TTL` at least as long as the eval cron interval. A push failure is
+logged (WARN) but never changes the exit code, which stays the recall-floor gate.
+
+The chart ships an opt-in CronJob (`eval.enabled`, `eval.schedule`,
+`eval.targetBaseUrl`, `eval.pushUrl`) that runs the `/eval` binary on a schedule
+against a dedicated throwaway eval-memory target (NOT prod, since seeding mutates
+the LightRAG store).
+
 ## Running
 
 The runner (`cmd/eval`) seeds this corpus into a live tatara-memory
@@ -116,6 +142,8 @@ Every flag has an env fallback; the flag wins when both are set.
 | `-golden-dir` | `EVAL_GOLDEN_DIR` | (embedded) | override dir of golden `*.json` |
 | `-seed-dir` | `EVAL_SEED_DIR` | (embedded) | override dir of seed `*.json` |
 | `-metrics-file` | `EVAL_METRICS_FILE` | "" | optional Prometheus textfile of aggregate scores |
+| `-push-url` | `EVAL_PUSH_URL` | "" | optional operator push-receiver URL to POST the same aggregate scores to |
+| `-run-id` | `EVAL_RUN_ID` | `memory-eval` | run_id identity stamped on pushed metrics |
 | `-job-timeout` | `EVAL_JOB_TIMEOUT` | `5m` | max wait for the seed ingest job |
 
 The token is never logged. Output is slog JSON: one INFO line per case

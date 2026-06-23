@@ -158,3 +158,29 @@ resources:
     memory: 256Mi
   limits:
     memory: 512Mi
+
+# Scheduled retrieval-quality eval (issue #46). Opt-in: when enabled a CronJob
+# runs the /eval binary against targetBaseUrl on `schedule`, scores the golden
+# set, and POSTs recall@k/MRR to the operator push-receiver at pushUrl.
+# Disabled by default so the chart adds nothing unless a deploy opts in.
+# The eval pod is excluded from this chart's app NetworkPolicy (its egress to
+# the operator/target is cluster-specific); a default-deny cluster must grant
+# the eval pod (app.kubernetes.io/component=eval) egress at the deploy layer.
+eval:
+  enabled: false
+  # Standard cron expression (default: top of every hour).
+  schedule: "0 * * * *"
+  # Dedicated throwaway eval-memory base URL. Seeding mutates the LightRAG store
+  # (idempotency-keyed, so stable across runs), so this MUST NOT point at prod.
+  # The chart only takes the URL; provisioning the target is a helmfile concern.
+  targetBaseUrl: ""
+  # Operator push-receiver internal endpoint, e.g.
+  # http://tatara-operator-internal.tatara.svc:8082/internal/metrics/push
+  # Empty disables the push (the run still scores and gates on the floor).
+  pushUrl: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
