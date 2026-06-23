@@ -1,0 +1,88 @@
+[
+  {
+    "name": "search-exact-name",
+    "kind": "search",
+    "q": "Validate",
+    "type": "function",
+    "expected": ["go:func:app/util.Validate"]
+  },
+  {
+    "name": "search-prefix-name",
+    "kind": "search",
+    "q": "Help",
+    "expected": ["go:func:app/service.Helper"]
+  },
+  {
+    "name": "entity-detail-service-file",
+    "kind": "entity",
+    "id": "go:file:app/service.go",
+    "expected": [
+      "go:file:app/service.go",
+      "go:func:app/service.Run",
+      "go:func:app/service.Helper",
+      "go:package:app/util"
+    ]
+  },
+  {
+    "name": "neighbors-defines-out",
+    "kind": "neighbors",
+    "id": "go:file:app/service.go",
+    "relation": "defines",
+    "direction": "out",
+    "expected": ["go:func:app/service.Run", "go:func:app/service.Helper"]
+  },
+  {
+    "name": "callees-run-depth1",
+    "kind": "callees",
+    "id": "go:func:app/service.Run",
+    "depth": 1,
+    "expected": ["go:func:app/service.Helper", "go:func:app/util.Validate"]
+  },
+  {
+    "name": "callers-format-depth2",
+    "kind": "callers",
+    "id": "go:func:app/util.Format",
+    "depth": 2,
+    "expected": ["go:func:app/service.Helper", "go:func:app/service.Run"]
+  },
+  {
+    "name": "dependencies-service-pkg",
+    "kind": "dependencies",
+    "id": "go:package:app/service",
+    "depth": 1,
+    "expected": ["go:package:app/util"]
+  },
+  {
+    "name": "dependents-util-pkg",
+    "kind": "dependents",
+    "id": "go:package:app/util",
+    "depth": 1,
+    "expected": ["go:file:app/service.go", "go:package:app/service"]
+  },
+  {
+    "name": "file-imports-service",
+    "kind": "file-imports",
+    "path": "app/service.go",
+    "expected": ["go:file:app/service.go->go:package:app/util"]
+  },
+  {
+    "name": "resource-graph-run-value-ref",
+    "kind": "resource-graph",
+    "id": "go:func:app/service.Run",
+    "depth": 1,
+    "expected": ["go:var:app/config.DefaultPort"]
+  },
+  {
+    "name": "path-main-to-format-calls",
+    "kind": "path",
+    "from": "go:func:app/main.Main",
+    "to": "go:func:app/util.Format",
+    "relation": "calls",
+    "expected": [
+      "go:func:app/main.Main",
+      "go:func:app/service.Run",
+      "go:func:app/service.Helper",
+      "go:func:app/util.Format"
+    ]
+  }
+]
