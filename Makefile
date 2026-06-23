@@ -23,7 +23,7 @@ endif
 # chart-test so the unittest plugin resolves correctly.
 HELM_UNITTEST_BIN := $(shell ls /opt/homebrew/bin/helm 2>/dev/null || echo $(HELM_BIN))
 
-.PHONY: all lint test build image chart-lint chart-test tidy fmt clean ci eval
+.PHONY: all lint test build image chart-lint chart-test tidy fmt clean ci eval codegraph-eval
 
 all: lint test build
 
@@ -47,6 +47,15 @@ test:
 eval:
 	@test -n "$(MEMORY_BASE_URL)" || { echo "eval: MEMORY_BASE_URL is required (see eval/README.md)"; exit 1; }
 	go run ./cmd/eval
+
+# Code-graph retrieval-quality eval harness (issue #49). Same contract as `eval`:
+# it pushes a synthetic fixture graph to a real tatara-memory deployment via
+# /code-graph:bulk and scores the golden /code/* traversal cases, so it needs
+# MEMORY_BASE_URL (and usually MEMORY_TOKEN) in env. NOT part of `make test`.
+# Exits non-zero when mean recall@k falls below the floor.
+codegraph-eval:
+	@test -n "$(MEMORY_BASE_URL)" || { echo "codegraph-eval: MEMORY_BASE_URL is required (see eval/codegraph/README.md)"; exit 1; }
+	go run ./cmd/codegraph-eval
 
 build:
 	CGO_ENABLED=0 go build \

@@ -1,0 +1,37 @@
+{
+  "commit": "eval-fixture",
+  "files": [
+    "app/main.go",
+    "app/service.go",
+    "app/util.go",
+    "app/config.go"
+  ],
+  "entities": [
+    { "id": "go:func:app/main.Main",         "name": "Main",        "type": "function", "file_path": "app/main.go" },
+    { "id": "go:func:app/service.Run",       "name": "Run",         "type": "function", "file_path": "app/service.go" },
+    { "id": "go:func:app/service.Helper",    "name": "Helper",      "type": "function", "file_path": "app/service.go" },
+    { "id": "go:func:app/util.Validate",     "name": "Validate",    "type": "function", "file_path": "app/util.go" },
+    { "id": "go:func:app/util.Format",       "name": "Format",      "type": "function", "file_path": "app/util.go" },
+    { "id": "go:var:app/config.DefaultPort", "name": "DefaultPort", "type": "variable", "file_path": "app/config.go" },
+    { "id": "go:file:app/service.go",        "name": "service.go",  "type": "file",     "file_path": "app/service.go" },
+    { "id": "go:file:app/main.go",           "name": "main.go",     "type": "file",     "file_path": "app/main.go" },
+    { "id": "go:package:app/service",        "name": "service",     "type": "package",  "file_path": "" },
+    { "id": "go:package:app/util",           "name": "util",        "type": "package",  "file_path": "" }
+  ],
+  "edges": [
+    { "from": "go:func:app/main.Main",      "to": "go:func:app/service.Run",       "relation": "calls",      "src_file": "app/main.go" },
+    { "from": "go:func:app/service.Run",    "to": "go:func:app/service.Helper",    "relation": "calls",      "src_file": "app/service.go" },
+    { "from": "go:func:app/service.Run",    "to": "go:func:app/util.Validate",     "relation": "calls",      "src_file": "app/service.go" },
+    { "from": "go:func:app/service.Helper", "to": "go:func:app/util.Format",       "relation": "calls",      "src_file": "app/service.go" },
+
+    { "from": "go:file:app/service.go",     "to": "go:func:app/service.Run",       "relation": "defines",    "src_file": "app/service.go" },
+    { "from": "go:file:app/service.go",     "to": "go:func:app/service.Helper",    "relation": "defines",    "src_file": "app/service.go" },
+
+    { "from": "go:file:app/service.go",     "to": "go:package:app/util",           "relation": "imports",    "src_file": "app/service.go" },
+    { "from": "go:file:app/main.go",        "to": "go:package:app/service",        "relation": "imports",    "src_file": "app/main.go" },
+
+    { "from": "go:package:app/service",     "to": "go:package:app/util",           "relation": "depends_on", "src_file": "app/service.go" },
+
+    { "from": "go:func:app/service.Run",    "to": "go:var:app/config.DefaultPort", "relation": "value_ref",  "src_file": "app/service.go" }
+  ]
+}

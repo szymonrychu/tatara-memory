@@ -35,6 +35,25 @@ measurement: reranker / ranking / hybrid-weighting changes, any
 `Score`/LightRAG change, Grafana dashboards, and in-cluster cron eval stay
 out of scope (each a later issue, now unblocked by this gate).
 
+## Code-graph retrieval-quality eval harness (issue #49)
+
+**Status:** shipped 2026-06-23.
+
+The measurement layer for the code-graph surface, mirroring #41 for `/code/*`:
+a versioned golden set (`eval/codegraph/golden/*.json`) of traversal cases, a
+synthetic fixture graph (`eval/codegraph/seed/*.json`) pushed via
+`/code-graph:bulk`, a `cmd/codegraph-eval` runner, and a `make codegraph-eval`
+target (opt-in, needs `MEMORY_BASE_URL`/`MEMORY_TOKEN`, not part of `make
+test`). Dual scoring: recall@k + MRR for the ranked surfaces (`search`, `path`)
+and precision/recall/F1 for the deterministic traversals
+(`callers`/`callees`/`dependents`/`dependencies`/`neighbors`/`resource-graph`/
+`file-imports`/`entity`). Lands independently of #48 (the code surface already
+has a real ranking signal). Delivers only measurement; explicitly out of scope
+(each a later, now-unblocked issue): fixing the missing Go import/depends_on
+edge extraction (the harness is what would verify it), any reranker/tie-break
+change, in-cluster cron scheduling, and a snapshot-seeded fixture variant that
+would also guard analyzer extraction quality.
+
 ## Ingest worker hardening (post-0.2.2)
 
 **Status:** planned. Found during the 0.2.2 pool-wiring fix (see MEMORY).
