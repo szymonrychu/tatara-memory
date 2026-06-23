@@ -44,6 +44,45 @@ func TestDescribeResultFromQuery_CollectsFilePaths(t *testing.T) {
 	require.Equal(t, []string{"/a.md", "/b.md"}, got.Sources)
 }
 
+func TestQueryResultFromQueryData_RanksChunksByRetrievalOrder(t *testing.T) {
+	resp := lightrag.QueryDataResponse{
+		Status: "success",
+		Data: map[string]any{
+			"chunks": []any{
+				map[string]any{"content": "first chunk", "chunk_id": "c1", "reference_id": "r1"},
+				map[string]any{"content": "second chunk", "chunk_id": "c2", "reference_id": "r2"},
+				map[string]any{"content": "third chunk", "chunk_id": "c3", "reference_id": "r3"},
+			},
+		},
+	}
+	got := memory.QueryResultFromQueryData(resp)
+	require.Len(t, got.Matches, 3)
+	require.Equal(t, "c1", got.Matches[0].ID)
+	require.Equal(t, "first chunk", got.Matches[0].Text)
+	// Score is derived from retrieval rank 1/(i+1): strictly descending, so the
+	// eval ranks by the retrieval order LightRAG returned, not arrival order.
+	require.InDelta(t, 1.0, got.Matches[0].Score, 1e-9)
+	require.InDelta(t, 0.5, got.Matches[1].Score, 1e-9)
+	require.InDelta(t, 1.0/3.0, got.Matches[2].Score, 1e-9)
+	require.Greater(t, got.Matches[0].Score, got.Matches[1].Score)
+}
+
+func TestQueryResultFromQueryData_DefensiveAndFallbackID(t *testing.T) {
+	// A missing chunks key and a fully empty envelope both yield no matches, no panic.
+	require.Empty(t, memory.QueryResultFromQueryData(lightrag.QueryDataResponse{Data: map[string]any{}}).Matches)
+	require.Empty(t, memory.QueryResultFromQueryData(lightrag.QueryDataResponse{}).Matches)
+
+	// Non-object entries are skipped; a chunk without chunk_id falls back to reference_id.
+	resp := lightrag.QueryDataResponse{Data: map[string]any{"chunks": []any{
+		"not-an-object",
+		map[string]any{"content": "c", "reference_id": "r9"},
+	}}}
+	got := memory.QueryResultFromQueryData(resp)
+	require.Len(t, got.Matches, 1)
+	require.Equal(t, "r9", got.Matches[0].ID)
+	require.Equal(t, "c", got.Matches[0].Text)
+}
+
 func TestEdgeFromGraphEdge_OpaqueID(t *testing.T) {
 	e := lightrag.GraphEdge{Source: "from", Target: "to", Type: "rel"}
 	got := memory.EdgeFromGraphEdge(e)

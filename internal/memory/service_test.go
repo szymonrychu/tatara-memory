@@ -129,6 +129,61 @@ func TestServiceQuery(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestServiceQueryData(t *testing.T) {
+	ctx := context.Background()
+	f := fake.New()
+	f.SeedQueryDataResponse(lightrag.QueryDataResponse{
+		Status: "success",
+		Data: map[string]any{"chunks": []any{
+			map[string]any{"content": "alpha bravo", "chunk_id": "c1", "reference_id": "r1"},
+			map[string]any{"content": "charlie", "chunk_id": "c2", "reference_id": "r2"},
+		}},
+	})
+	svc := memory.NewService(f, nil)
+
+	res, err := svc.QueryData(ctx, memory.Query{Mode: memory.QueryModeHybrid, Text: "alpha", TopK: 5})
+	require.NoError(t, err)
+	require.Len(t, res.Matches, 2)
+	require.Equal(t, "c1", res.Matches[0].ID)
+	require.Equal(t, "alpha bravo", res.Matches[0].Text)
+	require.Greater(t, res.Matches[0].Score, res.Matches[1].Score, "matches are score-ranked by retrieval order")
+
+	// include_chunk_content must be set or LightRAG omits chunk text; top_k is
+	// mirrored into chunk_top_k so the depth bounds the ranked chunk window.
+	sent := f.LastQuery()
+	require.NotNil(t, sent.IncludeChunks)
+	require.True(t, *sent.IncludeChunks)
+	require.Equal(t, 5, sent.TopK)
+	require.Equal(t, 5, sent.ChunkTopK)
+
+	_, err = svc.QueryData(ctx, memory.Query{Mode: memory.QueryMode("nope"), Text: "x"})
+	require.Error(t, err)
+}
+
+func TestServiceQueryData_FiltersTombstonedChunks(t *testing.T) {
+	ctx := context.Background()
+	f := fake.New()
+	tomb := newInMemTombstone()
+	svc := memory.NewService(f, tomb)
+
+	m, err := svc.CreateMemory(ctx, memory.Memory{Text: "secret"})
+	require.NoError(t, err)
+	f.SeedQueryDataResponse(lightrag.QueryDataResponse{
+		Status: "success",
+		Data: map[string]any{"chunks": []any{
+			map[string]any{"content": "secret", "chunk_id": "c1", "reference_id": m.ID},
+			map[string]any{"content": "public", "chunk_id": "c2", "reference_id": "other-id"},
+		}},
+	})
+
+	require.NoError(t, svc.DeleteMemory(ctx, m.ID))
+
+	res, err := svc.QueryData(ctx, memory.Query{Mode: memory.QueryModeHybrid, Text: "q"})
+	require.NoError(t, err)
+	require.Len(t, res.Matches, 1, "tombstoned chunk is dropped")
+	require.Equal(t, "c2", res.Matches[0].ID)
+}
+
 func TestServiceDescribe(t *testing.T) {
 	ctx := context.Background()
 	f := fake.New()

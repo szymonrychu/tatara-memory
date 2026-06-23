@@ -39,6 +39,10 @@ func (s *stubService) Query(_ context.Context, _ memory.Query) (memory.QueryResu
 	return memory.QueryResult{}, nil
 }
 
+func (s *stubService) QueryData(_ context.Context, _ memory.Query) (memory.QueryResult, error) {
+	return memory.QueryResult{}, nil
+}
+
 func (s *stubService) Describe(_ context.Context, _ memory.Query) (memory.DescribeResult, error) {
 	return memory.DescribeResult{}, nil
 }

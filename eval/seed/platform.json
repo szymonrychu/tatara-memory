@@ -60,8 +60,8 @@
     "metadata": { "source": "CLAUDE.md", "type": "hard-rule" }
   },
   {
-    "idempotency_key": "eval-seed-score-zero",
-    "text": "Decision 2026-05-27: QueryMatch.Score remains 0. lightrag v1.4.16 /query and /query/data expose no per-match relevance, score, or similarity field. relationships.weight is a graph edge weight, not retrieval rank. Score cannot be populated until lightrag exposes a per-match ranking field.",
+    "idempotency_key": "eval-seed-score-from-rank",
+    "text": "Decision 2026-06-23 (issue #48): the scored /queries:data path populates QueryMatch.Score. lightrag v1.4.16 /query and /query/data expose no per-match relevance or similarity field (data.chunks carry content, file_path, chunk_id, reference_id only; relationships.weight is a graph edge weight, not retrieval rank), so Score is derived from retrieval rank as 1/(rank+1). This gives the eval a deterministic ranking signal that follows lightrag chunk retrieval order instead of reference arrival order.",
     "metadata": { "source": "MEMORY.md", "type": "decision" }
   },
   {

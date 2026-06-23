@@ -76,6 +76,23 @@ func TestScoreCase(t *testing.T) {
 	require.InDelta(t, 1.0/2.0, s.MRR, 1e-9)
 }
 
+func TestScoreCase_RanksByScoreNotArrivalOrder(t *testing.T) {
+	c := GoldenCase{Name: "c", Mode: memory.QueryModeHybrid, Expected: []string{"target"}}
+	// Arrival order puts the relevant match last, but its Score is highest, so
+	// score-ranking must treat it as rank 1 (the whole point of /queries:data).
+	matches := []memory.QueryMatch{
+		{ID: "1", Text: "noise", Score: 0.2},
+		{ID: "2", Text: "noise", Score: 0.5},
+		{ID: "3", Text: "the target", Score: 0.9},
+	}
+	require.InDelta(t, 1.0, MRR(c, matches), 1e-9, "highest-scored match ranks first, not last by arrival")
+	require.InDelta(t, 1.0, RecallAtK(c, matches, 1), 1e-9, "top-1 by score includes the relevant match")
+
+	s := ScoreCase(c, matches, 1)
+	require.InDelta(t, 1.0, s.MRR, 1e-9)
+	require.InDelta(t, 1.0, s.RecallAtK, 1e-9)
+}
+
 func TestSummarize(t *testing.T) {
 	scores := []Score{
 		{RecallAtK: 1.0, MRR: 1.0},

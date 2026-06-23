@@ -23,7 +23,7 @@ const maxRespBody = 8 << 20 // 8 MiB
 
 // Client is a thin HTTP client for a live tatara-memory deployment, used by the
 // eval runner to seed the corpus and issue golden queries. It is not a general
-// SDK; it only covers /memories:bulk, /ingest-jobs/{id}, and /queries.
+// SDK; it only covers /memories:bulk, /ingest-jobs/{id}, and /queries:data.
 type Client struct {
 	baseURL      string
 	token        string
@@ -113,10 +113,13 @@ func (c *Client) WaitJob(ctx context.Context, id string) (memory.IngestJob, erro
 	}
 }
 
-// Query issues a retrieval against /queries and decodes the result.
+// Query issues a retrieval against /queries:data (the structured, score-ranked
+// path) and decodes the result. The eval uses the scored path so MRR and
+// recall@k reflect LightRAG's chunk retrieval order rather than the unscored
+// /query reference arrival order.
 func (c *Client) Query(ctx context.Context, q memory.Query) (memory.QueryResult, error) {
 	var res memory.QueryResult
-	err := c.doJSON(ctx, http.MethodPost, "/queries", q, &res)
+	err := c.doJSON(ctx, http.MethodPost, "/queries:data", q, &res)
 	return res, err
 }
 

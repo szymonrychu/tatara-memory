@@ -80,7 +80,7 @@ func newServiceOps(reg prometheus.Registerer) *prometheus.CounterVec {
 	if reg != nil {
 		reg.MustRegister(c)
 	}
-	for _, op := range []string{"create", "delete", "delete_by_source", "patch_entity", "create_edge", "delete_edge", "delete_by_sources", "get", "query", "describe", "get_entity", "search_entities", "list_edges"} {
+	for _, op := range []string{"create", "delete", "delete_by_source", "patch_entity", "create_edge", "delete_edge", "delete_by_sources", "get", "query", "query_data", "describe", "get_entity", "search_entities", "list_edges"} {
 		for _, r := range []string{"success", "error"} {
 			c.WithLabelValues(op, r)
 		}
@@ -125,6 +125,20 @@ func filterTombstonedRefs(ctx context.Context, tomb tombstoner, refs []lightrag.
 		del, err := tomb.IsDeleted(ctx, ref.ReferenceID)
 		if err != nil || !del {
 			out = append(out, ref)
+		}
+	}
+	return out
+}
+
+// filterTombstonedChunks drops chunks whose reference_id is tombstoned, so
+// QueryData does not surface content from logically-deleted memories (the
+// structured-path mirror of filterTombstonedRefs).
+func filterTombstonedChunks(ctx context.Context, tomb tombstoner, chunks []queryDataChunk) []queryDataChunk {
+	out := chunks[:0]
+	for _, ch := range chunks {
+		del, err := tomb.IsDeleted(ctx, ch.referenceID)
+		if err != nil || !del {
+			out = append(out, ch)
 		}
 	}
 	return out
@@ -416,6 +430,45 @@ func (s *Service) Describe(ctx context.Context, q Query) (DescribeResult, error)
 		"duration_ms", time.Since(start).Milliseconds(),
 	)
 	return DescribeResultFromQuery(*resp), nil
+}
+
+// QueryData retrieves ranked, scored matches via LightRAG's structured /query/data
+// path. Unlike Query (which maps unranked /query references with Score 0),
+// data.chunks come back in retrieval order and are mapped to Score-descending
+// Matches (translate.go: queryResultFromChunks). top_k is mirrored into
+// chunk_top_k so the requested depth bounds the chunk window (the ranked unit),
+// not just entity/relation retrieval. include_chunk_content must be set or
+// LightRAG omits chunk text, mirroring the include_references lesson (#21).
+func (s *Service) QueryData(ctx context.Context, q Query) (QueryResult, error) {
+	start := time.Now()
+	if !q.Mode.Valid() {
+		err := fmt.Errorf("invalid query mode: %s", q.Mode)
+		s.incOp("query_data", err)
+		return QueryResult{}, err
+	}
+	resp, err := s.lr.QueryData(ctx, lightrag.QueryRequest{
+		Mode:          lightrag.QueryMode(q.Mode),
+		Query:         q.Text,
+		TopK:          q.TopK,
+		ChunkTopK:     q.TopK,
+		IncludeChunks: t(true),
+	})
+	if err != nil {
+		wrapped := wrapUpstream(err)
+		s.incOp("query_data", wrapped)
+		return QueryResult{}, wrapped
+	}
+	chunks := chunksFromQueryData(*resp)
+	if s.tomb != nil {
+		chunks = filterTombstonedChunks(ctx, s.tomb, chunks)
+	}
+	s.incOp("query_data", nil)
+	s.log.InfoContext(ctx, "memory.query_data",
+		"action", "query_data",
+		"matches", len(chunks),
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
+	return queryResultFromChunks(chunks), nil
 }
 
 // GetEntity retrieves an entity by name (Entity.ID == Entity.Name in this model).

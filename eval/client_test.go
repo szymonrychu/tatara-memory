@@ -109,13 +109,13 @@ func TestClient_WaitJob_TerminalPartialAndFailed(t *testing.T) {
 	}
 }
 
-func TestClient_Query_DecodesMatches(t *testing.T) {
+func TestClient_Query_DecodesScoredMatches(t *testing.T) {
 	var gotQ memory.Query
 	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "/queries", r.URL.Path)
+		require.Equal(t, "/queries:data", r.URL.Path, "eval queries the scored structured path")
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&gotQ))
 		_ = json.NewEncoder(w).Encode(memory.QueryResult{Matches: []memory.QueryMatch{
-			{ID: "m1", Text: "alpha"}, {ID: "m2", Text: "beta"},
+			{ID: "m1", Text: "alpha", Score: 1.0}, {ID: "m2", Text: "beta", Score: 0.5},
 		}})
 	})
 
@@ -123,6 +123,7 @@ func TestClient_Query_DecodesMatches(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, res.Matches, 2)
 	require.Equal(t, "alpha", res.Matches[0].Text)
+	require.InDelta(t, 1.0, res.Matches[0].Score, 1e-9, "real scores are decoded, not zeroed")
 	require.Equal(t, memory.QueryModeHybrid, gotQ.Mode)
 	require.Equal(t, 5, gotQ.TopK)
 }

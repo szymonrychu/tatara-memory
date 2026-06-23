@@ -56,17 +56,18 @@ A JSON array of cases. The harness runs every case across the files under
 ```json
 [
   {
-    "name": "query-score-zero",
-    "query": "Why is QueryMatch.Score always zero?",
+    "name": "query-score-from-rank",
+    "query": "How is QueryMatch.Score populated for scored retrieval?",
     "mode": "local",
     "top_k": 10,
-    "expected": ["Score remains 0", "per-match ranking field"]
+    "expected": ["retrieval rank", "1/(rank+1)"]
   }
 ]
 ```
 
 - `name` (required, unique): stable case identifier for logs/trends.
-- `query` (required): the retrieval text sent to `POST /queries`.
+- `query` (required): the retrieval text sent to `POST /queries:data`
+  (the structured, score-ranked path).
 - `mode` (required): one of `hybrid`, `local`, `global`, `naive`
   (`memory.QueryMode`).
 - `top_k` (optional): per-case retrieval depth. Omitted/0 defaults to 10;
@@ -77,13 +78,16 @@ A JSON array of cases. The harness runs every case across the files under
 
 ## Metrics
 
-Because `Score` is unavailable, retrieval is scored purely by the order
-and content of the returned `Matches`:
+The eval queries `/queries:data`, whose `Match.Score` is derived from
+LightRAG's chunk retrieval order (`1/(rank+1)`; LightRAG v1.4.16 exposes
+no per-chunk relevance field). Matches are ranked by `Score` descending
+before scoring, so recall@k and MRR reflect that retrieval order rather
+than the order matches happened to arrive in:
 
 - **recall@k**: fraction of a case's `expected` entries found within the
-  first `k` matches.
-- **MRR**: reciprocal rank (`1/rank`) of the first match that satisfies
-  any expected entry; 0 if none.
+  top `k` score-ranked matches.
+- **MRR**: reciprocal rank (`1/rank`) of the first score-ranked match that
+  satisfies any expected entry; 0 if none.
 
 The runner aggregates mean recall@k and mean MRR across all cases and
 exits non-zero when aggregate recall@k falls below a configurable floor,
