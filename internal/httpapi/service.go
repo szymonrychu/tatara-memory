@@ -16,6 +16,7 @@ type MemoryService interface {
 	DeleteMemoriesBySource(ctx context.Context, repo, filePath string) (int, error)
 	DeleteMemoriesBySources(ctx context.Context, repo string, files []string) (int, error)
 	Query(ctx context.Context, q memory.Query) (memory.QueryResult, error)
+	QueryData(ctx context.Context, q memory.Query) (memory.QueryResult, error)
 	Describe(ctx context.Context, q memory.Query) (memory.DescribeResult, error)
 	GetEntity(ctx context.Context, id string) (memory.Entity, error)
 	SearchEntities(ctx context.Context, q string) ([]memory.Entity, error)

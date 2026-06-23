@@ -24,6 +24,10 @@ func (q *queryStub) Query(_ context.Context, _ memory.Query) (memory.QueryResult
 	return q.qres, q.qerr
 }
 
+func (q *queryStub) QueryData(_ context.Context, _ memory.Query) (memory.QueryResult, error) {
+	return q.qres, q.qerr
+}
+
 func (q *queryStub) Describe(_ context.Context, _ memory.Query) (memory.DescribeResult, error) {
 	return q.dres, q.qerr
 }
@@ -65,6 +69,36 @@ func TestPostQueriesDescribe200(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, 200, resp.StatusCode)
+}
+
+func TestPostQueriesData200(t *testing.T) {
+	svc := &queryStub{qres: memory.QueryResult{Matches: []memory.QueryMatch{
+		{ID: "c1", Score: 1.0}, {ID: "c2", Score: 0.5},
+	}}}
+	srv := newSrv(t, svc)
+	defer srv.Close()
+
+	body, _ := json.Marshal(map[string]string{"mode": "hybrid", "text": "x"})
+	resp, err := http.Post(srv.URL+"/queries:data", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, 200, resp.StatusCode)
+
+	var got memory.QueryResult
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+	require.Len(t, got.Matches, 2)
+	require.InDelta(t, 1.0, got.Matches[0].Score, 1e-9, "scored matches are returned")
+}
+
+func TestPostQueriesDataInvalidMode400(t *testing.T) {
+	srv := newSrv(t, &queryStub{})
+	defer srv.Close()
+
+	body, _ := json.Marshal(map[string]string{"mode": "nope", "text": "x"})
+	resp, err := http.Post(srv.URL+"/queries:data", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, 400, resp.StatusCode)
 }
 
 // TestPostQueryUnknownField400 ensures that a body containing a valid mode but

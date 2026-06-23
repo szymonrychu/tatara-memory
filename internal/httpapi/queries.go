@@ -96,3 +96,33 @@ func handlePostQueryDescribe(cfg Config) http.HandlerFunc {
 		WriteJSON(w, http.StatusOK, res)
 	}
 }
+
+// handlePostQueryData mirrors handlePostQuery but routes to the structured,
+// score-ranked /query/data path (Service.QueryData). Same auth gate, top_k
+// clamp, and validation; the response is a QueryResult with real, descending
+// Match.Score reflecting LightRAG's chunk retrieval order.
+func handlePostQueryData(cfg Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var q memory.Query
+		if !decodeStrict(w, r, &q) {
+			return
+		}
+		if !q.Mode.Valid() {
+			WriteError(w, http.StatusBadRequest, "invalid mode", RequestIDFromContext(r.Context()))
+			return
+		}
+		if q.Text == "" {
+			WriteError(w, http.StatusBadRequest, "text required", RequestIDFromContext(r.Context()))
+			return
+		}
+		if !clampTopK(w, r, &q) {
+			return
+		}
+		res, err := cfg.Service.QueryData(r.Context(), q)
+		if err != nil {
+			mapServiceError(w, r, err)
+			return
+		}
+		WriteJSON(w, http.StatusOK, res)
+	}
+}

@@ -81,6 +81,68 @@ func DescribeResultFromQuery(r lightrag.QueryResponse) DescribeResult {
 	return DescribeResult{Response: r.Response, Sources: sources}
 }
 
+// queryDataChunk is the domain view of one LightRAG v1.4.16 /query/data
+// data.chunks[] entry. The confirmed wire shape is
+// {content, file_path, chunk_id, reference_id}; there is no per-chunk relevance,
+// score, or similarity field (verified against the v1.4.16 source - see
+// MEMORY.md 2026-06-23). reference_id is retained for tombstone filtering.
+type queryDataChunk struct {
+	chunkID     string
+	referenceID string
+	text        string
+}
+
+// chunksFromQueryData reads data.chunks[] from a LightRAG /query/data envelope,
+// preserving retrieval order. The envelope is map[string]any (the OpenAPI is too
+// lossy to type), so every level is asserted defensively: a missing or
+// wrongly-typed chunks key, or a non-object entry, is skipped rather than assumed.
+func chunksFromQueryData(r lightrag.QueryDataResponse) []queryDataChunk {
+	raw, ok := r.Data["chunks"].([]any)
+	if !ok {
+		return nil
+	}
+	chunks := make([]queryDataChunk, 0, len(raw))
+	for _, item := range raw {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		content, _ := stringProp(obj, "content")
+		chunkID, _ := stringProp(obj, "chunk_id")
+		refID, _ := stringProp(obj, "reference_id")
+		chunks = append(chunks, queryDataChunk{chunkID: chunkID, referenceID: refID, text: content})
+	}
+	return chunks
+}
+
+// queryResultFromChunks maps ordered /query/data chunks into ranked Matches.
+// LightRAG v1.4.16 returns chunks in retrieval order but carries no per-chunk
+// relevance score, so Score is derived from retrieval rank as 1/(rank+1): a
+// deterministic, strictly-descending signal that reflects the retrieval engine's
+// own chunk ordering instead of the reference arrival order /query exposes. ID is
+// chunk_id (falling back to reference_id when absent); Text is the chunk content.
+func queryResultFromChunks(chunks []queryDataChunk) QueryResult {
+	out := QueryResult{Matches: make([]QueryMatch, 0, len(chunks))}
+	for i, ch := range chunks {
+		id := ch.chunkID
+		if id == "" {
+			id = ch.referenceID
+		}
+		out.Matches = append(out.Matches, QueryMatch{
+			ID:    id,
+			Score: 1.0 / float64(i+1),
+			Text:  ch.text,
+		})
+	}
+	return out
+}
+
+// QueryResultFromQueryData maps a LightRAG /query/data response into ranked
+// domain Matches (see queryResultFromChunks for the scoring rationale).
+func QueryResultFromQueryData(r lightrag.QueryDataResponse) QueryResult {
+	return queryResultFromChunks(chunksFromQueryData(r))
+}
+
 // EntityFromGraphNode maps a graph node into a domain Entity.
 // entity_name is taken from node.ID; entity_type / description from properties.
 func EntityFromGraphNode(n lightrag.GraphNode) Entity {

@@ -73,6 +73,7 @@ func mountV1(r chi.Router, cfg Config) {
 	}
 
 	r.Post("/queries", handlePostQuery(cfg))
+	r.Post("/queries:data", handlePostQueryData(cfg))
 	r.Post("/queries:describe", handlePostQueryDescribe(cfg))
 
 	r.Get("/entities", handleSearchEntities(cfg))

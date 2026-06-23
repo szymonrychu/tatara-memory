@@ -14,11 +14,11 @@
     "expected": ["no lists in values.yaml", "templated ConfigMap"]
   },
   {
-    "name": "query-score-zero",
-    "query": "Why is QueryMatch.Score always zero?",
+    "name": "query-score-from-rank",
+    "query": "How is QueryMatch.Score populated for scored retrieval?",
     "mode": "local",
     "top_k": 10,
-    "expected": ["Score remains 0", "per-match ranking field"]
+    "expected": ["retrieval rank", "1/(rank+1)"]
   },
   {
     "name": "kubectl-mutation-rule",

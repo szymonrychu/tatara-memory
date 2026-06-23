@@ -240,7 +240,7 @@ func (c *Client) DeleteDocs(_ context.Context, req lightrag.DeleteDocRequest) (*
 	}, nil
 }
 
-// LastQuery returns the most recent QueryRequest passed to Query.
+// LastQuery returns the most recent QueryRequest passed to Query or QueryData.
 func (c *Client) LastQuery() lightrag.QueryRequest {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -263,9 +263,10 @@ func (c *Client) Query(_ context.Context, req lightrag.QueryRequest) (*lightrag.
 // Mirrors the real HTTPClient envelope check: a non-success (non-empty) status
 // in the seeded response is returned as a *lightrag.LogicalError so consumer
 // tests can exercise the failure path with fake-vs-real parity.
-func (c *Client) QueryData(_ context.Context, _ lightrag.QueryRequest) (*lightrag.QueryDataResponse, error) {
+func (c *Client) QueryData(_ context.Context, req lightrag.QueryRequest) (*lightrag.QueryDataResponse, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.lastReq = req
 	cp := c.dataRes
 	if cp.Status != "success" {
 		return nil, &lightrag.LogicalError{Op: lightrag.OpQueryData, Status: cp.Status, Message: cp.Message}
