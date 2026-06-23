@@ -1,0 +1,61 @@
+{{- if .Values.eval.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "tatara-memory.fullname" . }}-eval
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tatara-memory.labels" . | nindent 4 }}
+    app.kubernetes.io/component: eval
+data:
+  {{- include "tatara-memory.evalEnvConfig" . | nindent 2 }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "tatara-memory.fullname" . }}-eval
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tatara-memory.labels" . | nindent 4 }}
+    app.kubernetes.io/component: eval
+spec:
+  schedule: {{ .Values.eval.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            {{- include "tatara-memory.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: eval
+          annotations:
+            checksum/config: {{ include "tatara-memory.evalEnvConfig" . | sha256sum }}
+        spec:
+          restartPolicy: Never
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          serviceAccountName: {{ include "tatara-memory.serviceAccountName" . }}
+          {{- with .Values.podSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: eval
+              {{- with .Values.containerSecurityContext }}
+              securityContext:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              command: ["/eval"]
+              envFrom:
+                - configMapRef:
+                    name: {{ include "tatara-memory.fullname" . }}-eval
+              resources:
+                {{- toYaml .Values.eval.resources | nindent 16 }}
+{{- end }}

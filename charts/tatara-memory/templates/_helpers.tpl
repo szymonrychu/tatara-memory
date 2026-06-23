@@ -75,3 +75,14 @@ INGEST_ITEM_TIMEOUT: {{ .Values.ingestItemTimeout | quote }}
 LOG_LEVEL: {{ .Values.logLevel | quote }}
 OTLP_ENDPOINT: {{ .Values.otlpEndpoint | quote }}
 {{- end -}}
+
+{{/*
+Env for the opt-in eval CronJob (issue #46). The eval binary reads MEMORY_BASE_URL
+(its target), EVAL_PUSH_URL (operator push-receiver), and LOG_LEVEL. Kept separate
+from envConfig so the eval pod targets a dedicated eval-memory URL, not this app.
+*/}}
+{{- define "tatara-memory.evalEnvConfig" -}}
+MEMORY_BASE_URL: {{ .Values.eval.targetBaseUrl | quote }}
+EVAL_PUSH_URL: {{ .Values.eval.pushUrl | quote }}
+LOG_LEVEL: {{ .Values.logLevel | quote }}
+{{- end -}}

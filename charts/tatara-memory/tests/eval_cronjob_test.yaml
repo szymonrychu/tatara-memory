@@ -1,0 +1,58 @@
+suite: eval-cronjob
+templates:
+  - eval-cronjob.yaml
+release:
+  name: tm
+  namespace: tatara
+tests:
+  - it: skipped when disabled (default)
+    asserts:
+      - hasDocuments:
+          count: 0
+  - it: renders a ConfigMap and CronJob when enabled
+    set:
+      eval.enabled: true
+      eval.schedule: "*/30 * * * *"
+      eval.targetBaseUrl: "http://tatara-memory-eval:8080"
+      eval.pushUrl: "http://tatara-operator-internal.tatara.svc:8082/internal/metrics/push"
+    asserts:
+      - hasDocuments:
+          count: 2
+      - documentIndex: 0
+        isKind:
+          of: ConfigMap
+      - documentIndex: 0
+        equal:
+          path: data.MEMORY_BASE_URL
+          value: "http://tatara-memory-eval:8080"
+      - documentIndex: 0
+        equal:
+          path: data.EVAL_PUSH_URL
+          value: "http://tatara-operator-internal.tatara.svc:8082/internal/metrics/push"
+      - documentIndex: 1
+        isKind:
+          of: CronJob
+      - documentIndex: 1
+        equal:
+          path: spec.schedule
+          value: "*/30 * * * *"
+      - documentIndex: 1
+        equal:
+          path: spec.concurrencyPolicy
+          value: Forbid
+      - documentIndex: 1
+        equal:
+          path: spec.jobTemplate.spec.template.spec.restartPolicy
+          value: Never
+      - documentIndex: 1
+        equal:
+          path: spec.jobTemplate.spec.backoffLimit
+          value: 0
+      - documentIndex: 1
+        equal:
+          path: spec.jobTemplate.spec.template.spec.containers[0].command[0]
+          value: /eval
+      - documentIndex: 1
+        equal:
+          path: spec.jobTemplate.spec.template.spec.containers[0].envFrom[0].configMapRef.name
+          value: tm-tatara-memory-eval

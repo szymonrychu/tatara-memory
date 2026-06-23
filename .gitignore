@@ -26,4 +26,7 @@ charts/*/charts/neo4j-*
 # Mise local override
 .mise.local.toml
 /.worktrees/
-tatara-memory
+# Root-level built binary only. Anchored with a leading slash so it does not
+# also ignore the chart dir (charts/tatara-memory/) or any nested path that
+# happens to contain a "tatara-memory" component.
+/tatara-memory
