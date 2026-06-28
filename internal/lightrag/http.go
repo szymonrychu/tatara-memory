@@ -297,9 +297,12 @@ func (c *HTTPClient) TrackStatus(ctx context.Context, trackID string) (*TrackSta
 
 // DeleteDocs deletes documents by their IDs (background-processed).
 func (c *HTTPClient) DeleteDocs(ctx context.Context, req DeleteDocRequest) (*DeleteDocByIdResponse, error) {
-	body, err := encodeJSON(req)
+	// Encode once to bytes and hand each attempt a fresh reader: roundTrip drains
+	// the reader via io.ReadAll, so reusing one *bytes.Buffer across the busy-retry
+	// loop would resend an empty body (LightRAG 422 input:null) on every retry.
+	body, err := json.Marshal(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("lightrag: encode body: %w", err)
 	}
 	// status="busy" is a logical 200 (the pipeline lock is held mid-ingest), so the
 	// HTTP-level retry in roundTrip does not see it. Retry it here on the same
@@ -319,7 +322,7 @@ func (c *HTTPClient) DeleteDocs(ctx context.Context, req DeleteDocRequest) (*Del
 			}
 		}
 		out = DeleteDocByIdResponse{}
-		dur, transportErr := c.doAndObserve(ctx, OpDeleteDocs, http.MethodDelete, "/documents/delete_document", body, &out)
+		dur, transportErr := c.doAndObserve(ctx, OpDeleteDocs, http.MethodDelete, "/documents/delete_document", bytes.NewReader(body), &out)
 		totalDur += dur
 		if transportErr != nil {
 			c.metrics.observe(OpDeleteDocs, totalDur, transportErr)
