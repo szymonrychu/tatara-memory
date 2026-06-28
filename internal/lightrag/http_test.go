@@ -138,6 +138,39 @@ func TestHTTPClient_DeleteDocs_BusyExhaustsRetriesReturnsBusy(t *testing.T) {
 	require.Equal(t, 4, calls, "DeleteDocs must try initial + retryMax(3) attempts before giving up")
 }
 
+func TestHTTPClient_DeleteDocs_RetriedRequestKeepsBody(t *testing.T) {
+	// Regression: the busy-retry loop must resend the full {"doc_ids":[...]} body on
+	// every attempt. Previously DeleteDocs reused one *bytes.Buffer that roundTrip
+	// drained on attempt 0, so the busy retry sent an empty body and LightRAG
+	// rejected it with 422 (input:null), converting transient lock contention into
+	// a permanent failure. Unlike the other busy tests, this handler decodes the
+	// body on each attempt so an empty retry body fails the assertion.
+	var bodies []string
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		raw, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		bodies = append(bodies, string(raw))
+
+		status := "busy"
+		if len(bodies) >= 2 {
+			status = "deletion_started"
+		}
+		_ = json.NewEncoder(w).Encode(lightrag.DeleteDocByIdResponse{
+			Status: status, Message: "ok", DocID: "doc-1",
+		})
+	})
+
+	resp, err := c.DeleteDocs(context.Background(), lightrag.DeleteDocRequest{DocIDs: []string{"doc-1"}})
+	require.NoError(t, err)
+	require.Equal(t, "deletion_started", resp.Status)
+	require.Len(t, bodies, 2, "expected one busy attempt plus one successful retry")
+	for i, raw := range bodies {
+		var in lightrag.DeleteDocRequest
+		require.NoErrorf(t, json.Unmarshal([]byte(raw), &in), "attempt %d body must be valid JSON, got %q", i, raw)
+		require.Equalf(t, []string{"doc-1"}, in.DocIDs, "attempt %d must carry the full doc_ids body", i)
+	}
+}
+
 func TestHTTPClient_Query(t *testing.T) {
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodPost, r.Method)
