@@ -47,6 +47,24 @@ serviceMonitor:
   interval: "30s"
   scrapeTimeout: "10s"
 
+# PrometheusRule for tatara-memory's own runtime metrics. Mirrors the operator
+# chart's knobs and stays cluster-agnostic (rule 14): additionalLabels defaults
+# to {} and any ruleSelector label the cluster's Prometheus needs is set from
+# the deploying helmfile (per-release values), never baked here. Alertmanager
+# routing is a cluster-side concern.
+prometheusRule:
+  enabled: true
+  # Severity applied to the active-failure (Class-B) alerts. The MemoryDown
+  # deadman is always critical.
+  severityLabel: warning
+  additionalLabels: {}
+  # Fraction of HTTP responses that may be 5xx before MemoryHigh5xx fires.
+  http5xxRatio: 0.05
+  # p99 request-latency threshold (seconds) for MemoryRetrievalLatencyHigh.
+  # Must stay below 10s: the histogram uses prometheus.DefBuckets whose largest
+  # finite bucket is 10s, so p99 saturates there.
+  retrievalLatencyP99Seconds: 2.5
+
 networkPolicy:
   enabled: true
   # postgresClusterName matches the cnpg.io/cluster label on the cnpg pods.

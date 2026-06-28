@@ -6,6 +6,7 @@ templates:
   - deployment.yaml
   - ingress.yaml
   - servicemonitor.yaml
+  - prometheusrule.yaml
   - networkpolicy.yaml
 release:
   name: tm
