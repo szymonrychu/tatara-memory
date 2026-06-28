@@ -1,0 +1,92 @@
+{{- if .Values.prometheusRule.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "tatara-memory.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tatara-memory.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: tatara-memory.rules
+      rules:
+        # Class-A deadman: the recall backbone has no scrape target up.
+        - alert: MemoryDown
+          expr: up{job=~".*tatara-memory.*"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: tatara-memory is down (no scrape target up)
+            description: >-
+              No tatara-memory instance has been scrapeable for 5m. The
+              recall/retrieval backbone of the autonomous loop is unavailable.
+        # Class-B active failures.
+        - alert: MemoryHigh5xx
+          # The `status` label is http.StatusText(code) (a human string), not a
+          # numeric code, so match the 5xx StatusText family rather than "5..".
+          expr: >-
+            (
+              sum(rate(http_requests_total{job=~".*tatara-memory.*", status=~"Internal Server Error|Not Implemented|Bad Gateway|Service Unavailable|Gateway Timeout|HTTP Version Not Supported|Variant Also Negotiates|Insufficient Storage|Loop Detected|Not Extended|Network Authentication Required"}[5m]))
+              /
+              clamp_min(sum(rate(http_requests_total{job=~".*tatara-memory.*"}[5m])), 1)
+            ) > {{ .Values.prometheusRule.http5xxRatio }}
+          for: 10m
+          labels:
+            severity: {{ .Values.prometheusRule.severityLabel | quote }}
+          annotations:
+            summary: tatara-memory serving elevated 5xx
+            description: >-
+              More than {{ .Values.prometheusRule.http5xxRatio }} of tatara-memory
+              HTTP responses are server errors over the last 5m (sustained 10m).
+        - alert: MemoryLightragErrors
+          # Upstream recall failures: lightrag client calls returning result="error".
+          expr: sum(increase(lightrag_calls_total{job=~".*tatara-memory.*", result="error"}[15m])) > 0
+          for: 0m
+          labels:
+            severity: {{ .Values.prometheusRule.severityLabel | quote }}
+          annotations:
+            summary: tatara-memory LightRAG upstream is erroring
+            description: >-
+              tatara-memory recorded LightRAG client errors in the last 15m. The
+              upstream recall path is degraded.
+        - alert: MemoryIngestJobsFailing
+          expr: sum(increase(ingest_jobs_total{job=~".*tatara-memory.*", status="failed"}[1h])) > 0
+          for: 0m
+          labels:
+            severity: {{ .Values.prometheusRule.severityLabel | quote }}
+          annotations:
+            summary: tatara-memory ingest jobs are failing
+            description: >-
+              tatara-memory finalized one or more ingest jobs with status="failed"
+              in the last hour. New memories may not be getting indexed.
+        - alert: MemoryRetrievalLatencyHigh
+          # p99 over DefBuckets (largest finite bucket 10s); keep the threshold
+          # below 10s or the quantile saturates and can never exceed it.
+          expr: >-
+            histogram_quantile(
+              0.99,
+              sum by (le) (rate(http_request_duration_seconds_bucket{job=~".*tatara-memory.*"}[5m]))
+            ) > {{ .Values.prometheusRule.retrievalLatencyP99Seconds }}
+          for: 15m
+          labels:
+            severity: {{ .Values.prometheusRule.severityLabel | quote }}
+          annotations:
+            summary: tatara-memory request latency is high
+            description: >-
+              tatara-memory p99 request latency has exceeded
+              {{ .Values.prometheusRule.retrievalLatencyP99Seconds }}s for 15m.
+        - alert: MemoryHandlerPanics
+          expr: sum(increase(http_panics_total{job=~".*tatara-memory.*"}[15m])) > 0
+          for: 0m
+          labels:
+            severity: {{ .Values.prometheusRule.severityLabel | quote }}
+          annotations:
+            summary: tatara-memory HTTP handler panicked
+            description: >-
+              tatara-memory recovered one or more HTTP handler panics in the last
+              15m. A code path is wedging requests.
+{{- end }}
