@@ -1,0 +1,67 @@
+name: release
+
+# Push-CD for tatara-memory (image-only, operator-provisioned; no chart).
+# Runs only after a successful `ci` run on main (a merged PR). It cuts the
+# next semver git tag from the merged PR's `semver:*` label, republishes the
+# image at that tag (build.sh already dual-tags :SHORT_SHA + the git-describe
+# version, which is the clean vX.Y.Z once the tag exists on HEAD), then bumps
+# the single tatara-helmfile pin (values/tatara-operator/default.yaml
+# memoryImage). See docs/2026-06-28-semver-push-cd-design.md.
+
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: >-
+      ${{ github.event.workflow_run.conclusion == 'success'
+          && github.event.workflow_run.event == 'push'
+          && github.event.workflow_run.head_branch == 'main' }}
+    runs-on: tatara-memory
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
+      HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - name: cut semver tag
+        id: tag
+        uses: szymonrychu/tatara-helmfile/.github/actions/cd-release@main
+        with:
+          mode: tag
+          token: ${{ secrets.TATARA_CD_TOKEN }}
+
+      - name: install buildctl
+        run: |
+          curl -sSfL "https://github.com/moby/buildkit/releases/download/v0.18.2/buildkit-v0.18.2.linux-amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local bin/buildctl
+
+      - name: build and push image at semver
+        env:
+          GITHUB_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: bash .github/ci/build.sh "${{ github.event.repository.name }}"
+
+      - name: bump tatara-helmfile memoryImage pin
+        uses: szymonrychu/tatara-helmfile/.github/actions/cd-release@main
+        with:
+          mode: bump
+          token: ${{ secrets.TATARA_CD_TOKEN }}
+          parent_repo: szymonrychu/tatara-helmfile
+          new_value: ${{ steps.tag.outputs.version }}
+          pins: |
+            [
+              {
+                "file": "values/tatara-operator/default.yaml",
+                "pattern": "^memoryImage: \".*\"$",
+                "value_template": "memoryImage: \"harbor.szymonrichert.pl/containers/tatara-memory:{{version}}\""
+              }
+            ]
