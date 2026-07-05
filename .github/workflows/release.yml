@@ -3,10 +3,12 @@ name: release
 # Push-CD for tatara-memory (image-only, operator-provisioned; no chart).
 # Runs only after a successful `ci` run on main (a merged PR). It cuts the
 # next semver git tag from the merged PR's `semver:*` label, republishes the
-# image at that tag (build.sh already dual-tags :SHORT_SHA + the git-describe
-# version, which is the clean vX.Y.Z once the tag exists on HEAD), then bumps
-# the single tatara-helmfile pin (values/tatara-operator/default.yaml
-# memoryImage). See docs/2026-06-28-semver-push-cd-design.md.
+# image at that tag ONLY (build.sh's git-describe VERSION is the clean
+# vX.Y.Z once the tag exists on HEAD; PUSH_SHORT_SHA_TAG=false below skips
+# re-pushing :SHORT_SHA, which ci.yml already pushed and Harbor's containers
+# project has immutable), then bumps the single tatara-helmfile pin
+# (values/tatara-operator/default.yaml memoryImage).
+# See docs/2026-06-28-semver-push-cd-design.md.
 
 on:
   workflow_run:
@@ -45,9 +47,14 @@ jobs:
           curl -sSfL "https://github.com/moby/buildkit/releases/download/v0.18.2/buildkit-v0.18.2.linux-amd64.tar.gz" \
             | sudo tar -xz -C /usr/local bin/buildctl
 
+      # Re-publish the image at the computed :vX.Y.Z ONLY. ci already pushed
+      # :<shortSHA> for this same commit; Harbor's containers project has tag
+      # immutability, so re-pushing it here 412s the release (build.sh's
+      # PUSH_SHORT_SHA_TAG=false toggle skips it).
       - name: build and push image at semver
         env:
           GITHUB_SHA: ${{ github.event.workflow_run.head_sha }}
+          PUSH_SHORT_SHA_TAG: "false"
         run: bash .github/ci/build.sh "${{ github.event.repository.name }}"
 
       - name: bump tatara-helmfile memoryImage pin
