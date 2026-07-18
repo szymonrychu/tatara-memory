@@ -18,6 +18,31 @@ import (
 // even at the upstream's slowest observed response time (~200ms/id).
 const TombstoneReapBatchSize = 1000
 
+// forceReapBackoffBase and forceReapBackoffCap bound the delay between
+// successive force-reap re-verifications of a tombstone whose upstream doc is
+// still present. The delay doubles per attempt starting at forceReapBackoffBase
+// and is capped at forceReapBackoffCap, so a permanently-stuck upstream delete
+// settles into a once-a-day self-heal probe instead of being re-checked (and
+// re-warned) on every 5-minute tick forever.
+const (
+	forceReapBackoffBase = time.Hour
+	forceReapBackoffCap  = 24 * time.Hour
+)
+
+// forceReapBackoff returns the delay before the next force-recheck of a
+// tombstone that has been force-checked attempts times (the count AFTER the
+// current check). attempts <= 1 returns the base delay.
+func forceReapBackoff(attempts int) time.Duration {
+	d := forceReapBackoffBase
+	for i := 1; i < attempts && d < forceReapBackoffCap; i++ {
+		d *= 2
+	}
+	if d > forceReapBackoffCap {
+		d = forceReapBackoffCap
+	}
+	return d
+}
+
 // trackStatuser is the subset of the lightrag client used by the reaper.
 // Defining it here keeps the package boundary narrow and the reaper testable
 // with a fake.
@@ -30,7 +55,8 @@ type trackStatuser interface {
 type reapStore interface {
 	List(ctx context.Context, limit int) ([]string, error)
 	Delete(ctx context.Context, id string) error
-	ListOlderThan(ctx context.Context, maxAge time.Duration, limit int) ([]string, error)
+	ListOlderThan(ctx context.Context, maxAge time.Duration, limit int) ([]ForceCandidate, error)
+	RecordForceCheckStillPresent(ctx context.Context, id string, nextCheckAt time.Time) error
 }
 
 // Reaper periodically removes tombstones once lightrag confirms the document
@@ -131,18 +157,22 @@ func (r *Reaper) tick(ctx context.Context) {
 // forceTick is the 24h forced-reap path. Unlike the fast path, it calls
 // TrackStatus per candidate id and only deletes tombstones whose upstream doc
 // is confirmed gone (404 or empty-docs). Tombstones whose doc is still present
-// are skipped and counted as force_skipped_still_present so the resurrection is
-// observable without silently un-deleting content.
+// are skipped and counted as force_skipped_still_present, and their next
+// re-verification is deferred via an exponential backoff (forceReapBackoff) so
+// a permanently-stuck upstream delete is not re-checked (and re-warned) on
+// every tick forever - ListOlderThan already excludes candidates whose
+// next_force_check_at has not elapsed.
 func (r *Reaper) forceTick(ctx context.Context) {
 	aged, err := r.store.ListOlderThan(ctx, r.maxAge, TombstoneReapBatchSize)
 	if err != nil {
 		r.logger.Error("tombstone list older", "err", err)
 		return
 	}
-	for _, id := range aged {
+	for _, cand := range aged {
 		if err := ctx.Err(); err != nil {
 			return
 		}
+		id := cand.TrackID
 		resp, err := r.lightrag.TrackStatus(ctx, id)
 		if err != nil {
 			var he *lightrag.HTTPError
@@ -158,10 +188,17 @@ func (r *Reaper) forceTick(ctx context.Context) {
 			// 200 + empty: confirmed gone
 			r.reapConfirmedForced(ctx, id)
 		} else {
-			// doc still present: skip, emit observable metric + WARN
+			// doc still present: defer the next check via backoff, emit
+			// observable metric + WARN (attempts/next_check_at make the
+			// staleness readable without cross-referencing the DB).
+			attempts := cand.Attempts + 1
+			nextCheck := time.Now().Add(forceReapBackoff(attempts))
+			if rerr := r.store.RecordForceCheckStillPresent(ctx, id, nextCheck); rerr != nil {
+				r.logger.Error("tombstone record force check", "track_id", id, "err", rerr)
+			}
 			r.metric.WithLabelValues("force_skipped_still_present").Inc()
 			r.logger.Warn("tombstone force-reap skipped: doc still present",
-				"track_id", id)
+				"track_id", id, "attempts", attempts, "next_check_at", nextCheck)
 		}
 	}
 }

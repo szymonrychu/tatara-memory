@@ -139,6 +139,7 @@ func (p *Pool) periodicResume(ctx context.Context) {
 		case <-ticker.C:
 			n, err := p.Resume(ctx)
 			if err != nil {
+				p.metrics.incResumeFailure()
 				p.log.ErrorContext(ctx, "ingest.pool.periodic_resume_failed", "err", err)
 			} else if n > 0 {
 				p.log.InfoContext(ctx, "ingest.pool.periodic_resume",

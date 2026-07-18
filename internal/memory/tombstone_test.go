@@ -62,9 +62,37 @@ func TestTombstoneStore_ListOlderThan(t *testing.T) {
 	_, err := db.ExecContext(ctx, `UPDATE deleted_memories SET deleted_at = now() - interval '25 hours' WHERE track_id = 'old'`)
 	require.NoError(t, err)
 
-	aged, err := s.ListOlderThan(ctx, 24*time.Hour)
+	aged, err := s.ListOlderThan(ctx, 24*time.Hour, 10)
 	require.NoError(t, err)
-	require.Equal(t, []string{"old"}, aged, "only the >24h tombstone is aged; fresh is excluded")
+	require.Len(t, aged, 1, "only the >24h tombstone is aged; fresh is excluded")
+	require.Equal(t, "old", aged[0].TrackID)
+	require.Equal(t, 0, aged[0].Attempts, "a freshly-aged tombstone has never been force-checked")
+}
+
+func TestTombstoneStore_ListOlderThan_ExcludesBackedOffCandidates(t *testing.T) {
+	db := openTestDB(t)
+	s := memory.NewTombstoneStore(db)
+	ctx := context.Background()
+
+	require.NoError(t, memory.Migrate(ctx, db))
+
+	require.NoError(t, s.Mark(ctx, "old"))
+	_, err := db.ExecContext(ctx, `UPDATE deleted_memories SET deleted_at = now() - interval '25 hours' WHERE track_id = 'old'`)
+	require.NoError(t, err)
+
+	// Not yet due: excluded even though it is aged.
+	require.NoError(t, s.RecordForceCheckStillPresent(ctx, "old", time.Now().Add(2*time.Hour)))
+	aged, err := s.ListOlderThan(ctx, 24*time.Hour, 10)
+	require.NoError(t, err)
+	require.Empty(t, aged, "a backed-off tombstone must not be a force-reap candidate before next_force_check_at")
+
+	// Due: included again once next_force_check_at has elapsed, with the bumped attempt count.
+	require.NoError(t, s.RecordForceCheckStillPresent(ctx, "old", time.Now().Add(-time.Minute)))
+	aged, err = s.ListOlderThan(ctx, 24*time.Hour, 10)
+	require.NoError(t, err)
+	require.Len(t, aged, 1)
+	require.Equal(t, "old", aged[0].TrackID)
+	require.Equal(t, 2, aged[0].Attempts)
 }
 
 func TestTombstoneStore_List(t *testing.T) {

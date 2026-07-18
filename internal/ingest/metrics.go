@@ -30,6 +30,7 @@ type metrics struct {
 	notifyDropped    prometheus.Counter
 	sourceIndexError prometheus.Counter
 	storeOpError     prometheus.Counter
+	resumeFailures   prometheus.Counter
 }
 
 func newMetrics(reg prometheus.Registerer) *metrics {
@@ -63,11 +64,15 @@ func newMetrics(reg prometheus.Registerer) *metrics {
 			Name: "ingest_store_op_errors_total",
 			Help: "Count of JobStore operation failures in runJob (progress, finalize). Silent loss is observable.",
 		}),
+		resumeFailures: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "ingest_periodic_resume_failures_total",
+			Help: "Count of periodic Resume sweep failures (e.g. during a database outage). The sweep retries on its own ticker, so this is a self-healing signal, not a stuck-forever one.",
+		}),
 	}
 	if reg != nil {
 		reg.MustRegister(
 			m.items, m.itemDuration, m.jobs, m.inFlight,
-			m.notifyDropped, m.sourceIndexError, m.storeOpError,
+			m.notifyDropped, m.sourceIndexError, m.storeOpError, m.resumeFailures,
 		)
 	}
 	for _, result := range []string{resultSuccess, resultError, resultTimeout} {
@@ -109,4 +114,8 @@ func (m *metrics) incSourceIndexError() {
 
 func (m *metrics) incStoreOpError() {
 	m.storeOpError.Inc()
+}
+
+func (m *metrics) incResumeFailure() {
+	m.resumeFailures.Inc()
 }

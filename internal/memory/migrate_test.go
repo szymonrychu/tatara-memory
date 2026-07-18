@@ -24,6 +24,18 @@ func TestMigrationSQLMemorySources(t *testing.T) {
 	require.Contains(t, sql, "memory_sources_repo_file")
 }
 
+// The tombstone-reaper backoff migration must be additive (ADD COLUMN IF NOT
+// EXISTS) so it is safe to apply against an existing deleted_memories table -
+// migrations must remain strictly idempotent per applyMigration's contract
+// (see migrate.go doc comment on the ON CONFLICT DO NOTHING tracker insert).
+func TestMigrationSQLTombstoneBackoff(t *testing.T) {
+	sql := memory.MigrationSQL()
+	require.Contains(t, sql, "force_reap_attempts")
+	require.Contains(t, sql, "next_force_check_at")
+	require.Contains(t, sql, "ADD COLUMN IF NOT EXISTS",
+		"tombstone backoff migration must use ADD COLUMN IF NOT EXISTS for idempotency")
+}
+
 // Finding 6: Migrate must use a version-tracking table so non-idempotent future
 // migrations can be applied safely.
 func TestMigrate_VersionTracking(t *testing.T) {
