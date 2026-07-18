@@ -50,8 +50,12 @@ func (f *FakeTombstoneStore) Delete(_ context.Context, id string) error {
 	return nil
 }
 
-func (f *FakeTombstoneStore) ListOlderThan(_ context.Context, _ time.Duration, _ int) ([]string, error) {
+func (f *FakeTombstoneStore) ListOlderThan(_ context.Context, _ time.Duration, _ int) ([]ForceCandidate, error) {
 	return nil, nil
+}
+
+func (f *FakeTombstoneStore) RecordForceCheckStillPresent(_ context.Context, _ string, _ time.Time) error {
+	return nil
 }
 
 // NewReaperWithFakeStore constructs a Reaper backed by a FakeTombstoneStore for
@@ -70,19 +74,55 @@ func SetReaperInterval(r *Reaper, d time.Duration) {
 	r.interval = d
 }
 
+// forceState tracks the per-id force-reap backoff state a real TombstoneStore
+// would persist in the force_reap_attempts/next_force_check_at columns.
+type forceState struct {
+	attempts    int
+	nextCheckAt time.Time // zero = eligible immediately
+}
+
 // FakeTombstoneStoreWithAged is a reapStore for testing the forced-reap path.
-// Aged IDs are returned by ListAged and can be deleted by Delete.
+// Aged IDs are returned by ListOlderThan (subject to backoff eligibility) and
+// can be deleted by Delete.
 type FakeTombstoneStoreWithAged struct {
-	Live []string
-	Aged []string
+	Live  []string
+	Aged  []string
+	state map[string]*forceState
 }
 
 // NewFakeTombstoneStoreWithAged constructs the store with separate live and aged id sets.
 func NewFakeTombstoneStoreWithAged(live, aged []string) *FakeTombstoneStoreWithAged {
-	return &FakeTombstoneStoreWithAged{
-		Live: append([]string(nil), live...),
-		Aged: append([]string(nil), aged...),
+	f := &FakeTombstoneStoreWithAged{
+		Live:  append([]string(nil), live...),
+		Aged:  append([]string(nil), aged...),
+		state: make(map[string]*forceState, len(aged)),
 	}
+	for _, id := range aged {
+		f.state[id] = &forceState{}
+	}
+	return f
+}
+
+// SetForceState seeds attempts/nextCheckAt for id, for tests that need to
+// start mid-backoff-schedule without waiting for real time to elapse.
+func (f *FakeTombstoneStoreWithAged) SetForceState(id string, attempts int, nextCheckAt time.Time) {
+	f.state[id] = &forceState{attempts: attempts, nextCheckAt: nextCheckAt}
+}
+
+// AttemptsFor returns id's current force_reap_attempts count (0 if unset).
+func (f *FakeTombstoneStoreWithAged) AttemptsFor(id string) int {
+	if st, ok := f.state[id]; ok {
+		return st.attempts
+	}
+	return 0
+}
+
+// NextCheckAtFor returns id's current next_force_check_at (zero if unset).
+func (f *FakeTombstoneStoreWithAged) NextCheckAtFor(id string) time.Time {
+	if st, ok := f.state[id]; ok {
+		return st.nextCheckAt
+	}
+	return time.Time{}
 }
 
 func (f *FakeTombstoneStoreWithAged) List(_ context.Context, limit int) ([]string, error) {
@@ -111,16 +151,43 @@ func (f *FakeTombstoneStoreWithAged) Delete(_ context.Context, id string) error 
 		}
 	}
 	f.Aged = out2
+	delete(f.state, id)
 	return nil
 }
 
-// ListOlderThan returns up to limit Aged IDs (ignores maxAge; the set is pre-populated by the test).
-func (f *FakeTombstoneStoreWithAged) ListOlderThan(_ context.Context, _ time.Duration, limit int) ([]string, error) {
-	out := append([]string(nil), f.Aged...)
-	if limit > 0 && len(out) > limit {
-		out = out[:limit]
+// ListOlderThan returns up to limit Aged IDs whose backoff state makes them
+// eligible for re-verification now (ignores maxAge; the Aged set is
+// pre-populated by the test), paired with their current attempt count.
+func (f *FakeTombstoneStoreWithAged) ListOlderThan(_ context.Context, _ time.Duration, limit int) ([]ForceCandidate, error) {
+	var out []ForceCandidate
+	now := time.Now()
+	for _, id := range f.Aged {
+		if st, ok := f.state[id]; ok && !st.nextCheckAt.IsZero() && st.nextCheckAt.After(now) {
+			continue // backed off, not yet due
+		}
+		attempts := 0
+		if st, ok := f.state[id]; ok {
+			attempts = st.attempts
+		}
+		out = append(out, ForceCandidate{TrackID: id, Attempts: attempts})
+		if limit > 0 && len(out) >= limit {
+			break
+		}
 	}
 	return out, nil
+}
+
+// RecordForceCheckStillPresent bumps id's attempt count and sets its
+// next_force_check_at, mirroring TombstoneStore.RecordForceCheckStillPresent.
+func (f *FakeTombstoneStoreWithAged) RecordForceCheckStillPresent(_ context.Context, id string, nextCheckAt time.Time) error {
+	st, ok := f.state[id]
+	if !ok {
+		st = &forceState{}
+		f.state[id] = st
+	}
+	st.attempts++
+	st.nextCheckAt = nextCheckAt
+	return nil
 }
 
 // HasAged reports whether id is still in the Aged set.

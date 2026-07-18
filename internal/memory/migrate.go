@@ -13,10 +13,13 @@ var migration0001 string
 //go:embed migrations/0002_memory_sources.sql
 var migration0002 string
 
+//go:embed migrations/0003_tombstone_backoff.sql
+var migration0003 string
+
 // MigrationSQL returns the DDL for the memory schema (tombstones plus the
 // repo/file -> track_id source index used by per-file reconcile).
 func MigrationSQL() string {
-	return migration0001 + "\n" + migration0002
+	return migration0001 + "\n" + migration0002 + "\n" + migration0003
 }
 
 // migrations is the ordered set of named migrations for this package.
@@ -28,6 +31,7 @@ var migrations = []struct {
 }{
 	{"0001_tombstones", migration0001},
 	{"0002_memory_sources", migration0002},
+	{"0003_tombstone_backoff", migration0003},
 }
 
 const createSchemaMigrations = `
