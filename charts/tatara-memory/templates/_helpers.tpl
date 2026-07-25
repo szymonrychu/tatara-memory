@@ -72,6 +72,8 @@ OIDC_ISSUER: {{ .Values.oidcIssuer | quote }}
 OIDC_AUDIENCE: {{ .Values.oidcAudience | quote }}
 WORKER_POOL_SIZE: {{ .Values.workerPoolSize | quote }}
 INGEST_ITEM_TIMEOUT: {{ .Values.ingestItemTimeout | quote }}
+HTTP_WRITE_TIMEOUT: {{ .Values.httpWriteTimeout | quote }}
+INGEST_CREATE_JOB_TIMEOUT: {{ .Values.ingestCreateJobTimeout | quote }}
 LOG_LEVEL: {{ .Values.logLevel | quote }}
 OTLP_ENDPOINT: {{ .Values.otlpEndpoint | quote }}
 {{- end -}}

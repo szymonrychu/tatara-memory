@@ -15,6 +15,19 @@ oidcAudience: "tatara-memory"
 workerPoolSize: 4
 # Per-item ingest timeout (Go duration). "0" disables the deadline.
 ingestItemTimeout: "60s"
+# http.Server WriteTimeout: a connection-level backstop, not the primary bound
+# on /memories:bulk (see ingestCreateJobTimeout below). Must exceed the
+# longest legitimate handler duration - /code-graph:bulk's single Reconcile
+# transaction runs 50-194s on a large repo - or real ingests get aborted
+# mid-flight. "0" disables it (see tatara-memory#85/#86).
+httpWriteTimeout: "240s"
+# Deadline for /memories:bulk's CreateJob transaction, including the DB pool
+# acquire. This is the load-bearing bound: when the shared Postgres pool is
+# exhausted (e.g. by a stuck backend, tatara-memory#86), BeginTx now fails
+# fast with this deadline instead of parking the request until the caller
+# gives up, converting a 300s hang + 499 into a fast 503 + Retry-After that
+# the ingest client already retries. "0" disables it.
+ingestCreateJobTimeout: "10s"
 logLevel: "info"
 otlpEndpoint: ""
 

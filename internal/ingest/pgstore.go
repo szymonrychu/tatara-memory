@@ -15,16 +15,53 @@ import (
 
 // PGStore is a PostgreSQL-backed implementation of JobStore.
 type PGStore struct {
-	db *sql.DB
+	db               *sql.DB
+	createJobTimeout time.Duration
+}
+
+// PGStoreOption configures a PGStore at construction time.
+type PGStoreOption func(*PGStore)
+
+// WithCreateJobTimeout bounds CreateJob's begin-insert-commit transaction
+// (including the initial pool acquire) to d. database/sql's BeginTx blocks
+// on an exhausted connection pool until a connection frees up or its context
+// is done; with no deadline of its own that wait is unbounded, so a client
+// that gives up leaves the request parked on the server with the pool slot
+// never reclaimed (tatara-memory#85/#86: 18 requests hung 300s each, ended
+// only by the client, while the server emitted zero log lines). A
+// non-positive d disables the bound, restoring the previous unbounded wait.
+//
+// The bound covers CreateJob's whole lifetime, not only the initial
+// acquire. database/sql ties a *sql.Tx to the context passed to BeginTx for
+// as long as the transaction is open - it auto-rolls-back the moment that
+// context is done - so a short-lived "acquire-only" context that we cancel
+// right after BeginTx returns would roll back a transaction that had just
+// been legitimately acquired. Bounding the whole call is the only correct
+// way to fail fast without that footgun. CreateJob is a single cheap
+// transaction (one job row plus one row per item, no external calls, no
+// LightRAG round trip), so this stays "fast" for realistic batch sizes;
+// it is deliberately not applied to codegraph.PGStore.Reconcile, whose
+// single transaction legitimately runs 50-194s on a large repo.
+func WithCreateJobTimeout(d time.Duration) PGStoreOption {
+	return func(s *PGStore) { s.createJobTimeout = d }
 }
 
 // NewPGStore returns a PGStore backed by the given database connection.
-func NewPGStore(db *sql.DB) *PGStore {
-	return &PGStore{db: db}
+func NewPGStore(db *sql.DB, opts ...PGStoreOption) *PGStore {
+	s := &PGStore{db: db}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // CreateJob inserts the job and all its items in a single transaction.
 func (s *PGStore) CreateJob(ctx context.Context, j memory.IngestJob, items []memory.IngestItem) error {
+	if s.createJobTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, s.createJobTimeout)
+		defer cancel()
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("ingest: create job: begin tx: %w", err)

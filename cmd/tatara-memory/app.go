@@ -162,7 +162,7 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 		return nil, err
 	}
 
-	store := ingest.NewPGStore(db)
+	store := ingest.NewPGStore(db, ingest.WithCreateJobTimeout(cfg.IngestCreateJobTimeout))
 	tomb := memory.NewTombstoneStore(db)
 	srcStore := memory.NewSourceStore(db)
 	memSvc := memory.NewServiceWithSources(lrc, tomb, srcStore).WithLogger(logger).WithMetrics(reg)
@@ -219,10 +219,18 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 		ReadyCheck: readyFn,
 	})
 
+	// WriteTimeout is a generous connection-level backstop, not the primary
+	// fix: it must exceed /code-graph:bulk's legitimate 50-194s single
+	// transaction (internal/codegraph/pgstore.go Reconcile) or real repo
+	// ingests would be aborted mid-flight. The load-bearing bound for
+	// /memories:bulk's hang (tatara-memory#85/#86) is
+	// ingest.WithCreateJobTimeout above, which fails fast on DB pool
+	// exhaustion long before this fires.
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
 		Handler:           router,
 		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      cfg.HTTPWriteTimeout,
 	}
 
 	return &app{
