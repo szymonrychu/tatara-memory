@@ -19,6 +19,20 @@ const (
 
 func handlePostCodeGraph(cfg Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// http.Server's WriteTimeout (cmd/tatara-memory/app.go) is armed on
+		// this connection before this handler runs. Reconcile is a single
+		// transaction that legitimately runs 50-194s+ on a large repo
+		// (internal/codegraph/pgstore.go); left in place, a run that finishes
+		// just past WriteTimeout would commit successfully in Postgres but
+		// then silently fail to write its response (connection dropped, no
+		// status code), causing the caller to retry a push that already
+		// succeeded and tripling the load on the shared pool. Clearing the
+		// deadline for this response exempts this one route from that
+		// backstop. Unsupported ResponseWriters (e.g. httptest.NewRecorder in
+		// unit tests, which is not a real connection) return
+		// http.ErrNotSupported here; that is expected and harmless.
+		_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
+
 		start := time.Now()
 		var p codegraph.GraphPush
 		r.Body = http.MaxBytesReader(w, r.Body, maxBulkBody)

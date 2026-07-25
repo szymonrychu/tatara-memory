@@ -98,7 +98,7 @@ func loadConfig(args []string) (config, error) {
 	fs.DurationVar(&cfg.IngestItemTimeout, "ingest-item-timeout", cfg.IngestItemTimeout, "Per-item ingest timeout (0 disables)")
 	fs.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "Log level (debug|info|warn|error)")
 	fs.IntVar(&cfg.BetweennessMaxNodes, "betweenness-max-nodes", cfg.BetweennessMaxNodes, "Max graph nodes for betweenness centrality (0 = default 5000)")
-	fs.DurationVar(&cfg.HTTPWriteTimeout, "http-write-timeout", cfg.HTTPWriteTimeout, "http.Server WriteTimeout; must exceed the longest legitimate handler (code-graph:bulk) (0 disables)")
+	fs.DurationVar(&cfg.HTTPWriteTimeout, "http-write-timeout", cfg.HTTPWriteTimeout, "http.Server WriteTimeout: a raw socket write deadline armed before the handler runs, NOT a handler-abort bound (does not cancel r.Context()); code-graph:bulk opts out of it explicitly (0 disables)")
 	fs.DurationVar(&cfg.IngestCreateJobTimeout, "ingest-create-job-timeout", cfg.IngestCreateJobTimeout, "Deadline for /memories:bulk's CreateJob transaction, including DB pool acquire (0 disables)")
 	if err := fs.Parse(args); err != nil {
 		return config{}, err

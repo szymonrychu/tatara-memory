@@ -114,6 +114,19 @@ func (s *statusRecorder) Write(b []byte) (int, error) {
 	return s.ResponseWriter.Write(b)
 }
 
+// Unwrap exposes the wrapped ResponseWriter to http.ResponseController
+// (net/http, Go 1.20+), which walks any chain of Unwrap() implementations to
+// reach the underlying connection. Three layers of statusRecorder wrap every
+// request (RecoverWithLogger, AccessLog, Metrics.Middleware); without this,
+// http.NewResponseController(w).SetWriteDeadline in handlePostCodeGraph
+// silently fails a type assertion against *statusRecorder instead of
+// reaching the real *http.response, so the write-deadline exemption that
+// keeps /code-graph:bulk's slow-but-successful pushes alive under
+// http.Server's WriteTimeout would never actually take effect.
+func (s *statusRecorder) Unwrap() http.ResponseWriter {
+	return s.ResponseWriter
+}
+
 // Recover is a middleware that catches panics and returns a 500 JSON error envelope.
 // For panic logging and metrics use RecoverWithLogger.
 func Recover(next http.Handler) http.Handler {
@@ -179,6 +192,13 @@ type Metrics struct {
 	panicTotal prometheus.Counter
 }
 
+// requestDurationBuckets extends prometheus.DefBuckets (which tops out at
+// 10s) with wider buckets so long-running routes stay observable. It copies
+// DefBuckets into a fresh slice rather than append(prometheus.DefBuckets,
+// ...) directly, since that shared package-level slice must never be mutated
+// in place.
+var requestDurationBuckets = append(append([]float64{}, prometheus.DefBuckets...), 30, 60, 120, 240, 300)
+
 // NewMetrics creates and registers HTTP metrics with the given Prometheus registerer.
 func NewMetrics(reg prometheus.Registerer) *Metrics {
 	m := &Metrics{
@@ -189,7 +209,7 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		reqDur: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "http_request_duration_seconds",
 			Help:    "HTTP request duration.",
-			Buckets: prometheus.DefBuckets,
+			Buckets: requestDurationBuckets,
 		}, []string{"route"}),
 		inFlight: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "http_in_flight",

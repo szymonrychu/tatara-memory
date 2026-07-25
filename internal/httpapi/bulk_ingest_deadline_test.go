@@ -12,18 +12,21 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/szymonrychu/tatara-memory/internal/httpapi"
 	"github.com/szymonrychu/tatara-memory/internal/ingest"
 )
 
-// deadlineFakeConn/deadlineFakeTx/deadlineFakeDriver are the same minimal
+// deadlineFakeConn/deadlineFakeTx/deadlineFakeConnector are the same minimal
 // database/sql/driver shims as internal/ingest's acquire-timeout test,
 // duplicated here (rather than exported from internal/ingest) because
 // internal/httpapi must not import internal/ingest's test-only helpers, and
 // this is the smallest fake that lets database/sql's real connection-pool
-// bookkeeping run without a live Postgres.
+// bookkeeping run without a live Postgres. sql.OpenDB(connector) is used
+// instead of sql.Register+sql.Open so each test gets its own isolated
+// connector with no shared global driver name.
 type deadlineFakeConn struct{}
 
 func (deadlineFakeConn) Prepare(string) (driver.Stmt, error) {
@@ -37,12 +40,17 @@ type deadlineFakeTx struct{}
 func (deadlineFakeTx) Commit() error   { return nil }
 func (deadlineFakeTx) Rollback() error { return nil }
 
-type deadlineFakeDriver struct{}
+type deadlineFakeConnector struct{}
 
-func (deadlineFakeDriver) Open(string) (driver.Conn, error) { return deadlineFakeConn{}, nil }
+func (deadlineFakeConnector) Connect(context.Context) (driver.Conn, error) {
+	return deadlineFakeConn{}, nil
+}
+func (deadlineFakeConnector) Driver() driver.Driver { return deadlineFakeStubDriver{} }
 
-func init() {
-	sql.Register("tatara-fake-httpapi-bulk-deadline", deadlineFakeDriver{})
+type deadlineFakeStubDriver struct{}
+
+func (deadlineFakeStubDriver) Open(string) (driver.Conn, error) {
+	return nil, errors.New("deadlineFakeStubDriver: Open should be unreachable, test uses driver.Connector")
 }
 
 // TestBulkIngest_PoolExhausted_Returns503WithRetryAfter is the client-visible
@@ -58,19 +66,25 @@ func init() {
 // never-committed transaction, exactly like the incident's transaction
 // opened 06:03:47Z that never committed or rolled back.
 func TestBulkIngest_PoolExhausted_Returns503WithRetryAfter(t *testing.T) {
-	db, err := sql.Open("tatara-fake-httpapi-bulk-deadline", "")
-	require.NoError(t, err)
+	db := sql.OpenDB(deadlineFakeConnector{})
 	defer func() { _ = db.Close() }()
 	db.SetMaxOpenConns(1)
 
 	// Occupy the pool's only connection in an open, never-released
 	// transaction so the handler's own CreateJob can never acquire one.
+	// Assertion failures inside the goroutine use assert (not require):
+	// require calls t.FailNow, which testing documents must run on the
+	// test's own goroutine. The holder is released via t.Context(), which
+	// testing cancels when the test completes, so it cannot leak past it.
 	acquired := make(chan struct{})
 	go func() {
 		tx, err := db.BeginTx(context.Background(), nil)
-		require.NoError(t, err)
+		if !assert.NoError(t, err) {
+			close(acquired)
+			return
+		}
 		close(acquired)
-		<-context.Background().Done() // held forever, like the incident's leaked tx
+		<-t.Context().Done() // released when the test completes
 		_ = tx.Rollback()
 	}()
 	<-acquired
