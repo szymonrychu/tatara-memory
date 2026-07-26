@@ -25,7 +25,7 @@ import (
 type fakeConn struct {
 	execDelay  time.Duration
 	committed  *atomic.Bool
-	rolledBack *atomic.Bool
+	rolledBack chan struct{}
 }
 
 func (fakeConn) Prepare(string) (driver.Stmt, error) {
@@ -50,8 +50,17 @@ func (c fakeConn) ExecContext(ctx context.Context, _ string, _ []driver.NamedVal
 }
 
 type fakeTx struct {
-	committed  *atomic.Bool
-	rolledBack *atomic.Bool
+	committed *atomic.Bool
+	// rolledBack, if non-nil, receives a signal (buffered, capacity 1) the
+	// moment Rollback is called. database/sql can invoke a driver Tx's
+	// Rollback from its own internal Tx.awaitDone goroutine - a context
+	// cancellation watcher that runs concurrently with, and is not
+	// happens-before ordered against, whatever goroutine is waiting on
+	// CreateJob's result. A test that samples an atomic flag right after
+	// CreateJob returns can race that goroutine and observe "not yet rolled
+	// back" even though it always eventually is: a channel lets the test
+	// wait for the event instead of sampling for it.
+	rolledBack chan struct{}
 }
 
 func (tx fakeTx) Commit() error {
@@ -63,7 +72,17 @@ func (tx fakeTx) Commit() error {
 
 func (tx fakeTx) Rollback() error {
 	if tx.rolledBack != nil {
-		tx.rolledBack.Store(true)
+		// Non-blocking, buffered send: sql.Tx guards against the driver's
+		// Rollback being invoked more than once for the same transaction
+		// (whichever of CreateJob's own defer or database/sql's
+		// awaitDone-triggered rollback runs first "wins"; the other is a
+		// no-op inside the sql package and never reaches here), but this
+		// stays safe even if that guarantee ever changed: the first send
+		// fills the buffer, every later one hits the default case.
+		select {
+		case tx.rolledBack <- struct{}{}:
+		default:
+		}
 	}
 	return nil
 }
@@ -74,7 +93,7 @@ func (tx fakeTx) Rollback() error {
 type fakeConnector struct {
 	execDelay  time.Duration
 	committed  *atomic.Bool
-	rolledBack *atomic.Bool
+	rolledBack chan struct{}
 }
 
 func (c fakeConnector) Connect(context.Context) (driver.Conn, error) {
@@ -202,12 +221,21 @@ func TestPGStore_CreateJob_NoTimeoutConfigured_StillBoundedByCallerContext(t *te
 // - not a partial commit, and not some other error class (e.g. sql.ErrTxDone
 // racing the context-cancellation-driven auto-rollback that database/sql
 // itself runs against the same BeginTx context) leaking through as a 500.
+//
+// The rollback check waits on rolledBack (a channel), not a flag sampled
+// right after <-done: database/sql can perform the rollback from its own
+// Tx.awaitDone goroutine, which is not happens-before ordered against the
+// goroutine sending on done, so sampling immediately raced that goroutine
+// and was flaky (13/20 failures without -race in review). Waiting for the
+// signal, with a bounded timeout so a genuine regression still fails loudly
+// instead of hanging, is the fix.
 func TestPGStore_CreateJob_DeadlineFiresMidInsertLoop(t *testing.T) {
-	var committed, rolledBack atomic.Bool
+	var committed atomic.Bool
+	rolledBack := make(chan struct{}, 1)
 	connector := fakeConnector{
 		execDelay:  100 * time.Millisecond,
 		committed:  &committed,
-		rolledBack: &rolledBack,
+		rolledBack: rolledBack,
 	}
 	db := openSingleConnDB(t, connector)
 
@@ -241,7 +269,17 @@ func TestPGStore_CreateJob_DeadlineFiresMidInsertLoop(t *testing.T) {
 			"want context.DeadlineExceeded (-> 503+Retry-After in errmap.go), got a different error class: %v", r.err)
 		require.Less(t, r.elapsed, 2*time.Second, "must fail near the configured deadline, not hang")
 		require.False(t, committed.Load(), "must never commit a transaction whose insert loop was cut short - that would be a partial write, worse than a clean failure")
-		require.True(t, rolledBack.Load(), "the transaction must be rolled back, either by CreateJob's own deferred Rollback or database/sql's own context-cancellation auto-rollback")
+
+		// Commit is only ever called synchronously inside CreateJob, so
+		// checking it right after <-done is safe. Rollback is not: it can
+		// come from database/sql's own Tx.awaitDone goroutine instead of
+		// CreateJob's defer, and that goroutine is not ordered against the
+		// done send above, so wait for the signal rather than sampling.
+		select {
+		case <-rolledBack:
+		case <-time.After(2 * time.Second):
+			t.Fatal("transaction was never rolled back - neither CreateJob's own deferred Rollback nor database/sql's context-cancellation auto-rollback fired within 2s of CreateJob returning")
+		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("CreateJob hung past its own createJobTimeout while mid-insert-loop")
 	}
