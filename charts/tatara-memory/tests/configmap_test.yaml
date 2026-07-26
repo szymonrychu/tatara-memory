@@ -25,6 +25,10 @@ tests:
       - isNotNullOrEmpty:
           path: data.INGEST_ITEM_TIMEOUT
       - isNotNullOrEmpty:
+          path: data.HTTP_WRITE_TIMEOUT
+      - isNotNullOrEmpty:
+          path: data.INGEST_CREATE_JOB_TIMEOUT
+      - isNotNullOrEmpty:
           path: data.LOG_LEVEL
   - it: rejects any kebab-case keys leaking through
     asserts:

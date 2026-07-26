@@ -162,7 +162,7 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 		return nil, err
 	}
 
-	store := ingest.NewPGStore(db)
+	store := ingest.NewPGStore(db, ingest.WithCreateJobTimeout(cfg.IngestCreateJobTimeout))
 	tomb := memory.NewTombstoneStore(db)
 	srcStore := memory.NewSourceStore(db)
 	memSvc := memory.NewServiceWithSources(lrc, tomb, srcStore).WithLogger(logger).WithMetrics(reg)
@@ -219,10 +219,30 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 		ReadyCheck: readyFn,
 	})
 
+	// WriteTimeout does NOT bound the handler: net/http arms it as a raw
+	// SetWriteDeadline on the connection once headers are read, before the
+	// handler runs (net/http/server.go's readRequest). It does not cancel
+	// r.Context(), does not abort a parked handler, does not close the
+	// connection while the handler is running, and emits no HTTP status -
+	// it only makes the eventual response write fail once the deadline has
+	// passed, at which point the connection is torn down. Had this been set
+	// before tatara-memory#85/#86, the 18 hung requests would have behaved
+	// identically server-side (same 300s park, same held pool slot, same
+	// zero log lines); the only difference is the connection eventually
+	// dropping instead of staying open forever. The actual, load-bearing
+	// fix for that hang is ingest.WithCreateJobTimeout above, which fails
+	// fast on DB pool exhaustion and returns a clean 503 well before this
+	// fires. WriteTimeout here is only a best-effort backstop against a
+	// connection whose response write genuinely never completes (e.g. a
+	// client that stops reading); handlePostCodeGraph explicitly opts out
+	// of it (see internal/httpapi/codegraph.go) because /code-graph:bulk's
+	// legitimate single-transaction reconcile can run well past any value
+	// chosen here.
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
 		Handler:           router,
 		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      cfg.HTTPWriteTimeout,
 	}
 
 	return &app{

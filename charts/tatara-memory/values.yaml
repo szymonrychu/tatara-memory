@@ -15,6 +15,38 @@ oidcAudience: "tatara-memory"
 workerPoolSize: 4
 # Per-item ingest timeout (Go duration). "0" disables the deadline.
 ingestItemTimeout: "60s"
+# http.Server WriteTimeout: a raw socket write deadline armed BEFORE the
+# handler runs (net/http/server.go), NOT a handler-abort bound - it does not
+# cancel the request context and does not stop a parked handler; it only
+# fails the eventual response write once the deadline has passed, tearing
+# the connection down with no HTTP status. This is why it provides NO
+# protection against the tatara-memory#85/#86 hang class (that is
+# ingestCreateJobTimeout below, the load-bearing fix); it exists only as a
+# best-effort backstop for a response write that genuinely never completes
+# (e.g. a client that stops reading).
+#
+# /code-graph:bulk opts out of it entirely (internal/httpapi/codegraph.go
+# clears the write deadline via http.ResponseController) because its single
+# Reconcile transaction legitimately runs 50-194s+ on a large repo - well
+# past any value set here - and losing that response after a successful
+# commit would make the ingest client retry an already-successful push,
+# tripling load on the shared Postgres pool this whole fix protects.
+#
+# 240s is only a backstop against every OTHER route, not tuned against any
+# known legitimate duration on this repo's own routes. Do not assume it is
+# ordered against tatara-memory-repo-ingester's HTTP client timeout: the
+# #85/#86 incident observed a 300s client timeout, but that ingester's code
+# default is 60s - whichever value is actually deployed, this chart's
+# default does not guarantee an ordering against it either way. "0" disables
+# it.
+httpWriteTimeout: "240s"
+# Deadline for /memories:bulk's CreateJob transaction, including the DB pool
+# acquire. This is the load-bearing bound: when the shared Postgres pool is
+# exhausted (e.g. by a stuck backend, tatara-memory#86), BeginTx now fails
+# fast with this deadline instead of parking the request until the caller
+# gives up, converting a 300s hang + 499 into a fast 503 + Retry-After that
+# the ingest client already retries. "0" disables it.
+ingestCreateJobTimeout: "10s"
 logLevel: "info"
 otlpEndpoint: ""
 
