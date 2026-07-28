@@ -1,3 +1,5 @@
+{{- /* Rendered unconditionally, so this is where the postgres storage contract is enforced for the whole chart. */ -}}
+{{- include "tatara-memory.validatePostgres" . -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:

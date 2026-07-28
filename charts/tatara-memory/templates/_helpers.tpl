@@ -79,6 +79,70 @@ OTLP_ENDPOINT: {{ .Values.otlpEndpoint | quote }}
 {{- end -}}
 
 {{/*
+Parse a binary size into whole KiB.
+
+Accepts the Kubernetes quantity suffixes Ki/Mi/Gi/Ti and the PostgreSQL
+memory-unit suffixes kB/MB/GB/TB, which denote the same binary multiples, so
+a PVC size and a postgresql.conf size can be compared against each other.
+Decimal SI suffixes (K/M/G) and bare byte counts are REJECTED rather than
+silently approximated - the only caller is a headroom check whose entire job
+is to be exact.
+*/}}
+{{- define "tatara-memory.kib" -}}
+{{- $q := . | toString | trim -}}
+{{- $n := regexFind "^[0-9]+" $q -}}
+{{- if not $n -}}
+{{- fail (printf "tatara-memory: cannot parse size %q: expected digits followed by Ki, Mi, Gi, Ti, kB, MB, GB or TB" $q) -}}
+{{- end -}}
+{{- $unit := trimPrefix $n $q -}}
+{{- $mult := index (dict "Ki" 1 "kB" 1 "Mi" 1024 "MB" 1024 "Gi" 1048576 "GB" 1048576 "Ti" 1073741824 "TB" 1073741824) $unit -}}
+{{- if not $mult -}}
+{{- fail (printf "tatara-memory: size %q uses unit %q: use a binary unit (Ki, Mi, Gi, Ti, kB, MB, GB, TB) so the WAL headroom check stays exact" $q $unit) -}}
+{{- end -}}
+{{- mul (int64 $n) $mult -}}
+{{- end -}}
+
+{{/*
+Refuse to render a postgres cluster that is missing its storage contract.
+
+The cnpg/cluster subchart happily defaults to an 8Gi PGDATA volume with NO
+dedicated WAL volume and NO bound on replication-slot WAL retention. Every
+one of those defaults has taken a tatara memory backend down:
+tatara-operator#238 (WAL filled the shared data volume), the 2026-07-06
+replica crashloop (WAL volume too small for a standby resync), and
+tatara-helmfile#263 (an orphan slot pinned WAL with nothing to cap it).
+
+An unset size is therefore a deploy-time error, never an inherited default,
+and max_slot_wal_keep_size must leave at least half the WAL volume free for
+checkpoint WAL and archive backlog.
+*/}}
+{{- define "tatara-memory.validatePostgres" -}}
+{{- $pg := .Values.postgres | default dict -}}
+{{- if $pg.enabled -}}
+{{- $c := $pg.cluster | default dict -}}
+{{- if not (dig "storage" "size" "" $c) -}}
+{{- fail "tatara-memory: postgres.cluster.storage.size is required; the cnpg default (8Gi) is not a sizing decision" -}}
+{{- end -}}
+{{- if not (dig "walStorage" "enabled" false $c) -}}
+{{- fail "tatara-memory: postgres.cluster.walStorage.enabled must be true; with it off pg_wal shares the PGDATA volume and a WAL burst takes writes down (tatara-operator#238)" -}}
+{{- end -}}
+{{- $wal := dig "walStorage" "size" "" $c -}}
+{{- if not $wal -}}
+{{- fail "tatara-memory: postgres.cluster.walStorage.size is required when walStorage is enabled" -}}
+{{- end -}}
+{{- $keep := dig "postgresql" "parameters" "max_slot_wal_keep_size" "" $c -}}
+{{- if not $keep -}}
+{{- fail "tatara-memory: postgres.cluster.postgresql.parameters.max_slot_wal_keep_size is required; without it one stuck or diverged standby's replication slot pins WAL until the volume fills (tatara-helmfile#263)" -}}
+{{- end -}}
+{{- $walKiB := include "tatara-memory.kib" $wal | int64 -}}
+{{- $keepKiB := include "tatara-memory.kib" $keep | int64 -}}
+{{- if gt $keepKiB (div $walKiB 2) -}}
+{{- fail (printf "tatara-memory: max_slot_wal_keep_size (%s) exceeds half of walStorage.size (%s); replication-slot retention alone could fill the WAL volume, leaving nothing for checkpoint WAL" $keep $wal) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 Env for the opt-in eval CronJob (issue #46). The eval binary reads MEMORY_BASE_URL
 (its target), EVAL_PUSH_URL (operator push-receiver), and LOG_LEVEL. Kept separate
 from envConfig so the eval pod targets a dedicated eval-memory URL, not this app.
