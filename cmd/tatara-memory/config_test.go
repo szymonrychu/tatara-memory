@@ -89,3 +89,91 @@ func TestLoadConfig_ItemTimeoutBadEnv(t *testing.T) {
 	_, err := loadConfig([]string{})
 	require.Error(t, err)
 }
+
+// The shipped defaults must actually protect the pool: every admission budget
+// plus every ingest worker must fit inside it with room left for reads and
+// /readyz. A default set that fails its own validation would ship a limiter
+// that cannot do its job (tatara-memory#82).
+func TestLoadConfig_AdmissionDefaultsFitThePool(t *testing.T) {
+	os.Clearenv()
+	cfg, err := loadConfig([]string{})
+	require.NoError(t, err)
+	require.Equal(t, 20, cfg.DBMaxOpenConns)
+	require.Equal(t, 5, cfg.DBMaxIdleConns)
+	require.Equal(t, 4, cfg.MemoriesBulkMaxInFlight)
+	require.Equal(t, 2, cfg.CodeGraphBulkMaxInFlight)
+	require.Equal(t, 5*time.Second, cfg.AdmissionWait)
+	require.Equal(t, 5*time.Second, cfg.AdmissionRetryAfter)
+
+	cfg.PGDSN = "x"
+	cfg.LightRAGBaseURL = "y"
+	require.NoError(t, cfg.validate())
+	require.Less(t, cfg.MemoriesBulkMaxInFlight+cfg.CodeGraphBulkMaxInFlight+cfg.WorkerPoolSize, cfg.DBMaxOpenConns)
+}
+
+func TestLoadConfig_AdmissionEnvOverrides(t *testing.T) {
+	os.Clearenv()
+	t.Setenv("DB_MAX_OPEN_CONNS", "30")
+	t.Setenv("DB_MAX_IDLE_CONNS", "8")
+	t.Setenv("MEMORIES_BULK_MAX_IN_FLIGHT", "6")
+	t.Setenv("CODE_GRAPH_BULK_MAX_IN_FLIGHT", "3")
+	t.Setenv("ADMISSION_WAIT", "2s")
+	t.Setenv("ADMISSION_RETRY_AFTER", "15s")
+	cfg, err := loadConfig([]string{})
+	require.NoError(t, err)
+	require.Equal(t, 30, cfg.DBMaxOpenConns)
+	require.Equal(t, 8, cfg.DBMaxIdleConns)
+	require.Equal(t, 6, cfg.MemoriesBulkMaxInFlight)
+	require.Equal(t, 3, cfg.CodeGraphBulkMaxInFlight)
+	require.Equal(t, 2*time.Second, cfg.AdmissionWait)
+	require.Equal(t, 15*time.Second, cfg.AdmissionRetryAfter)
+}
+
+// A configuration whose bulk budgets plus workers can exhaust the pool is
+// refused at startup: it looks like admission control but reintroduces exactly
+// the starvation the limiter exists to prevent.
+func TestLoadConfig_RejectsOversubscribedAdmissionBudgets(t *testing.T) {
+	os.Clearenv()
+	cfg, err := loadConfig([]string{
+		"--db-max-open-conns", "8",
+		"--memories-bulk-max-in-flight", "4",
+		"--code-graph-bulk-max-in-flight", "2",
+		"--worker-pool-size", "4",
+	})
+	require.NoError(t, err)
+	cfg.PGDSN = "x"
+	cfg.LightRAGBaseURL = "y"
+	err = cfg.validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "oversubscribe the DB pool")
+
+	// 0 disables a budget entirely; that is an explicit opt-out, not a
+	// misconfiguration, so the oversubscription check does not apply.
+	cfg.MemoriesBulkMaxInFlight = 0
+	require.NoError(t, cfg.validate())
+}
+
+func TestLoadConfig_RejectsNegativeAdmissionValues(t *testing.T) {
+	os.Clearenv()
+	base, err := loadConfig([]string{})
+	require.NoError(t, err)
+	base.PGDSN = "x"
+	base.LightRAGBaseURL = "y"
+	require.NoError(t, base.validate())
+
+	cases := map[string]func(c *config){
+		"negative memories budget":  func(c *config) { c.MemoriesBulkMaxInFlight = -1 },
+		"negative codegraph budget": func(c *config) { c.CodeGraphBulkMaxInFlight = -1 },
+		"negative wait":             func(c *config) { c.AdmissionWait = -time.Second },
+		"negative retry after":      func(c *config) { c.AdmissionRetryAfter = -time.Second },
+		"zero pool":                 func(c *config) { c.DBMaxOpenConns = 0 },
+		"idle above open":           func(c *config) { c.DBMaxIdleConns = c.DBMaxOpenConns + 1 },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			cfg := base
+			mutate(&cfg)
+			require.Error(t, cfg.validate())
+		})
+	}
+}

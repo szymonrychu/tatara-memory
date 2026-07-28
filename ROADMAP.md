@@ -78,6 +78,31 @@ Pre-existing, not triggered by the single-notify-per-job invariant today:
       and the duplicate szymonrychu/tatara-memory#27.
       (Pairs with the ingester-side chunk-poll timeout tracked in the parent ROADMAP.)
 
+## Bulk-ingest admission control (issues #79, #80, #82, #87)
+
+**Status:** shipped 2026-07-29.
+
+`/memories:bulk` returned 503 on every concurrent-ingest burst. Root cause
+was an unbounded bulk write path over a single 10-connection Postgres pool
+that a long `/code-graph:bulk` reconcile transaction could monopolise, plus
+an error map that reported all backpressure as a server error.
+
+Shipped: per-route admission control (bounded concurrency + a wait budget)
+on `/memories:bulk` and `/code-graph:bulk`; a pool sized as the explicit
+budget those limits are validated against (startup fails on an
+oversubscribed configuration); a real 429-vs-503 split (`memory.ErrBusy`
+and deadlines -> 429 + Retry-After, genuine upstream unavailability -> 503);
+and admission metrics, a shed WARN log, and a `MemoryBulkAdmissionShedding`
+alert so shed load stays visible after it leaves the 5xx ratio.
+
+Requires companion client work, tracked in those repos, not here:
+`tatara-memory-repo-ingester` and the operator ingest client must retry on
+429 and honour `Retry-After` (and `tatara-memory-repo-ingester#31` should
+batch the code-graph push instead of one whole-repo transaction).
+
+Out of scope, owned elsewhere: the LightRAG purge-path lock/retry budget
+(#90/#91), the CNPG primary outage (#83), codegraph transaction chunking.
+
 ## v1.0 - Phase 1 ship
 
 **Status:** v0.1.2 deployed 2026-05-27, end-to-end smoke green
