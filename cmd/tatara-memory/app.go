@@ -165,7 +165,7 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 	store := ingest.NewPGStore(db, ingest.WithCreateJobTimeout(cfg.IngestCreateJobTimeout))
 	tomb := memory.NewTombstoneStore(db)
 	srcStore := memory.NewSourceStore(db)
-	memSvc := memory.NewServiceWithSources(lrc, tomb, srcStore).WithLogger(logger).WithMetrics(reg)
+	memSvc := memory.NewServiceWithSources(lrc, tomb, srcStore).WithLogger(logger).WithMetrics(reg).WithPurgeBudget(cfg.MemoryPurgeBudget)
 	pool := ingest.NewPoolWithSources(store, memSvc, cfg.WorkerPoolSize, srcStore, ingest.WithItemTimeout(cfg.IngestItemTimeout), ingest.WithMetrics(reg), ingest.WithLogger(logger))
 	pool.Start(ctx)
 	if n, err := pool.Resume(ctx); err != nil {

@@ -47,6 +47,23 @@ httpWriteTimeout: "240s"
 # gives up, converting a 300s hang + 499 into a fast 503 + Retry-After that
 # the ingest client already retries. "0" disables it.
 ingestCreateJobTimeout: "10s"
+# Budget for one /memories:bulk reconcile purge, end to end, including the time
+# spent waiting out LightRAG's pipeline lock (tatara-memory#90, #91).
+#
+# A LightRAG document delete returns in milliseconds but then holds the pipeline
+# lock for the 6-42s its knowledge-graph rebuild takes (41.85s worst case
+# measured in #90). While it is held LightRAG answers concurrent deletes HTTP
+# 200 with body status="busy". The purge is serial over reconcile files, so
+# file N+1 waits out the lock file N just took - which is why this is one budget
+# for the whole batch rather than a per-file or per-attempt bound.
+#
+# 45s covers a single full lock hold (so nothing is shed that waiting would have
+# saved) and stays under tatara-memory-repo-ingester's 60s HTTP client default.
+# Whatever does not fit comes back as 503 + Retry-After with the files already
+# purged cleared from the source index, so the client's retry resumes rather
+# than restarting. Raise it only in step with that client's timeout. "0"
+# disables the bound, leaving the purge governed only by the request context.
+memoryPurgeBudget: "45s"
 logLevel: "info"
 otlpEndpoint: ""
 

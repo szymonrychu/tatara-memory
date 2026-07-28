@@ -74,6 +74,7 @@ WORKER_POOL_SIZE: {{ .Values.workerPoolSize | quote }}
 INGEST_ITEM_TIMEOUT: {{ .Values.ingestItemTimeout | quote }}
 HTTP_WRITE_TIMEOUT: {{ .Values.httpWriteTimeout | quote }}
 INGEST_CREATE_JOB_TIMEOUT: {{ .Values.ingestCreateJobTimeout | quote }}
+MEMORY_PURGE_BUDGET: {{ .Values.memoryPurgeBudget | quote }}
 LOG_LEVEL: {{ .Values.logLevel | quote }}
 OTLP_ENDPOINT: {{ .Values.otlpEndpoint | quote }}
 {{- end -}}

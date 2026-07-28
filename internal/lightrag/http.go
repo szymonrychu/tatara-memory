@@ -30,7 +30,39 @@ const (
 	// maxRetryAfter caps the server-directed Retry-After sleep so a misbehaving
 	// or compromised upstream cannot wedge a worker indefinitely with a huge value.
 	maxRetryAfter = 30 * time.Second
+	// busyRetryMaxDelay caps the exponential backoff between DeleteDocs busy
+	// polls. A busy poll is an immediate HTTP 200 refusal, so polling is cheap;
+	// the cap only bounds how long after the lock frees we notice. 2s keeps the
+	// overshoot small against the 6-42s lock holds measured in #90 while making
+	// at most ~25 polls over a full defaultBusyRetryBudget.
+	busyRetryMaxDelay = 2 * time.Second
+	// defaultBusyRetryBudget bounds the DeleteDocs busy wait when ctx carries no
+	// deadline of its own (background callers: reaper, ingest pool). The HTTP
+	// purge path always passes a deadline (memory.Service purge budget), which
+	// takes precedence. Sized against the measured LightRAG lock-hold
+	// distribution, not against an attempt count: a document delete is a
+	// synchronous knowledge-graph rebuild taking 6-42s (41.85s worst case
+	// measured in tatara-memory#90 Q9), so anything below ~42s sheds work that
+	// would have succeeded. 45s covers that maximum and still leaves headroom
+	// under tatara-memory-repo-ingester's 60s HTTP client default.
+	defaultBusyRetryBudget = 45 * time.Second
 )
+
+// BusyError is returned when LightRAG kept answering HTTP 200 with
+// status="busy" (its pipeline lock is held by a concurrent ingest or by a
+// previous delete's graph rebuild) for the whole busy-retry budget. It is a
+// transient backpressure signal, not an upstream failure: LightRAG is healthy
+// and answering in milliseconds throughout.
+type BusyError struct {
+	Op       string
+	Attempts int
+	Waited   time.Duration
+}
+
+func (e *BusyError) Error() string {
+	return fmt.Sprintf("lightrag: %s: pipeline lock still busy after %d attempts over %s",
+		e.Op, e.Attempts, e.Waited.Round(time.Millisecond))
+}
 
 // HTTPConfig holds constructor parameters for HTTPClient.
 type HTTPConfig struct {
@@ -305,22 +337,23 @@ func (c *HTTPClient) DeleteDocs(ctx context.Context, req DeleteDocRequest) (*Del
 		return nil, fmt.Errorf("lightrag: encode body: %w", err)
 	}
 	// status="busy" is a logical 200 (the pipeline lock is held mid-ingest), so the
-	// HTTP-level retry in roundTrip does not see it. Retry it here on the same
-	// backoff schedule (no Retry-After to honour on a 200); if still busy after
-	// retryMax attempts, return the busy response so the memory service maps it to
-	// ErrTransient. doAndObserve is used so the whole busy-retry sequence records a
-	// single metric + log line with the final outcome, instead of one per attempt.
+	// HTTP-level retry in roundTrip does not see it. Retry it here until a
+	// deadline rather than for a fixed number of attempts: the lock is held for
+	// as long as the rebuild that owns it runs (6-42s measured, tatara-memory#90
+	// Q9), which no attempt count can be sized against. The deadline is the
+	// caller's when it has one (the purge path passes memory.Service's whole-batch
+	// budget) and defaultBusyRetryBudget otherwise. doAndObserve is used so the
+	// whole busy-retry sequence records a single metric + log line with the final
+	// outcome, instead of one per attempt.
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		deadline = time.Now().Add(defaultBusyRetryBudget)
+	}
+	start := time.Now()
 	var out DeleteDocByIdResponse
 	var totalDur float64
-	for attempt := 0; attempt <= retryMax; attempt++ {
-		if attempt > 0 {
-			delay := retryBaseDelay * (1 << (attempt - 1))
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(delay):
-			}
-		}
+	delay := retryBaseDelay
+	for attempt := 1; ; attempt++ {
 		out = DeleteDocByIdResponse{}
 		dur, transportErr := c.doAndObserve(ctx, OpDeleteDocs, http.MethodDelete, "/documents/delete_document", bytes.NewReader(body), &out)
 		totalDur += dur
@@ -335,12 +368,27 @@ func (c *HTTPClient) DeleteDocs(ctx context.Context, req DeleteDocRequest) (*Del
 			return &out, nil
 		}
 		c.log.LogAttrs(ctx, slog.LevelDebug, "lightrag_delete_busy_retry",
-			slog.Int("attempt", attempt+1),
+			slog.Int("attempt", attempt),
+			slog.Duration("waited", time.Since(start)),
 		)
+		// Stop before a sleep that would run past the deadline: the budget is
+		// spent, and sleeping into it only delays the 503 the caller already owes
+		// its own client.
+		if time.Now().Add(delay).After(deadline) {
+			busyErr := &BusyError{Op: OpDeleteDocs, Attempts: attempt, Waited: time.Since(start)}
+			c.metrics.observe(OpDeleteDocs, totalDur, busyErr)
+			c.logCall(ctx, OpDeleteDocs, http.MethodDelete, "/documents/delete_document", totalDur, busyErr)
+			return nil, busyErr
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(delay):
+		}
+		if delay *= 2; delay > busyRetryMaxDelay {
+			delay = busyRetryMaxDelay
+		}
 	}
-	c.metrics.observe(OpDeleteDocs, totalDur, nil)
-	c.logCall(ctx, OpDeleteDocs, http.MethodDelete, "/documents/delete_document", totalDur, nil)
-	return &out, nil
 }
 
 // Query executes a retrieval query and returns the generated response.

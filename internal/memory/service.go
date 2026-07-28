@@ -41,30 +41,51 @@ type sourceIndex interface {
 	DeleteByFile(ctx context.Context, repo, filePath string) (int64, error)
 }
 
+// DefaultPurgeBudget bounds one DeleteMemoriesBySources call end to end.
+//
+// The purge is serial over reconcile files, and a LightRAG document delete
+// returns immediately but holds the pipeline lock for the 6-42s its graph
+// rebuild takes (41.85s worst case measured, tatara-memory#90 Q9). So file N+1
+// waits out the lock file N just took: waiting per file is unbounded in the
+// file count and would run a wide reconcile past any client timeout. One budget
+// for the whole batch keeps the request bounded; whatever does not fit comes
+// back as 503 + Retry-After with the completed files already cleared from the
+// source index, so the client's retry resumes instead of restarting.
+//
+// 45s covers a single full lock hold (so no file is shed that a wait would have
+// saved) and leaves headroom under tatara-memory-repo-ingester's 60s HTTP
+// client default.
+const DefaultPurgeBudget = 45 * time.Second
+
 // Service provides memory CRUD and retrieval operations backed by LightRAG.
 type Service struct {
-	lr      lightrag.Client
-	tomb    tombstoner
-	sources sourceIndex
-	now     func() time.Time
-	log     *slog.Logger
-	ops     *prometheus.CounterVec
+	lr          lightrag.Client
+	tomb        tombstoner
+	sources     sourceIndex
+	now         func() time.Time
+	log         *slog.Logger
+	ops         *prometheus.CounterVec
+	purgeBudget time.Duration
 }
 
 // NewService returns a Service backed by the given LightRAG client.
 // tomb may be nil; if nil, tombstone checks are skipped (no-op).
 func NewService(lr lightrag.Client, tomb tombstoner) *Service {
-	return &Service{lr: lr, tomb: tomb, now: time.Now, log: slog.Default(), ops: newServiceOps(nil)}
+	return &Service{lr: lr, tomb: tomb, now: time.Now, log: slog.Default(), ops: newServiceOps(nil), purgeBudget: DefaultPurgeBudget}
 }
 
 // NewServiceWithSources is NewService plus a sources index that backs
 // DeleteMemoriesBySource. sources may be nil (delete-by-source is a no-op).
 func NewServiceWithSources(lr lightrag.Client, tomb tombstoner, sources sourceIndex) *Service {
-	return &Service{lr: lr, tomb: tomb, sources: sources, now: time.Now, log: slog.Default(), ops: newServiceOps(nil)}
+	return &Service{lr: lr, tomb: tomb, sources: sources, now: time.Now, log: slog.Default(), ops: newServiceOps(nil), purgeBudget: DefaultPurgeBudget}
 }
 
 // WithLogger sets the logger on the service (functional option on the pointer).
 func (s *Service) WithLogger(l *slog.Logger) *Service { s.log = l; return s }
+
+// WithPurgeBudget overrides DefaultPurgeBudget. 0 or less disables the bound,
+// leaving DeleteMemoriesBySources governed only by the caller's context.
+func (s *Service) WithPurgeBudget(d time.Duration) *Service { s.purgeBudget = d; return s }
 
 // WithMetrics registers tatara_memory_op_total{op,result} in reg.
 func (s *Service) WithMetrics(reg prometheus.Registerer) *Service {
@@ -99,6 +120,14 @@ func (s *Service) incOp(op string, err error) {
 func wrapUpstream(err error) error {
 	if err == nil {
 		return nil
+	}
+	// A held LightRAG pipeline lock is backpressure, not an upstream failure:
+	// LightRAG answers HTTP 200 in milliseconds throughout. Without this case it
+	// falls through to ErrUpstream -> 502, which the ingest client treats as
+	// permanent (tatara-memory#90, #91).
+	var busy *lightrag.BusyError
+	if errors.As(err, &busy) {
+		return fmt.Errorf("%w: %v", ErrTransient, err)
 	}
 	var he *lightrag.HTTPError
 	if errors.As(err, &he) {
@@ -295,12 +324,32 @@ func (s *Service) deleteMemoryRaw(ctx context.Context, trackID string) error {
 // no-op returning 0.
 func (s *Service) DeleteMemoriesBySources(ctx context.Context, repo string, files []string) (int, error) {
 	start := time.Now()
+	// One budget for the whole batch (see DefaultPurgeBudget): each file's delete
+	// may have to wait out the pipeline lock the previous file's delete took, so
+	// a per-file bound would scale with the file count. The deadline also
+	// propagates into lightrag.DeleteDocs, which sizes its busy wait from it.
+	if s.purgeBudget > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, s.purgeBudget)
+		defer cancel()
+	}
 	total := 0
 	for _, f := range files {
 		n, err := s.DeleteMemoriesBySource(ctx, repo, f)
 		if err != nil {
 			s.incOp("delete_by_sources", err)
-			return total, fmt.Errorf("delete memories for %s/%s: %w", repo, f, err)
+			s.log.WarnContext(ctx, "memory.delete_by_sources.incomplete",
+				"action", "delete_memories_by_sources",
+				"repo", repo,
+				"file_path", f,
+				"files_count", len(files),
+				"total_purged", total+n,
+				"duration_ms", time.Since(start).Milliseconds(),
+				"error", err,
+			)
+			// n is the progress DeleteMemoriesBySource made inside the file that
+			// failed; drop it and the caller under-counts what is already gone.
+			return total + n, fmt.Errorf("delete memories for %s/%s: %w", repo, f, err)
 		}
 		total += n
 	}

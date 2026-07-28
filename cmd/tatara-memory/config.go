@@ -6,6 +6,8 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/szymonrychu/tatara-memory/internal/memory"
 )
 
 type config struct {
@@ -20,6 +22,7 @@ type config struct {
 	BetweennessMaxNodes    int
 	HTTPWriteTimeout       time.Duration
 	IngestCreateJobTimeout time.Duration
+	MemoryPurgeBudget      time.Duration
 }
 
 func envOr(key, def string) string {
@@ -74,6 +77,10 @@ func loadConfig(args []string) (config, error) {
 	if err != nil {
 		return config{}, err
 	}
+	purgeBudget, err := envDurationOr("MEMORY_PURGE_BUDGET", memory.DefaultPurgeBudget)
+	if err != nil {
+		return config{}, err
+	}
 	cfg := config{
 		HTTPAddr:               envOr("HTTP_ADDR", ":8080"),
 		PGDSN:                  envOr("PG_DSN", ""),
@@ -86,6 +93,7 @@ func loadConfig(args []string) (config, error) {
 		BetweennessMaxNodes:    betweennessMaxNodes,
 		HTTPWriteTimeout:       writeTimeout,
 		IngestCreateJobTimeout: createJobTimeout,
+		MemoryPurgeBudget:      purgeBudget,
 	}
 
 	fs := flag.NewFlagSet("tatara-memory", flag.ContinueOnError)
@@ -100,6 +108,7 @@ func loadConfig(args []string) (config, error) {
 	fs.IntVar(&cfg.BetweennessMaxNodes, "betweenness-max-nodes", cfg.BetweennessMaxNodes, "Max graph nodes for betweenness centrality (0 = default 5000)")
 	fs.DurationVar(&cfg.HTTPWriteTimeout, "http-write-timeout", cfg.HTTPWriteTimeout, "http.Server WriteTimeout: a raw socket write deadline armed before the handler runs, NOT a handler-abort bound (does not cancel r.Context()); code-graph:bulk opts out of it explicitly (0 disables)")
 	fs.DurationVar(&cfg.IngestCreateJobTimeout, "ingest-create-job-timeout", cfg.IngestCreateJobTimeout, "Deadline for /memories:bulk's CreateJob transaction, including DB pool acquire (0 disables)")
+	fs.DurationVar(&cfg.MemoryPurgeBudget, "memory-purge-budget", cfg.MemoryPurgeBudget, "Budget for one /memories:bulk reconcile purge, including waiting out LightRAG's pipeline lock (0 disables)")
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
 	}
@@ -124,6 +133,9 @@ func (c config) validate() error {
 	}
 	if c.IngestCreateJobTimeout < 0 {
 		return fmt.Errorf("ingest-create-job-timeout must be >= 0")
+	}
+	if c.MemoryPurgeBudget < 0 {
+		return fmt.Errorf("memory-purge-budget must be >= 0")
 	}
 	return nil
 }

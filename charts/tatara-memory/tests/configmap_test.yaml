@@ -28,6 +28,9 @@ tests:
           path: data.HTTP_WRITE_TIMEOUT
       - isNotNullOrEmpty:
           path: data.INGEST_CREATE_JOB_TIMEOUT
+      - equal:
+          path: data.MEMORY_PURGE_BUDGET
+          value: "45s"
       - isNotNullOrEmpty:
           path: data.LOG_LEVEL
   - it: rejects any kebab-case keys leaking through
