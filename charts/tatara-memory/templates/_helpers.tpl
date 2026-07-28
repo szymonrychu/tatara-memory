@@ -74,6 +74,13 @@ WORKER_POOL_SIZE: {{ .Values.workerPoolSize | quote }}
 INGEST_ITEM_TIMEOUT: {{ .Values.ingestItemTimeout | quote }}
 HTTP_WRITE_TIMEOUT: {{ .Values.httpWriteTimeout | quote }}
 INGEST_CREATE_JOB_TIMEOUT: {{ .Values.ingestCreateJobTimeout | quote }}
+PG_MAX_OPEN_CONNS: {{ .Values.pgMaxOpenConns | quote }}
+PG_MAX_IDLE_CONNS: {{ .Values.pgMaxIdleConns | quote }}
+PG_CONN_MAX_LIFETIME: {{ .Values.pgConnMaxLifetime | quote }}
+PG_CONN_MAX_IDLE_TIME: {{ .Values.pgConnMaxIdleTime | quote }}
+PG_STATEMENT_TIMEOUT: {{ .Values.pgStatementTimeout | quote }}
+PG_IDLE_IN_TRANSACTION_TIMEOUT: {{ .Values.pgIdleInTransactionTimeout | quote }}
+ANALYTICS_RECOMPUTE_TIMEOUT: {{ .Values.analyticsRecomputeTimeout | quote }}
 LOG_LEVEL: {{ .Values.logLevel | quote }}
 OTLP_ENDPOINT: {{ .Values.otlpEndpoint | quote }}
 {{- end -}}

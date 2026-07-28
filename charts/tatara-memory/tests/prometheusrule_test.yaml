@@ -43,7 +43,28 @@ tests:
           value: MemoryRetrievalLatencyHigh
       - equal:
           path: spec.groups[0].rules[5].alert
+          value: MemoryDBPoolSaturated
+      - equal:
+          path: spec.groups[0].rules[6].alert
+          value: MemoryDBPoolWaiting
+      - equal:
+          path: spec.groups[0].rules[7].alert
+          value: MemoryAnalyticsRecomputeTimingOut
+      - equal:
+          path: spec.groups[0].rules[8].alert
           value: MemoryHandlerPanics
+  - it: pool-saturation thresholds flow from values into the alert expressions
+    set:
+      prometheusRule.enabled: true
+      prometheusRule.dbPoolSaturationRatio: 0.9
+      prometheusRule.dbPoolWaitSecondsPerSecond: 0.25
+    asserts:
+      - matchRegex:
+          path: spec.groups[0].rules[5].expr
+          pattern: "> 0.9"
+      - matchRegex:
+          path: spec.groups[0].rules[6].expr
+          pattern: "> 0.25"
   - it: deadman is always critical, others take severityLabel
     set:
       prometheusRule.enabled: true

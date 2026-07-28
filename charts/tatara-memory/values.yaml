@@ -47,6 +47,48 @@ httpWriteTimeout: "240s"
 # gives up, converting a 300s hang + 499 into a fast 503 + Retry-After that
 # the ingest client already retries. "0" disables it.
 ingestCreateJobTimeout: "10s"
+
+# Postgres connection pool and connection-lifetime bounds (tatara-memory#89).
+#
+# The incident: backends owned by this service's role on mem-mtg-pg grew from 4
+# to 87 over 5.5h and never terminated, exhausting all 97 non-superuser
+# connection slots (SQLSTATE 53300, "remaining connection slots are reserved for
+# roles with the SUPERUSER attribute"). The project's memory API was down 13h+
+# and the rollout deadlocked, because /readyz pings the database and could not
+# get a slot while /healthz (no DB dependency) kept the wedged pod alive.
+#
+# pgMaxOpenConns/pgMaxIdleConns are the pool's size. These were previously
+# hardcoded at 10/2 and not tunable without a rebuild.
+pgMaxOpenConns: 10
+pgMaxIdleConns: 2
+# pgConnMaxLifetime/pgConnMaxIdleTime recycle pooled connections on a fixed
+# cadence. Without them a connection is reused forever, so a client-side
+# connection whose server-side backend has become wedged is never replaced -
+# there is no client-side ceiling at all on how long one backend is held.
+pgConnMaxLifetime: "30m"
+pgConnMaxIdleTime: "5m"
+# pgStatementTimeout / pgIdleInTransactionTimeout are sent as Postgres session
+# parameters on every connection. They are the server-side half of the same
+# guarantee, and the only half that still works when the client is gone: a
+# Postgres backend does not observe a client disconnect while it is mid
+# statement, which is why the incident's backends survived every pod restart.
+#
+# Both are deliberately generous - backstops against pathology, not latency
+# budgets. /code-graph:bulk's single Reconcile transaction legitimately runs
+# 50-194s+ on a large repo, so pgStatementTimeout sits well above that.
+# pgIdleInTransactionTimeout can be tighter: after the #89 fix moved community
+# labelling out of the analytics transaction, the only work between a
+# transaction's statements is Go-side row marshalling (milliseconds).
+# "0" disables either one.
+pgStatementTimeout: "5m"
+pgIdleInTransactionTimeout: "2m"
+# Deadline for ONE code-graph analytics recompute, end to end. Without it the
+# worker inherits the process-lifetime context, so a wedged run holds its
+# database work for as long as the pod lives - the incident observed a single
+# transaction whose age grew 1800s per 1800s of wall clock for 5.5h. The
+# incident's own recompute took 76.6s, so 10m is ~8x the real worst case: a run
+# that hits this is wedged, not slow. "0" disables it.
+analyticsRecomputeTimeout: "10m"
 logLevel: "info"
 otlpEndpoint: ""
 
@@ -96,6 +138,13 @@ prometheusRule:
   # Must stay below 10s: the histogram uses prometheus.DefBuckets whose largest
   # finite bucket is 10s, so p99 saturates there.
   retrievalLatencyP99Seconds: 2.5
+  # Fraction of the Postgres pool that may be in use before MemoryDBPoolSaturated
+  # fires. The whole process shares one pool, /readyz included.
+  dbPoolSaturationRatio: 0.8
+  # Seconds spent waiting for a pool connection, per second of wall clock,
+  # before MemoryDBPoolWaiting fires. Anything sustained above 0 means callers
+  # are queuing.
+  dbPoolWaitSecondsPerSecond: 0.5
 
 networkPolicy:
   enabled: true

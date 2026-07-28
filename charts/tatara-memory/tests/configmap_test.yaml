@@ -29,7 +29,46 @@ tests:
       - isNotNullOrEmpty:
           path: data.INGEST_CREATE_JOB_TIMEOUT
       - isNotNullOrEmpty:
+          path: data.PG_MAX_OPEN_CONNS
+      - isNotNullOrEmpty:
+          path: data.PG_MAX_IDLE_CONNS
+      - isNotNullOrEmpty:
+          path: data.PG_CONN_MAX_LIFETIME
+      - isNotNullOrEmpty:
+          path: data.PG_CONN_MAX_IDLE_TIME
+      - isNotNullOrEmpty:
+          path: data.PG_STATEMENT_TIMEOUT
+      - isNotNullOrEmpty:
+          path: data.PG_IDLE_IN_TRANSACTION_TIMEOUT
+      - isNotNullOrEmpty:
+          path: data.ANALYTICS_RECOMPUTE_TIMEOUT
+      - isNotNullOrEmpty:
           path: data.LOG_LEVEL
+  # tatara-memory#89: these bounds are the whole fix on the deploy side, so pin
+  # the values.yaml -> ConfigMap mapping rather than only its non-emptiness.
+  - it: projects the connection-lifetime bounds from values
+    set:
+      pgMaxOpenConns: 12
+      pgConnMaxLifetime: "45m"
+      pgStatementTimeout: "6m"
+      pgIdleInTransactionTimeout: "90s"
+      analyticsRecomputeTimeout: "15m"
+    asserts:
+      - equal:
+          path: data.PG_MAX_OPEN_CONNS
+          value: "12"
+      - equal:
+          path: data.PG_CONN_MAX_LIFETIME
+          value: "45m"
+      - equal:
+          path: data.PG_STATEMENT_TIMEOUT
+          value: "6m"
+      - equal:
+          path: data.PG_IDLE_IN_TRANSACTION_TIMEOUT
+          value: "90s"
+      - equal:
+          path: data.ANALYTICS_RECOMPUTE_TIMEOUT
+          value: "15m"
   - it: rejects any kebab-case keys leaking through
     asserts:
       - isNull:
