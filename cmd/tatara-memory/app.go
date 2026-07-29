@@ -179,7 +179,7 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 	store := ingest.NewPGStore(db, ingest.WithCreateJobTimeout(cfg.IngestCreateJobTimeout))
 	tomb := memory.NewTombstoneStore(db)
 	srcStore := memory.NewSourceStore(db)
-	memSvc := memory.NewServiceWithSources(lrc, tomb, srcStore).WithLogger(logger).WithMetrics(reg)
+	memSvc := memory.NewServiceWithSources(lrc, tomb, srcStore).WithLogger(logger).WithMetrics(reg).WithPurgeBudget(cfg.MemoryPurgeBudget)
 	pool := ingest.NewPoolWithSources(store, memSvc, cfg.WorkerPoolSize, srcStore, ingest.WithItemTimeout(cfg.IngestItemTimeout), ingest.WithMetrics(reg), ingest.WithLogger(logger))
 	pool.Start(ctx)
 	if n, err := pool.Resume(ctx); err != nil {
@@ -250,7 +250,7 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 	// zero log lines); the only difference is the connection eventually
 	// dropping instead of staying open forever. The actual, load-bearing
 	// fix for that hang is ingest.WithCreateJobTimeout above, which fails
-	// fast on DB pool exhaustion and returns a clean 503 well before this
+	// fast on DB pool exhaustion and returns a clean 429 well before this
 	// fires. WriteTimeout here is only a best-effort backstop against a
 	// connection whose response write genuinely never completes (e.g. a
 	// client that stops reading); handlePostCodeGraph explicitly opts out

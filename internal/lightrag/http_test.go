@@ -121,9 +121,13 @@ func TestHTTPClient_DeleteDocs_RetriesOnBusy(t *testing.T) {
 	require.Equal(t, 3, calls, "DeleteDocs must retry on status=busy until the pipeline frees")
 }
 
-func TestHTTPClient_DeleteDocs_BusyExhaustsRetriesReturnsBusy(t *testing.T) {
-	// If LightRAG stays busy across all attempts, DeleteDocs returns the last
-	// busy response (not an error): the memory service maps busy -> ErrBusy (429).
+func TestHTTPClient_DeleteDocs_BusyExhaustsBudgetReturnsBusyError(t *testing.T) {
+	// If LightRAG stays busy for the whole budget, DeleteDocs fails with a
+	// *BusyError. It used to return the still-busy body with a nil error, which
+	// counted the call as a lightrag_calls_total success and left the caller to
+	// re-derive the failure from the response envelope (tatara-memory#90, #91).
+	// The memory service maps *BusyError -> ErrBusy (429 + Retry-After), the same
+	// classification tatara-memory#80 gave the single-response busy envelope.
 	var calls int
 	c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		calls++
@@ -132,10 +136,16 @@ func TestHTTPClient_DeleteDocs_BusyExhaustsRetriesReturnsBusy(t *testing.T) {
 		})
 	})
 
-	resp, err := c.DeleteDocs(context.Background(), lightrag.DeleteDocRequest{DocIDs: []string{"doc-1"}})
-	require.NoError(t, err)
-	require.Equal(t, "busy", resp.Status)
-	require.Equal(t, 4, calls, "DeleteDocs must try initial + retryMax(3) attempts before giving up")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	resp, err := c.DeleteDocs(ctx, lightrag.DeleteDocRequest{DocIDs: []string{"doc-1"}})
+	require.Error(t, err)
+	require.Nil(t, resp)
+	var busyErr *lightrag.BusyError
+	require.ErrorAs(t, err, &busyErr)
+	require.Equal(t, calls, busyErr.Attempts, "every attempt made must be reported")
+	require.Greater(t, calls, 1, "DeleteDocs must retry before giving up on the lock")
 }
 
 func TestHTTPClient_DeleteDocs_RetriedRequestKeepsBody(t *testing.T) {

@@ -28,6 +28,9 @@ tests:
           path: data.HTTP_WRITE_TIMEOUT
       - isNotNullOrEmpty:
           path: data.INGEST_CREATE_JOB_TIMEOUT
+      - equal:
+          path: data.MEMORY_PURGE_BUDGET
+          value: "45s"
       - isNotNullOrEmpty:
           path: data.DB_MAX_OPEN_CONNS
       - isNotNullOrEmpty:
