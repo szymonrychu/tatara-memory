@@ -29,6 +29,18 @@ tests:
       - isNotNullOrEmpty:
           path: data.INGEST_CREATE_JOB_TIMEOUT
       - isNotNullOrEmpty:
+          path: data.DB_MAX_OPEN_CONNS
+      - isNotNullOrEmpty:
+          path: data.DB_MAX_IDLE_CONNS
+      - isNotNullOrEmpty:
+          path: data.MEMORIES_BULK_MAX_IN_FLIGHT
+      - isNotNullOrEmpty:
+          path: data.CODE_GRAPH_BULK_MAX_IN_FLIGHT
+      - isNotNullOrEmpty:
+          path: data.ADMISSION_WAIT
+      - isNotNullOrEmpty:
+          path: data.ADMISSION_RETRY_AFTER
+      - isNotNullOrEmpty:
           path: data.LOG_LEVEL
   - it: rejects any kebab-case keys leaking through
     asserts:

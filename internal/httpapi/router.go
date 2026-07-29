@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus"
@@ -19,7 +20,25 @@ type Config struct {
 	Logger     *slog.Logger
 	Registry   *prometheus.Registry
 	ReadyCheck func(context.Context) error
+
+	// Admission control for the two bulk write routes. Each is its own budget
+	// so a /code-graph:bulk burst cannot consume the slots (and, through them,
+	// the shared Postgres connections) that /memories:bulk needs. 0 disables a
+	// budget; both default to 0 so callers that do not opt in are unaffected.
+	MemoriesBulkMaxInFlight  int
+	CodeGraphBulkMaxInFlight int
+	// AdmissionWait is how long a bulk request may queue for a slot before it
+	// is shed with 429. AdmissionRetryAfter is the base Retry-After advertised
+	// on a shed response (jittered per response).
+	AdmissionWait       time.Duration
+	AdmissionRetryAfter time.Duration
 }
+
+// Admission-control class names, used as the metric/log label for each budget.
+const (
+	classMemoriesBulk  = "memories_bulk"
+	classCodeGraphBulk = "code_graph_bulk"
+)
 
 // NewRouter builds and returns the chi router with the full middleware stack.
 // Middleware order: request-id -> recoverer -> access-log -> metrics -> (auth on API routes).
@@ -53,22 +72,48 @@ func NewRouter(cfg Config) *chi.Mux {
 	})
 	r.Handle("/metrics", promhttp.HandlerFor(cfg.Registry, promhttp.HandlerOpts{}))
 
+	adm := NewAdmissionMetrics(cfg.Registry, classMemoriesBulk, classCodeGraphBulk)
+	limiters := bulkLimiters{
+		memories: NewAdmissionLimiter(AdmissionConfig{
+			Class:       classMemoriesBulk,
+			MaxInFlight: cfg.MemoriesBulkMaxInFlight,
+			Wait:        cfg.AdmissionWait,
+			RetryAfter:  cfg.AdmissionRetryAfter,
+			Logger:      cfg.Logger,
+			Metrics:     adm,
+		}),
+		codeGraph: NewAdmissionLimiter(AdmissionConfig{
+			Class:       classCodeGraphBulk,
+			MaxInFlight: cfg.CodeGraphBulkMaxInFlight,
+			Wait:        cfg.AdmissionWait,
+			RetryAfter:  cfg.AdmissionRetryAfter,
+			Logger:      cfg.Logger,
+			Metrics:     adm,
+		}),
+	}
+
 	r.Group(func(r chi.Router) {
 		if cfg.Verify != nil {
 			r.Use(cfg.Verify)
 		}
-		mountV1(r, cfg)
+		mountV1(r, cfg, limiters)
 	})
 	return r
 }
 
-func mountV1(r chi.Router, cfg Config) {
+// bulkLimiters carries the per-route admission budgets into mountV1.
+type bulkLimiters struct {
+	memories  *AdmissionLimiter
+	codeGraph *AdmissionLimiter
+}
+
+func mountV1(r chi.Router, cfg Config, lim bulkLimiters) {
 	r.Post("/memories", handlePostMemory(cfg))
 	r.Get("/memories/{id}", handleGetMemory(cfg))
 	r.Delete("/memories/{id}", handleDeleteMemory(cfg))
 
 	if cfg.Ingest != nil {
-		r.Post("/memories:bulk", handleBulkIngest(cfg))
+		r.With(lim.memories.Middleware).Post("/memories:bulk", handleBulkIngest(cfg))
 		r.Get("/ingest-jobs/{id}", handleGetJob(cfg))
 	}
 
@@ -85,7 +130,7 @@ func mountV1(r chi.Router, cfg Config) {
 	r.Delete("/edges/{id}", handleDeleteEdge(cfg))
 
 	if cfg.CodeGraph != nil {
-		r.Post("/code-graph:bulk", handlePostCodeGraph(cfg))
+		r.With(lim.codeGraph.Middleware).Post("/code-graph:bulk", handlePostCodeGraph(cfg))
 		r.Get("/code/entities", handleSearchCodeEntities(cfg))
 		r.Get("/code/entity", handleGetCodeEntity(cfg))
 		r.Get("/code/neighbors", handleNeighbors(cfg))
