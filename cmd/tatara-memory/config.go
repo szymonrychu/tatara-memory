@@ -21,15 +21,27 @@ type config struct {
 	HTTPWriteTimeout       time.Duration
 	IngestCreateJobTimeout time.Duration
 
-	// Postgres pool + connection-lifetime bounds (tatara-memory#89). See openDB
-	// in app.go for why each exists.
-	PGMaxOpenConns     int
-	PGMaxIdleConns     int
-	PGConnMaxLifetime  time.Duration
-	PGConnMaxIdleTime  time.Duration
+	// Shared pool size and the per-class admission budgets sized against it
+	// (tatara-memory#79/#80/#82/#87). validate() enforces the relationship.
+	DBMaxOpenConns           int
+	DBMaxIdleConns           int
+	MemoriesBulkMaxInFlight  int
+	CodeGraphBulkMaxInFlight int
+	AdmissionWait            time.Duration
+	AdmissionRetryAfter      time.Duration
+
+	// Connection-lifetime and server-side session bounds (tatara-memory#89).
+	// DB_* configure the database/sql pool, PG_* set Postgres session
+	// parameters on every connection. See openDB in app.go for why each exists.
+	DBConnMaxLifetime  time.Duration
+	DBConnMaxIdleTime  time.Duration
 	PGStatementTimeout time.Duration
 	PGIdleInTxTimeout  time.Duration
 
+	// AnalyticsMaxConcurrency bounds concurrent code-graph analytics recomputes.
+	// Each in-flight recompute holds one pooled connection for its write
+	// transaction, so this is part of the pool budget validate() enforces.
+	AnalyticsMaxConcurrency int
 	// AnalyticsRecomputeTimeout bounds one code-graph analytics recompute end to
 	// end. 0 disables.
 	AnalyticsRecomputeTimeout time.Duration
@@ -87,19 +99,35 @@ func loadConfig(args []string) (config, error) {
 	if err != nil {
 		return config{}, err
 	}
-	pgMaxOpen, err := envIntOr("PG_MAX_OPEN_CONNS", 10)
+	maxOpenConns, err := envIntOr("DB_MAX_OPEN_CONNS", 20)
 	if err != nil {
 		return config{}, err
 	}
-	pgMaxIdle, err := envIntOr("PG_MAX_IDLE_CONNS", 2)
+	maxIdleConns, err := envIntOr("DB_MAX_IDLE_CONNS", 5)
 	if err != nil {
 		return config{}, err
 	}
-	pgConnMaxLifetime, err := envDurationOr("PG_CONN_MAX_LIFETIME", 30*time.Minute)
+	memoriesBulkMaxInFlight, err := envIntOr("MEMORIES_BULK_MAX_IN_FLIGHT", 4)
 	if err != nil {
 		return config{}, err
 	}
-	pgConnMaxIdleTime, err := envDurationOr("PG_CONN_MAX_IDLE_TIME", 5*time.Minute)
+	codeGraphBulkMaxInFlight, err := envIntOr("CODE_GRAPH_BULK_MAX_IN_FLIGHT", 2)
+	if err != nil {
+		return config{}, err
+	}
+	admissionWait, err := envDurationOr("ADMISSION_WAIT", 5*time.Second)
+	if err != nil {
+		return config{}, err
+	}
+	admissionRetryAfter, err := envDurationOr("ADMISSION_RETRY_AFTER", 5*time.Second)
+	if err != nil {
+		return config{}, err
+	}
+	dbConnMaxLifetime, err := envDurationOr("DB_CONN_MAX_LIFETIME", 30*time.Minute)
+	if err != nil {
+		return config{}, err
+	}
+	dbConnMaxIdleTime, err := envDurationOr("DB_CONN_MAX_IDLE_TIME", 5*time.Minute)
 	if err != nil {
 		return config{}, err
 	}
@@ -114,6 +142,13 @@ func loadConfig(args []string) (config, error) {
 	// statements is row marshalling. 2m is far above that and far below the
 	// hours-long hold the incident observed.
 	pgIdleInTxTimeout, err := envDurationOr("PG_IDLE_IN_TRANSACTION_TIMEOUT", 2*time.Minute)
+	if err != nil {
+		return config{}, err
+	}
+	// Analytics is background batch work sharing the request path's pool, so its
+	// fan-out is an explicit part of the pool budget rather than the worker's
+	// implicit GOMAXPROCS default - see validate().
+	analyticsMaxConcurrency, err := envIntOr("ANALYTICS_MAX_CONCURRENCY", 2)
 	if err != nil {
 		return config{}, err
 	}
@@ -136,12 +171,18 @@ func loadConfig(args []string) (config, error) {
 		HTTPWriteTimeout:       writeTimeout,
 		IngestCreateJobTimeout: createJobTimeout,
 
-		PGMaxOpenConns:            pgMaxOpen,
-		PGMaxIdleConns:            pgMaxIdle,
-		PGConnMaxLifetime:         pgConnMaxLifetime,
-		PGConnMaxIdleTime:         pgConnMaxIdleTime,
+		DBMaxOpenConns:           maxOpenConns,
+		DBMaxIdleConns:           maxIdleConns,
+		MemoriesBulkMaxInFlight:  memoriesBulkMaxInFlight,
+		CodeGraphBulkMaxInFlight: codeGraphBulkMaxInFlight,
+		AdmissionWait:            admissionWait,
+		AdmissionRetryAfter:      admissionRetryAfter,
+
+		DBConnMaxLifetime:         dbConnMaxLifetime,
+		DBConnMaxIdleTime:         dbConnMaxIdleTime,
 		PGStatementTimeout:        pgStatementTimeout,
 		PGIdleInTxTimeout:         pgIdleInTxTimeout,
+		AnalyticsMaxConcurrency:   analyticsMaxConcurrency,
 		AnalyticsRecomputeTimeout: analyticsRecomputeTimeout,
 	}
 
@@ -157,12 +198,17 @@ func loadConfig(args []string) (config, error) {
 	fs.IntVar(&cfg.BetweennessMaxNodes, "betweenness-max-nodes", cfg.BetweennessMaxNodes, "Max graph nodes for betweenness centrality (0 = default 5000)")
 	fs.DurationVar(&cfg.HTTPWriteTimeout, "http-write-timeout", cfg.HTTPWriteTimeout, "http.Server WriteTimeout: a raw socket write deadline armed before the handler runs, NOT a handler-abort bound (does not cancel r.Context()); code-graph:bulk opts out of it explicitly (0 disables)")
 	fs.DurationVar(&cfg.IngestCreateJobTimeout, "ingest-create-job-timeout", cfg.IngestCreateJobTimeout, "Deadline for /memories:bulk's CreateJob transaction, including DB pool acquire (0 disables)")
-	fs.IntVar(&cfg.PGMaxOpenConns, "pg-max-open-conns", cfg.PGMaxOpenConns, "Max open Postgres connections in the shared pool")
-	fs.IntVar(&cfg.PGMaxIdleConns, "pg-max-idle-conns", cfg.PGMaxIdleConns, "Max idle Postgres connections kept in the pool")
-	fs.DurationVar(&cfg.PGConnMaxLifetime, "pg-conn-max-lifetime", cfg.PGConnMaxLifetime, "Max lifetime of a pooled Postgres connection before it is recycled (0 = unlimited)")
-	fs.DurationVar(&cfg.PGConnMaxIdleTime, "pg-conn-max-idle-time", cfg.PGConnMaxIdleTime, "Max idle time of a pooled Postgres connection before it is closed (0 = unlimited)")
+	fs.IntVar(&cfg.DBMaxOpenConns, "db-max-open-conns", cfg.DBMaxOpenConns, "Max open Postgres connections in the shared pool")
+	fs.IntVar(&cfg.DBMaxIdleConns, "db-max-idle-conns", cfg.DBMaxIdleConns, "Max idle Postgres connections kept in the shared pool")
+	fs.IntVar(&cfg.MemoriesBulkMaxInFlight, "memories-bulk-max-in-flight", cfg.MemoriesBulkMaxInFlight, "Admission-control budget: concurrent POST /memories:bulk requests (0 disables)")
+	fs.IntVar(&cfg.CodeGraphBulkMaxInFlight, "code-graph-bulk-max-in-flight", cfg.CodeGraphBulkMaxInFlight, "Admission-control budget: concurrent POST /code-graph:bulk requests (0 disables)")
+	fs.DurationVar(&cfg.AdmissionWait, "admission-wait", cfg.AdmissionWait, "How long a bulk request may queue for an admission slot before it is shed with 429")
+	fs.DurationVar(&cfg.AdmissionRetryAfter, "admission-retry-after", cfg.AdmissionRetryAfter, "Base Retry-After advertised on a shed (429) response; jittered up to +50% per response")
+	fs.DurationVar(&cfg.DBConnMaxLifetime, "db-conn-max-lifetime", cfg.DBConnMaxLifetime, "Max lifetime of a pooled Postgres connection before it is recycled (0 = unlimited)")
+	fs.DurationVar(&cfg.DBConnMaxIdleTime, "db-conn-max-idle-time", cfg.DBConnMaxIdleTime, "Max idle time of a pooled Postgres connection before it is closed (0 = unlimited)")
 	fs.DurationVar(&cfg.PGStatementTimeout, "pg-statement-timeout", cfg.PGStatementTimeout, "Server-side statement_timeout applied to every connection (0 disables)")
 	fs.DurationVar(&cfg.PGIdleInTxTimeout, "pg-idle-in-transaction-timeout", cfg.PGIdleInTxTimeout, "Server-side idle_in_transaction_session_timeout applied to every connection (0 disables)")
+	fs.IntVar(&cfg.AnalyticsMaxConcurrency, "analytics-max-concurrency", cfg.AnalyticsMaxConcurrency, "Max concurrent code-graph analytics recomputes; each holds one pooled connection")
 	fs.DurationVar(&cfg.AnalyticsRecomputeTimeout, "analytics-recompute-timeout", cfg.AnalyticsRecomputeTimeout, "Deadline for one code-graph analytics recompute (0 disables)")
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
@@ -189,20 +235,29 @@ func (c config) validate() error {
 	if c.IngestCreateJobTimeout < 0 {
 		return fmt.Errorf("ingest-create-job-timeout must be >= 0")
 	}
-	if c.PGMaxOpenConns < 1 {
-		return fmt.Errorf("pg-max-open-conns must be >= 1")
+	if c.DBMaxOpenConns < 1 {
+		return fmt.Errorf("db-max-open-conns must be >= 1")
 	}
-	if c.PGMaxIdleConns < 0 {
-		return fmt.Errorf("pg-max-idle-conns must be >= 0")
+	if c.DBMaxIdleConns < 0 || c.DBMaxIdleConns > c.DBMaxOpenConns {
+		return fmt.Errorf("db-max-idle-conns must be between 0 and db-max-open-conns (%d)", c.DBMaxOpenConns)
 	}
-	if c.PGMaxIdleConns > c.PGMaxOpenConns {
-		return fmt.Errorf("pg-max-idle-conns must be <= pg-max-open-conns")
+	if c.MemoriesBulkMaxInFlight < 0 {
+		return fmt.Errorf("memories-bulk-max-in-flight must be >= 0")
 	}
-	if c.PGConnMaxLifetime < 0 {
-		return fmt.Errorf("pg-conn-max-lifetime must be >= 0")
+	if c.CodeGraphBulkMaxInFlight < 0 {
+		return fmt.Errorf("code-graph-bulk-max-in-flight must be >= 0")
 	}
-	if c.PGConnMaxIdleTime < 0 {
-		return fmt.Errorf("pg-conn-max-idle-time must be >= 0")
+	if c.AdmissionWait < 0 {
+		return fmt.Errorf("admission-wait must be >= 0")
+	}
+	if c.AdmissionRetryAfter < 0 {
+		return fmt.Errorf("admission-retry-after must be >= 0")
+	}
+	if c.DBConnMaxLifetime < 0 {
+		return fmt.Errorf("db-conn-max-lifetime must be >= 0")
+	}
+	if c.DBConnMaxIdleTime < 0 {
+		return fmt.Errorf("db-conn-max-idle-time must be >= 0")
 	}
 	if c.PGStatementTimeout < 0 {
 		return fmt.Errorf("pg-statement-timeout must be >= 0")
@@ -210,8 +265,39 @@ func (c config) validate() error {
 	if c.PGIdleInTxTimeout < 0 {
 		return fmt.Errorf("pg-idle-in-transaction-timeout must be >= 0")
 	}
+	// Must be explicit, never 0: it is a term in the pool budget below, and the
+	// worker's own fallback for 0 is GOMAXPROCS, which would make that budget
+	// depend on the node the pod lands on (tatara-memory#89).
+	if c.AnalyticsMaxConcurrency < 1 {
+		return fmt.Errorf("analytics-max-concurrency must be >= 1")
+	}
 	if c.AnalyticsRecomputeTimeout < 0 {
 		return fmt.Errorf("analytics-recompute-timeout must be >= 0")
+	}
+	// The admission budgets exist to keep the shared Postgres pool from being
+	// oversubscribed (tatara-memory#82: a long /code-graph:bulk transaction
+	// holds one connection for its whole life). Every admitted bulk request,
+	// every ingest worker and every in-flight analytics recompute can hold a
+	// connection simultaneously, so if those alone can exhaust the pool the
+	// budgets are not actually protecting anything - reads, /readyz and the
+	// worker pool would starve exactly as before. Refuse to start on such a
+	// configuration rather than shipping a limiter that cannot do its job.
+	// Skipped when either bulk budget is disabled (0 = unbounded, an explicit
+	// operator opt-out): with an unbounded class there is no budget to check.
+	//
+	// analytics-max-concurrency joined this sum in tatara-memory#89. The
+	// original arithmetic omitted the analytics worker, but that worker holds a
+	// pooled connection for the whole of each recompute's write transaction
+	// exactly like an ingest worker does, so leaving it out understated the
+	// reserved total by up to GOMAXPROCS connections - the same class of
+	// undercount that let #89's pool exhaustion go unmodelled.
+	if c.MemoriesBulkMaxInFlight > 0 && c.CodeGraphBulkMaxInFlight > 0 {
+		reserved := c.MemoriesBulkMaxInFlight + c.CodeGraphBulkMaxInFlight + c.WorkerPoolSize + c.AnalyticsMaxConcurrency
+		if reserved >= c.DBMaxOpenConns {
+			return fmt.Errorf(
+				"admission budgets oversubscribe the DB pool: memories-bulk-max-in-flight(%d) + code-graph-bulk-max-in-flight(%d) + worker-pool-size(%d) + analytics-max-concurrency(%d) = %d must be < db-max-open-conns(%d)",
+				c.MemoriesBulkMaxInFlight, c.CodeGraphBulkMaxInFlight, c.WorkerPoolSize, c.AnalyticsMaxConcurrency, reserved, c.DBMaxOpenConns)
+		}
 	}
 	return nil
 }

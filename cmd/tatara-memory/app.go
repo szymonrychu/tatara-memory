@@ -103,27 +103,22 @@ func buildObs(_ context.Context, cfg config) (*slog.Logger, *prometheus.Registry
 	return logger, reg, nil
 }
 
-// openDB opens a pgx-backed *sql.DB with conservative connection limits and
-// bounded connection lifetimes.
+// openDB opens a pgx-backed *sql.DB carrying the server-side session timeouts
+// from cfg. Pool limits and connection lifetimes are NOT set here: they are
+// applied by newAppWithDeps from config, so they land in exactly one place
+// regardless of which dbOpener produced the handle.
 //
-// Three of these settings exist because of tatara-memory#89, where
+// The session timeouts exist because of tatara-memory#89, where
 // `tatara_memory` backends on mem-mtg-pg grew monotonically from 4 to 87 over
 // 5.5h and never came back, exhausting all 97 non-superuser connection slots
-// (SQLSTATE 53300) and taking the project's memory API down for 13h+:
-//
-//   - ConnMaxLifetime / ConnMaxIdleTime: without them a pooled connection is
-//     reused forever, so a client-side connection whose server-side backend has
-//     become wedged is never recycled. A lifetime bound means every backend this
-//     process owns is torn down and re-established on a fixed cadence, which is
-//     the only client-side mechanism that puts a ceiling on how long any one
-//     backend can be held.
-//   - statement_timeout / idle_in_transaction_session_timeout: the server-side
-//     half of the same guarantee, and the only half that still works when the
-//     client is gone entirely. A Postgres backend does not notice a client
-//     disconnect while it is mid-statement, so without these a backend orphaned
-//     by a client-side close survives indefinitely - exactly the state the
-//     incident found (84 backends in state=active, waiting=0, oldest transaction
-//     age growing 1s per 1s of wall clock).
+// (SQLSTATE 53300) and taking the project's memory API down for 13h+.
+// statement_timeout / idle_in_transaction_session_timeout are the server-side
+// half of the connection-hold guarantee, and the only half that still works
+// when the client is gone entirely: a Postgres backend does not notice a client
+// disconnect while it is mid-statement, so without these a backend orphaned by
+// a client-side close survives indefinitely - exactly the state the incident
+// found (84 backends in state=active, waiting=0, oldest transaction age growing
+// 1s per 1s of wall clock).
 //
 // Defaults are deliberately generous rather than tight: /code-graph:bulk's
 // single Reconcile transaction legitimately runs 50-194s+ on a large repo, so
@@ -133,12 +128,7 @@ func openDB(dsn string, cfg config) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	db := stdlib.OpenDB(*connCfg)
-	db.SetMaxOpenConns(cfg.PGMaxOpenConns)
-	db.SetMaxIdleConns(cfg.PGMaxIdleConns)
-	db.SetConnMaxLifetime(cfg.PGConnMaxLifetime)
-	db.SetConnMaxIdleTime(cfg.PGConnMaxIdleTime)
-	return db, nil
+	return stdlib.OpenDB(*connCfg), nil
 }
 
 // pgConnConfig parses the DSN and layers the server-side session timeouts onto
@@ -208,6 +198,35 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 		return nil, err
 	}
 
+	// One pool serves everything that touches Postgres: both bulk write routes,
+	// every /code/* read, the ingest worker pool, the analytics worker and
+	// /readyz. Its size is the budget the admission-control limits are sized
+	// against (config.validate enforces that relationship). The previous
+	// hard-coded 10 was too small for that budget - 4 ingest workers alone can
+	// hold 4 of it, and a single /code-graph:bulk reconcile holds one
+	// connection for the whole 50-194s of its transaction (tatara-memory#82),
+	// while #87 measured Postgres itself healthy at 44/100 connections during a
+	// shedding burst, i.e. the binding constraint was this client-side cap and
+	// not the server. Non-positive values leave database/sql's own defaults in
+	// place, which is what the fake-DB unit tests rely on.
+	if cfg.DBMaxOpenConns > 0 {
+		db.SetMaxOpenConns(cfg.DBMaxOpenConns)
+	}
+	if cfg.DBMaxIdleConns > 0 {
+		db.SetMaxIdleConns(cfg.DBMaxIdleConns)
+	}
+
+	// Bounded connection lifetimes, the client-side half of the same guarantee
+	// (tatara-memory#89). Without them a pooled connection is reused forever, so
+	// a client-side connection whose server-side backend has become wedged is
+	// never recycled. A lifetime bound means every backend this process owns is
+	// torn down and re-established on a fixed cadence, which is the only
+	// client-side mechanism that puts a ceiling on how long any one backend can
+	// be held. 0 means unlimited, database/sql's own default, so both are safe
+	// to apply unconditionally.
+	db.SetConnMaxLifetime(cfg.DBConnMaxLifetime)
+	db.SetConnMaxIdleTime(cfg.DBConnMaxIdleTime)
+
 	// Pool saturation had no signal at all before tatara-memory#89: the incident
 	// had to be reconstructed from the database side (cnpg_backends_total) because
 	// this process published nothing about its own pool. This exports
@@ -259,6 +278,7 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 		Logger:              logger,
 		Registerer:          reg,
 		BetweennessMaxNodes: cfg.BetweennessMaxNodes,
+		MaxConcurrency:      cfg.AnalyticsMaxConcurrency,
 		RecomputeTimeout:    cfg.AnalyticsRecomputeTimeout,
 	})
 	go analyticsWorker.Run(analyticsCtx)
@@ -286,6 +306,11 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 		Logger:     logger,
 		Registry:   reg,
 		ReadyCheck: readyFn,
+
+		MemoriesBulkMaxInFlight:  cfg.MemoriesBulkMaxInFlight,
+		CodeGraphBulkMaxInFlight: cfg.CodeGraphBulkMaxInFlight,
+		AdmissionWait:            cfg.AdmissionWait,
+		AdmissionRetryAfter:      cfg.AdmissionRetryAfter,
 	})
 
 	// WriteTimeout does NOT bound the handler: net/http arms it as a raw

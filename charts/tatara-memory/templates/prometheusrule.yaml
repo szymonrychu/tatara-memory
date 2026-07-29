@@ -42,6 +42,27 @@ spec:
             description: >-
               More than {{ .Values.prometheusRule.http5xxRatio }} of tatara-memory
               HTTP responses are server errors over the last 5m (sustained 10m).
+        # Shed load is deliberately NOT a 5xx (it is 429 + Retry-After), so the
+        # MemoryHigh5xx rule above can no longer see a concurrent-ingest burst.
+        # This is the rule that does: sustained shedding means the bulk
+        # admission budgets are too small for the offered load, or a client is
+        # pushing whole-repo work in one unbatched request.
+        - alert: MemoryBulkAdmissionShedding
+          expr: >-
+            sum by (class) (
+              rate(http_admission_total{job=~".*tatara-memory.*", result="shed"}[10m])
+            ) > {{ .Values.prometheusRule.admissionShedRate }}
+          for: 10m
+          labels:
+            severity: {{ .Values.prometheusRule.severityLabel | quote }}
+          annotations:
+            summary: tatara-memory is shedding bulk requests
+            description: >-
+              tatara-memory has been shedding more than
+              {{ .Values.prometheusRule.admissionShedRate }} bulk requests/s with
+              HTTP 429 for 10m. Callers are offering more concurrent bulk work
+              than the admission budget allows; the service is protecting its
+              Postgres pool, not failing.
         - alert: MemoryLightragErrors
           # Upstream recall failures: lightrag client calls returning result="error".
           expr: sum(increase(lightrag_calls_total{job=~".*tatara-memory.*", result="error"}[15m])) > 0

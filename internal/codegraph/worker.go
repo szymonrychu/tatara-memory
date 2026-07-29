@@ -39,6 +39,14 @@ type AnalyticsWorkerConfig struct {
 	// transaction whose age grew 1800s per 1800s of wall clock for 5.5h, on a
 	// pool shared with /readyz and every request handler.
 	RecomputeTimeout time.Duration
+	// MaxConcurrency caps concurrent RecomputeAnalytics goroutines. Each one
+	// holds a pooled Postgres connection for the whole of its write
+	// transaction, so in the server this is a term in the shared pool's budget
+	// and config.validate refuses to start when it does not fit
+	// (tatara-memory#89). 0 falls back to recomputeMaxConcurrency (GOMAXPROCS),
+	// which is fine for a library caller but too node-dependent to budget
+	// against, so the server always passes an explicit value.
+	MaxConcurrency int
 	// Logger; defaults to slog.Default().
 	Logger *slog.Logger
 	// Registerer for the worker's Prometheus instruments. nil registers nothing
@@ -93,7 +101,10 @@ func NewAnalyticsWorker(store AnalyticsStore, labeler CommunityLabeler, cfg Anal
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
-	concurrency := recomputeMaxConcurrency
+	concurrency := cfg.MaxConcurrency
+	if concurrency < 1 {
+		concurrency = recomputeMaxConcurrency
+	}
 	if concurrency < 1 {
 		concurrency = 1
 	}

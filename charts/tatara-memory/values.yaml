@@ -48,7 +48,45 @@ httpWriteTimeout: "240s"
 # the ingest client already retries. "0" disables it.
 ingestCreateJobTimeout: "10s"
 
-# Postgres connection pool and connection-lifetime bounds (tatara-memory#89).
+# --- Admission control on the bulk write routes (tatara-memory#79/#80/#82/#87)
+#
+# One Postgres connection pool is shared by /memories:bulk, /code-graph:bulk,
+# every /code/* read, the ingest worker pool, the analytics worker and /readyz.
+# A single /code-graph:bulk reconcile holds one connection for its whole
+# transaction (measured 50-194s on a large repo), so an unbounded concurrent
+# re-ingest wave could take every connection and starve /memories:bulk's
+# CreateJob until its deadline fired - which the API then reported as 503.
+#
+# The two budgets below bound how many bulk requests execute at once, so the
+# pool always keeps connections for everything else. The app REFUSES TO START
+# if memoriesBulkMaxInFlight + codeGraphBulkMaxInFlight + workerPoolSize +
+# analyticsMaxConcurrency is not strictly less than dbMaxOpenConns: a budget
+# that can still exhaust the pool is a limiter that cannot do its job.
+# Defaults: 4 + 2 + 4 + 2 = 12 < 20.
+#
+# A request that cannot get a slot within admissionWait is SHED with HTTP 429
+# and a Retry-After header (base admissionRetryAfter, jittered up to +50% per
+# response so a shed wave does not re-arrive in lockstep). 503 is now reserved
+# for genuine upstream unavailability. Clients must treat 429 as retryable and
+# honour Retry-After.
+#
+# "0" disables a budget (unbounded, pre-admission-control behaviour) and skips
+# the oversubscription check for it.
+memoriesBulkMaxInFlight: 4
+codeGraphBulkMaxInFlight: 2
+admissionWait: "5s"
+admissionRetryAfter: "5s"
+
+# Shared Postgres pool limits. Raised from the previous hard-coded 10, which
+# could not fit the admission budgets plus the ingest workers plus reads;
+# tatara-memory#87 measured the Postgres side healthy at 44/100 connections
+# during a shedding burst, so the binding constraint was this client-side cap.
+# Keep replicaCount * dbMaxOpenConns comfortably below the cluster's
+# max_connections.
+dbMaxOpenConns: 20
+dbMaxIdleConns: 5
+
+# --- Connection-hold bounds (tatara-memory#89)
 #
 # The incident: backends owned by this service's role on mem-mtg-pg grew from 4
 # to 87 over 5.5h and never terminated, exhausting all 97 non-superuser
@@ -56,17 +94,16 @@ ingestCreateJobTimeout: "10s"
 # roles with the SUPERUSER attribute"). The project's memory API was down 13h+
 # and the rollout deadlocked, because /readyz pings the database and could not
 # get a slot while /healthz (no DB dependency) kept the wedged pod alive.
+# Admission control bounds how many connections are taken; these bound how long
+# any one of them is held.
 #
-# pgMaxOpenConns/pgMaxIdleConns are the pool's size. These were previously
-# hardcoded at 10/2 and not tunable without a rebuild.
-pgMaxOpenConns: 10
-pgMaxIdleConns: 2
-# pgConnMaxLifetime/pgConnMaxIdleTime recycle pooled connections on a fixed
+# dbConnMaxLifetime/dbConnMaxIdleTime recycle pooled connections on a fixed
 # cadence. Without them a connection is reused forever, so a client-side
 # connection whose server-side backend has become wedged is never replaced -
 # there is no client-side ceiling at all on how long one backend is held.
-pgConnMaxLifetime: "30m"
-pgConnMaxIdleTime: "5m"
+# "0" means unlimited for either one.
+dbConnMaxLifetime: "30m"
+dbConnMaxIdleTime: "5m"
 # pgStatementTimeout / pgIdleInTransactionTimeout are sent as Postgres session
 # parameters on every connection. They are the server-side half of the same
 # guarantee, and the only half that still works when the client is gone: a
@@ -82,6 +119,13 @@ pgConnMaxIdleTime: "5m"
 # "0" disables either one.
 pgStatementTimeout: "5m"
 pgIdleInTransactionTimeout: "2m"
+# Max concurrent code-graph analytics recomputes. Each in-flight recompute holds
+# one pooled connection for its write transaction, so this is a term in the
+# oversubscription check above. It must be an explicit number: the worker's own
+# fallback is GOMAXPROCS, which would make the pool budget depend on which node
+# the pod lands on. Analytics is background batch work and must not crowd out
+# the request path, hence a small default.
+analyticsMaxConcurrency: 2
 # Deadline for ONE code-graph analytics recompute, end to end. Without it the
 # worker inherits the process-lifetime context, so a wedged run holds its
 # database work for as long as the pod lives - the incident observed a single
@@ -89,6 +133,8 @@ pgIdleInTransactionTimeout: "2m"
 # incident's own recompute took 76.6s, so 10m is ~8x the real worst case: a run
 # that hits this is wedged, not slow. "0" disables it.
 analyticsRecomputeTimeout: "10m"
+
+
 logLevel: "info"
 otlpEndpoint: ""
 
@@ -134,6 +180,10 @@ prometheusRule:
   additionalLabels: {}
   # Fraction of HTTP responses that may be 5xx before MemoryHigh5xx fires.
   http5xxRatio: 0.05
+  # Bulk requests/s shed with 429 by admission control before
+  # MemoryBulkAdmissionShedding fires. 0.05/s is ~30 shed requests over the
+  # 10m window: a sustained overload, not a single burst.
+  admissionShedRate: 0.05
   # p99 request-latency threshold (seconds) for MemoryRetrievalLatencyHigh.
   # Must stay below 10s: the histogram uses prometheus.DefBuckets whose largest
   # finite bucket is 10s, so p99 saturates there.

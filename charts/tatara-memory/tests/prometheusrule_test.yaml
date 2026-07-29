@@ -34,24 +34,27 @@ tests:
           value: MemoryHigh5xx
       - equal:
           path: spec.groups[0].rules[2].alert
-          value: MemoryLightragErrors
+          value: MemoryBulkAdmissionShedding
       - equal:
           path: spec.groups[0].rules[3].alert
-          value: MemoryIngestJobsFailing
+          value: MemoryLightragErrors
       - equal:
           path: spec.groups[0].rules[4].alert
-          value: MemoryRetrievalLatencyHigh
+          value: MemoryIngestJobsFailing
       - equal:
           path: spec.groups[0].rules[5].alert
-          value: MemoryDBPoolSaturated
+          value: MemoryRetrievalLatencyHigh
       - equal:
           path: spec.groups[0].rules[6].alert
-          value: MemoryDBPoolWaiting
+          value: MemoryDBPoolSaturated
       - equal:
           path: spec.groups[0].rules[7].alert
-          value: MemoryAnalyticsRecomputeTimingOut
+          value: MemoryDBPoolWaiting
       - equal:
           path: spec.groups[0].rules[8].alert
+          value: MemoryAnalyticsRecomputeTimingOut
+      - equal:
+          path: spec.groups[0].rules[9].alert
           value: MemoryHandlerPanics
   - it: pool-saturation thresholds flow from values into the alert expressions
     set:
@@ -60,10 +63,10 @@ tests:
       prometheusRule.dbPoolWaitSecondsPerSecond: 0.25
     asserts:
       - matchRegex:
-          path: spec.groups[0].rules[5].expr
+          path: spec.groups[0].rules[6].expr
           pattern: "> 0.9"
       - matchRegex:
-          path: spec.groups[0].rules[6].expr
+          path: spec.groups[0].rules[7].expr
           pattern: "> 0.25"
   - it: deadman is always critical, others take severityLabel
     set:
@@ -81,12 +84,16 @@ tests:
       prometheusRule.enabled: true
       prometheusRule.http5xxRatio: 0.1
       prometheusRule.retrievalLatencyP99Seconds: 3
+      prometheusRule.admissionShedRate: 0.25
     asserts:
       - matchRegex:
           path: spec.groups[0].rules[1].expr
           pattern: "> 0.1"
       - matchRegex:
-          path: spec.groups[0].rules[4].expr
+          path: spec.groups[0].rules[2].expr
+          pattern: "> 0.25"
+      - matchRegex:
+          path: spec.groups[0].rules[5].expr
           pattern: "> 3"
   - it: merges additionalLabels onto the rule metadata
     set:

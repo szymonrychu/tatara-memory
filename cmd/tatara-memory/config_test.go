@@ -89,3 +89,164 @@ func TestLoadConfig_ItemTimeoutBadEnv(t *testing.T) {
 	_, err := loadConfig([]string{})
 	require.Error(t, err)
 }
+
+// The shipped defaults must actually protect the pool: every admission budget,
+// every ingest worker and every concurrent analytics recompute must fit inside
+// it with room left for reads and /readyz. A default set that fails its own
+// validation would ship a limiter that cannot do its job (tatara-memory#82) -
+// or worse, a binary that will not boot at all in production while every unit
+// test that builds a config by hand still passes.
+func TestLoadConfig_AdmissionDefaultsFitThePool(t *testing.T) {
+	os.Clearenv()
+	cfg, err := loadConfig([]string{})
+	require.NoError(t, err)
+	require.Equal(t, 20, cfg.DBMaxOpenConns)
+	require.Equal(t, 5, cfg.DBMaxIdleConns)
+	require.Equal(t, 4, cfg.MemoriesBulkMaxInFlight)
+	require.Equal(t, 2, cfg.CodeGraphBulkMaxInFlight)
+	require.Equal(t, 5*time.Second, cfg.AdmissionWait)
+	require.Equal(t, 5*time.Second, cfg.AdmissionRetryAfter)
+	require.Equal(t, 4, cfg.WorkerPoolSize)
+	require.Equal(t, 2, cfg.AnalyticsMaxConcurrency)
+
+	cfg.PGDSN = "x"
+	cfg.LightRAGBaseURL = "y"
+	require.NoError(t, cfg.validate())
+	require.Less(t,
+		cfg.MemoriesBulkMaxInFlight+cfg.CodeGraphBulkMaxInFlight+cfg.WorkerPoolSize+cfg.AnalyticsMaxConcurrency,
+		cfg.DBMaxOpenConns)
+}
+
+// TestConfigDefaultsPassOversubscriptionCheck is the boot test for the merged
+// configuration of tatara-memory#82 (admission control) and #89 (analytics
+// connection holds). The two fixes landed independently on the same pool, and
+// the failure mode being guarded is a merge that is green in unit tests but
+// dies on the startup oversubscription check in production. This exercises the
+// exact path run() takes - loadConfig with no env and no flags, then validate -
+// and pins the arithmetic so a future default bump cannot quietly cross the
+// line. Defaults: 4 + 2 + 4 + 2 = 12 < 20.
+func TestConfigDefaultsPassOversubscriptionCheck(t *testing.T) {
+	os.Clearenv()
+	t.Setenv("PG_DSN", "postgres://u:p@h:5432/d?sslmode=disable")
+	t.Setenv("LIGHTRAG_BASE_URL", "http://lr:9621")
+
+	cfg, err := loadConfig(nil)
+	require.NoError(t, err)
+	require.NoError(t, cfg.validate(),
+		"shipped defaults must boot: this check runs before the HTTP server starts, so failing it is a crashloop, not a degraded mode")
+
+	reserved := cfg.MemoriesBulkMaxInFlight + cfg.CodeGraphBulkMaxInFlight + cfg.WorkerPoolSize + cfg.AnalyticsMaxConcurrency
+	require.Equal(t, 12, reserved)
+	require.Equal(t, 20, cfg.DBMaxOpenConns)
+	require.Equal(t, 8, cfg.DBMaxOpenConns-reserved,
+		"headroom left for /code/* reads, /readyz and job creation")
+}
+
+// The analytics worker holds a pooled connection for the whole of each
+// recompute's write transaction, exactly like an ingest worker, so it belongs
+// in the pool budget. It was missing from the original check.
+func TestLoadConfig_AnalyticsConcurrencyCountsAgainstThePool(t *testing.T) {
+	os.Clearenv()
+	cfg, err := loadConfig([]string{
+		"--db-max-open-conns", "13",
+		"--memories-bulk-max-in-flight", "4",
+		"--code-graph-bulk-max-in-flight", "2",
+		"--worker-pool-size", "4",
+		"--analytics-max-concurrency", "2",
+	})
+	require.NoError(t, err)
+	cfg.PGDSN = "x"
+	cfg.LightRAGBaseURL = "y"
+
+	// 4+2+4+2 = 12 < 13: fits.
+	require.NoError(t, cfg.validate())
+
+	// One more analytics slot makes it 13, which is not strictly less than 13.
+	// Without the analytics term this would have been 10 < 13 and accepted.
+	cfg.AnalyticsMaxConcurrency = 3
+	err = cfg.validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "oversubscribe the DB pool")
+	require.Contains(t, err.Error(), "analytics-max-concurrency(3)")
+}
+
+// 0 would fall back to the worker's GOMAXPROCS default, which makes the pool
+// budget depend on the node the pod lands on. The server must always carry an
+// explicit number.
+func TestLoadConfig_RejectsUnsetAnalyticsConcurrency(t *testing.T) {
+	os.Clearenv()
+	cfg, err := loadConfig([]string{"--analytics-max-concurrency", "0"})
+	require.NoError(t, err)
+	cfg.PGDSN = "x"
+	cfg.LightRAGBaseURL = "y"
+	err = cfg.validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "analytics-max-concurrency must be >= 1")
+}
+
+func TestLoadConfig_AdmissionEnvOverrides(t *testing.T) {
+	os.Clearenv()
+	t.Setenv("DB_MAX_OPEN_CONNS", "30")
+	t.Setenv("DB_MAX_IDLE_CONNS", "8")
+	t.Setenv("MEMORIES_BULK_MAX_IN_FLIGHT", "6")
+	t.Setenv("CODE_GRAPH_BULK_MAX_IN_FLIGHT", "3")
+	t.Setenv("ADMISSION_WAIT", "2s")
+	t.Setenv("ADMISSION_RETRY_AFTER", "15s")
+	cfg, err := loadConfig([]string{})
+	require.NoError(t, err)
+	require.Equal(t, 30, cfg.DBMaxOpenConns)
+	require.Equal(t, 8, cfg.DBMaxIdleConns)
+	require.Equal(t, 6, cfg.MemoriesBulkMaxInFlight)
+	require.Equal(t, 3, cfg.CodeGraphBulkMaxInFlight)
+	require.Equal(t, 2*time.Second, cfg.AdmissionWait)
+	require.Equal(t, 15*time.Second, cfg.AdmissionRetryAfter)
+}
+
+// A configuration whose bulk budgets plus workers can exhaust the pool is
+// refused at startup: it looks like admission control but reintroduces exactly
+// the starvation the limiter exists to prevent.
+func TestLoadConfig_RejectsOversubscribedAdmissionBudgets(t *testing.T) {
+	os.Clearenv()
+	cfg, err := loadConfig([]string{
+		"--db-max-open-conns", "8",
+		"--memories-bulk-max-in-flight", "4",
+		"--code-graph-bulk-max-in-flight", "2",
+		"--worker-pool-size", "4",
+	})
+	require.NoError(t, err)
+	cfg.PGDSN = "x"
+	cfg.LightRAGBaseURL = "y"
+	err = cfg.validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "oversubscribe the DB pool")
+
+	// 0 disables a budget entirely; that is an explicit opt-out, not a
+	// misconfiguration, so the oversubscription check does not apply.
+	cfg.MemoriesBulkMaxInFlight = 0
+	require.NoError(t, cfg.validate())
+}
+
+func TestLoadConfig_RejectsNegativeAdmissionValues(t *testing.T) {
+	os.Clearenv()
+	base, err := loadConfig([]string{})
+	require.NoError(t, err)
+	base.PGDSN = "x"
+	base.LightRAGBaseURL = "y"
+	require.NoError(t, base.validate())
+
+	cases := map[string]func(c *config){
+		"negative memories budget":  func(c *config) { c.MemoriesBulkMaxInFlight = -1 },
+		"negative codegraph budget": func(c *config) { c.CodeGraphBulkMaxInFlight = -1 },
+		"negative wait":             func(c *config) { c.AdmissionWait = -time.Second },
+		"negative retry after":      func(c *config) { c.AdmissionRetryAfter = -time.Second },
+		"zero pool":                 func(c *config) { c.DBMaxOpenConns = 0 },
+		"idle above open":           func(c *config) { c.DBMaxIdleConns = c.DBMaxOpenConns + 1 },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			cfg := base
+			mutate(&cfg)
+			require.Error(t, cfg.validate())
+		})
+	}
+}

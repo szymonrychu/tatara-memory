@@ -29,43 +29,107 @@ tests:
       - isNotNullOrEmpty:
           path: data.INGEST_CREATE_JOB_TIMEOUT
       - isNotNullOrEmpty:
-          path: data.PG_MAX_OPEN_CONNS
+          path: data.DB_MAX_OPEN_CONNS
       - isNotNullOrEmpty:
-          path: data.PG_MAX_IDLE_CONNS
+          path: data.DB_MAX_IDLE_CONNS
       - isNotNullOrEmpty:
-          path: data.PG_CONN_MAX_LIFETIME
+          path: data.MEMORIES_BULK_MAX_IN_FLIGHT
       - isNotNullOrEmpty:
-          path: data.PG_CONN_MAX_IDLE_TIME
+          path: data.CODE_GRAPH_BULK_MAX_IN_FLIGHT
+      - isNotNullOrEmpty:
+          path: data.ADMISSION_WAIT
+      - isNotNullOrEmpty:
+          path: data.ADMISSION_RETRY_AFTER
+      - isNotNullOrEmpty:
+          path: data.DB_CONN_MAX_LIFETIME
+      - isNotNullOrEmpty:
+          path: data.DB_CONN_MAX_IDLE_TIME
       - isNotNullOrEmpty:
           path: data.PG_STATEMENT_TIMEOUT
       - isNotNullOrEmpty:
           path: data.PG_IDLE_IN_TRANSACTION_TIMEOUT
       - isNotNullOrEmpty:
+          path: data.ANALYTICS_MAX_CONCURRENCY
+      - isNotNullOrEmpty:
           path: data.ANALYTICS_RECOMPUTE_TIMEOUT
       - isNotNullOrEmpty:
           path: data.LOG_LEVEL
+  # The shipped defaults are the configuration the app boots with, and the app
+  # refuses to start when the admission budgets plus the worker pool plus the
+  # analytics fan-out can still exhaust the pool. Pin the numbers that feed that
+  # check so a values.yaml edit cannot silently ship an unbootable ConfigMap;
+  # cmd/tatara-memory/config_test.go asserts the same numbers pass validate().
+  # Defaults: 4 + 2 + 4 + 2 = 12 < 20.
+  - it: projects the pool budget defaults that the oversubscription check reads
+    asserts:
+      - equal:
+          path: data.DB_MAX_OPEN_CONNS
+          value: "20"
+      - equal:
+          path: data.DB_MAX_IDLE_CONNS
+          value: "5"
+      - equal:
+          path: data.MEMORIES_BULK_MAX_IN_FLIGHT
+          value: "4"
+      - equal:
+          path: data.CODE_GRAPH_BULK_MAX_IN_FLIGHT
+          value: "2"
+      - equal:
+          path: data.WORKER_POOL_SIZE
+          value: "4"
+      - equal:
+          path: data.ANALYTICS_MAX_CONCURRENCY
+          value: "2"
+  # tatara-memory#79/#80/#82/#87: admission knobs are operator-tunable.
+  - it: projects the admission-control knobs from values
+    set:
+      memoriesBulkMaxInFlight: 6
+      codeGraphBulkMaxInFlight: 3
+      admissionWait: "8s"
+      admissionRetryAfter: "12s"
+    asserts:
+      - equal:
+          path: data.MEMORIES_BULK_MAX_IN_FLIGHT
+          value: "6"
+      - equal:
+          path: data.CODE_GRAPH_BULK_MAX_IN_FLIGHT
+          value: "3"
+      - equal:
+          path: data.ADMISSION_WAIT
+          value: "8s"
+      - equal:
+          path: data.ADMISSION_RETRY_AFTER
+          value: "12s"
   # tatara-memory#89: these bounds are the whole fix on the deploy side, so pin
   # the values.yaml -> ConfigMap mapping rather than only its non-emptiness.
   - it: projects the connection-lifetime bounds from values
     set:
-      pgMaxOpenConns: 12
-      pgConnMaxLifetime: "45m"
+      dbMaxOpenConns: 12
+      dbConnMaxLifetime: "45m"
+      dbConnMaxIdleTime: "90s"
       pgStatementTimeout: "6m"
       pgIdleInTransactionTimeout: "90s"
+      analyticsMaxConcurrency: 3
       analyticsRecomputeTimeout: "15m"
     asserts:
       - equal:
-          path: data.PG_MAX_OPEN_CONNS
+          path: data.DB_MAX_OPEN_CONNS
           value: "12"
       - equal:
-          path: data.PG_CONN_MAX_LIFETIME
+          path: data.DB_CONN_MAX_LIFETIME
           value: "45m"
+      - equal:
+          path: data.DB_CONN_MAX_IDLE_TIME
+          value: "90s"
       - equal:
           path: data.PG_STATEMENT_TIMEOUT
           value: "6m"
       - equal:
           path: data.PG_IDLE_IN_TRANSACTION_TIMEOUT
           value: "90s"
+      - equal:
+          path: data.ANALYTICS_MAX_CONCURRENCY
+          value: "3"
       - equal:
           path: data.ANALYTICS_RECOMPUTE_TIMEOUT
           value: "15m"

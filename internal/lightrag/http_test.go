@@ -123,7 +123,7 @@ func TestHTTPClient_DeleteDocs_RetriesOnBusy(t *testing.T) {
 
 func TestHTTPClient_DeleteDocs_BusyExhaustsRetriesReturnsBusy(t *testing.T) {
 	// If LightRAG stays busy across all attempts, DeleteDocs returns the last
-	// busy response (not an error): the memory service maps busy -> ErrTransient.
+	// busy response (not an error): the memory service maps busy -> ErrBusy (429).
 	var calls int
 	c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		calls++

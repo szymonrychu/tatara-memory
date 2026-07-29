@@ -20,8 +20,16 @@ var ErrNotFound = errors.New("memory: not found")
 // ErrUpstream is returned when the LightRAG backend returns an unexpected error.
 var ErrUpstream = errors.New("memory: upstream error")
 
-// ErrTransient is returned when the LightRAG backend is temporarily unavailable.
+// ErrTransient is returned when the LightRAG backend is genuinely unavailable
+// (5xx or unreachable). It maps to HTTP 503: a real server-side fault.
 var ErrTransient = errors.New("memory: transient upstream error")
+
+// ErrBusy is returned when an upstream refuses work because it is saturated
+// rather than broken: LightRAG's pipeline lock is held (delete status="busy"),
+// it answered 429, or a call ran out of its time budget under load. It maps to
+// HTTP 429 + Retry-After, not 503 - the request is retryable and nothing is
+// down, so it must not inflate the 5xx error ratio (tatara-memory#80).
+var ErrBusy = errors.New("memory: upstream busy")
 
 // ErrInvalid is returned when the caller supplies a malformed identifier or payload.
 var ErrInvalid = errors.New("memory: invalid input")
@@ -105,13 +113,21 @@ func wrapUpstream(err error) error {
 		switch {
 		case he.Status == http.StatusNotFound:
 			return fmt.Errorf("%w: %v", ErrNotFound, err)
+		case he.Status == http.StatusTooManyRequests:
+			// Explicit upstream backpressure. Previously fell through to the
+			// default branch and became a permanent 502.
+			return fmt.Errorf("%w: %v", ErrBusy, err)
 		case he.Status >= 500:
 			return fmt.Errorf("%w: %v", ErrTransient, err)
 		default:
 			return fmt.Errorf("%w: %v", ErrUpstream, err)
 		}
 	}
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+	if errors.Is(err, context.DeadlineExceeded) {
+		// Ran out of budget under load: retryable backpressure, not a fault.
+		return fmt.Errorf("%w: %v", ErrBusy, err)
+	}
+	if errors.Is(err, context.Canceled) {
 		return fmt.Errorf("%w: %v", ErrTransient, err)
 	}
 	return fmt.Errorf("%w: %v", ErrUpstream, err)
@@ -274,15 +290,16 @@ func (s *Service) deleteMemoryRaw(ctx context.Context, trackID string) error {
 		return wrapUpstream(err)
 	}
 	// LightRAG v1.4.16 returns "deletion_started" (async) or "success" (sync) on accepted deletes.
-	// "busy" means the pipeline lock is held (LightRAG is mid-ingest): transient, so callers
-	// must retry, not fail permanently. Any other status (e.g. "failure") is a logical upstream
+	// "busy" means the pipeline lock is held (LightRAG is mid-ingest): backpressure, so callers
+	// must retry (ErrBusy -> 429 + Retry-After), not fail permanently and not be told the
+	// service is unavailable. Any other status (e.g. "failure") is a logical upstream
 	// rejection even though HTTP returned 200.
 	if resp.Status != "deletion_started" && resp.Status != "success" {
 		if s.tomb != nil {
 			_ = s.tomb.Unmark(ctx, trackID)
 		}
 		if resp.Status == "busy" {
-			return fmt.Errorf("%w: delete returned status=%q", ErrTransient, resp.Status)
+			return fmt.Errorf("%w: delete returned status=%q", ErrBusy, resp.Status)
 		}
 		return fmt.Errorf("%w: delete returned status=%q", ErrUpstream, resp.Status)
 	}
