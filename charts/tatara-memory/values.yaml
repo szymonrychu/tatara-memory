@@ -173,7 +173,49 @@ postgres:
   # pgvector ships with the cnpg postgres image. postInitApplicationSQL
   # runs on the tatara_memory database (as the app user) so the extension
   # lives where lightrag's vector store needs it.
+  #
+  # These are cnpg Cluster SPEC values, not workload env config, so the
+  # "no lists / no plain ENVs in values.yaml" rule does not apply to them
+  # (same carve-out postInitApplicationSQL already relies on). Sizes stay
+  # cluster-agnostic: no storageClass is set anywhere, so every volume lands
+  # on the deploying cluster's default StorageClass.
+  #
+  # Every storage field below is REQUIRED and template-validated
+  # (tatara-memory.validatePostgres). Leaving one out is what took the
+  # platform's memory backends down three times, so the chart refuses to
+  # render rather than silently fall back to a cnpg default:
+  #
+  #   2026-07-05  WAL shared the PGDATA volume, filled it, and postgres could
+  #               no longer write; /memories:bulk 503'd (tatara-operator#238).
+  #   2026-07-06  a standby-resync WAL burst overran a 2Gi WAL volume whose
+  #               slot cap already claimed half of it, crashlooping both
+  #               replicas.
+  #   2026-07-25  a diverged replica's orphan replication slot pinned WAL on
+  #               the primary with nothing to bound it (tatara-helmfile#263).
   cluster:
+    instances: 3
+    storage:
+      # PGDATA only. WAL is on its own volume below. cnpg's chart default is
+      # 8Gi; 20Gi is the size the platform's own memory backend has run on
+      # since the 2026-07-05 fill.
+      size: 20Gi
+    walStorage:
+      # A DEDICATED WAL volume. cnpg's chart defaults this to disabled, which
+      # puts pg_wal back on the PGDATA volume - the 2026-07-05 failure. cnpg
+      # accepts adding walStorage to a cluster that never had it, but REJECTS
+      # disabling or shrinking it afterwards, so this is a one-way door.
+      enabled: true
+      size: 10Gi
+    postgresql:
+      parameters:
+        # Caps how much WAL one replication slot may force the primary to
+        # retain for a lagging, stuck, or permanently diverged standby. Past
+        # the cap postgres invalidates that slot (the standby must re-clone)
+        # instead of filling the volume and taking the PRIMARY's writes down
+        # with it. Without this a single orphan slot grows unbounded.
+        # MUST NOT exceed half of walStorage.size (validated at render time):
+        # the other half is what checkpoint WAL and any archive backlog need.
+        max_slot_wal_keep_size: 5120MB
     initdb:
       database: tatara_memory
       owner: tatara_memory

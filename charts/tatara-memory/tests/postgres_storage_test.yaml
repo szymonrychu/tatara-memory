@@ -1,0 +1,82 @@
+suite: postgres storage contract
+templates:
+  - configmap.yaml
+release:
+  name: tm
+  namespace: tatara
+tests:
+  - it: renders with the shipped defaults
+    asserts:
+      - hasDocuments:
+          count: 1
+
+  - it: refuses a postgres cluster with no PGDATA size
+    set:
+      postgres.cluster.storage.size: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: "tatara-memory: postgres.cluster.storage.size is required; the cnpg default (8Gi) is not a sizing decision"
+
+  - it: refuses to put WAL back on the PGDATA volume
+    set:
+      postgres.cluster.walStorage.enabled: false
+    asserts:
+      - failedTemplate:
+          errorMessage: "tatara-memory: postgres.cluster.walStorage.enabled must be true; with it off pg_wal shares the PGDATA volume and a WAL burst takes writes down (tatara-operator#238)"
+
+  - it: refuses an enabled WAL volume with no size
+    set:
+      postgres.cluster.walStorage.size: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: "tatara-memory: postgres.cluster.walStorage.size is required when walStorage is enabled"
+
+  - it: refuses an unbounded replication-slot WAL retention
+    set:
+      postgres.cluster.postgresql.parameters.max_slot_wal_keep_size: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: "tatara-memory: postgres.cluster.postgresql.parameters.max_slot_wal_keep_size\
+            \ is required; without it one stuck or diverged standby's replication slot\
+            \ pins WAL until the volume fills (tatara-helmfile#263)"
+
+  - it: refuses a slot cap that could fill the WAL volume on its own
+    set:
+      postgres.cluster.walStorage.size: 10Gi
+      postgres.cluster.postgresql.parameters.max_slot_wal_keep_size: 6144MB
+    asserts:
+      - failedTemplate:
+          errorMessage: "tatara-memory: max_slot_wal_keep_size (6144MB) exceeds half of\
+            \ walStorage.size (10Gi); replication-slot retention alone could fill the WAL\
+            \ volume, leaving nothing for checkpoint WAL"
+
+  - it: accepts a slot cap at exactly half the WAL volume
+    set:
+      postgres.cluster.walStorage.size: 4Gi
+      postgres.cluster.postgresql.parameters.max_slot_wal_keep_size: 2048MB
+    asserts:
+      - hasDocuments:
+          count: 1
+
+  - it: rejects a decimal unit rather than approximating it
+    set:
+      postgres.cluster.walStorage.size: 10G
+    asserts:
+      - failedTemplate:
+          errorMessage: "tatara-memory: size \"10G\" uses unit \"G\": use a binary unit (Ki, Mi, Gi, Ti, kB, MB, GB, TB) so the WAL headroom check stays exact"
+
+  - it: rejects an unparseable size
+    set:
+      postgres.cluster.walStorage.size: big
+    asserts:
+      - failedTemplate:
+          errorMessage: "tatara-memory: cannot parse size \"big\": expected digits followed by Ki, Mi, Gi, Ti, kB, MB, GB or TB"
+
+  - it: skips the whole contract when postgres is not managed by this chart
+    set:
+      postgres.enabled: false
+      postgres.cluster.storage.size: ""
+      postgres.cluster.walStorage.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 1
