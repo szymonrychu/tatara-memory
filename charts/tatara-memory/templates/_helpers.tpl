@@ -81,6 +81,12 @@ MEMORIES_BULK_MAX_IN_FLIGHT: {{ .Values.memoriesBulkMaxInFlight | quote }}
 CODE_GRAPH_BULK_MAX_IN_FLIGHT: {{ .Values.codeGraphBulkMaxInFlight | quote }}
 ADMISSION_WAIT: {{ .Values.admissionWait | quote }}
 ADMISSION_RETRY_AFTER: {{ .Values.admissionRetryAfter | quote }}
+DB_CONN_MAX_LIFETIME: {{ .Values.dbConnMaxLifetime | quote }}
+DB_CONN_MAX_IDLE_TIME: {{ .Values.dbConnMaxIdleTime | quote }}
+PG_STATEMENT_TIMEOUT: {{ .Values.pgStatementTimeout | quote }}
+PG_IDLE_IN_TRANSACTION_TIMEOUT: {{ .Values.pgIdleInTransactionTimeout | quote }}
+ANALYTICS_MAX_CONCURRENCY: {{ .Values.analyticsMaxConcurrency | quote }}
+ANALYTICS_RECOMPUTE_TIMEOUT: {{ .Values.analyticsRecomputeTimeout | quote }}
 LOG_LEVEL: {{ .Values.logLevel | quote }}
 OTLP_ENDPOINT: {{ .Values.otlpEndpoint | quote }}
 {{- end -}}

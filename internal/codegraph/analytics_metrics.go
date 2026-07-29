@@ -6,7 +6,20 @@ import "github.com/prometheus/client_golang/prometheus"
 const (
 	analyticsResultSuccess = "success"
 	analyticsResultError   = "error"
+	// analyticsResultTimeout separates a run cut off by its own per-run deadline
+	// (AnalyticsWorkerConfig.RecomputeTimeout) from a genuine store error, so the
+	// bound added for tatara-memory#89 is observable rather than hidden inside
+	// the generic error count.
+	analyticsResultTimeout = "timeout"
 )
+
+// analyticsDurationBuckets covers the real range of a recompute. DefBuckets tops
+// out at 10s, which collapsed every production run into the +Inf bucket: the
+// tatara-memory#89 incident's own recompute took 76.6s of wall clock (0.9s of
+// it compute), and that was invisible here.
+var analyticsDurationBuckets = []float64{
+	0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 600,
+}
 
 // AnalyticsMetrics holds the Prometheus instruments for the async analytics
 // recompute worker. It mirrors internal/ingest/metrics.go: every label
@@ -35,7 +48,7 @@ func NewAnalyticsMetrics(reg prometheus.Registerer) *AnalyticsMetrics {
 		duration: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "code_graph_analytics_duration_seconds",
 			Help:    "Wall time of a single analytics recompute, per repo.",
-			Buckets: prometheus.DefBuckets,
+			Buckets: analyticsDurationBuckets,
 		}),
 		inFlight: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "code_graph_analytics_in_flight",
@@ -61,7 +74,7 @@ func NewAnalyticsMetrics(reg prometheus.Registerer) *AnalyticsMetrics {
 			m.betweennessSkipped, m.computeDuration,
 		)
 	}
-	for _, result := range []string{analyticsResultSuccess, analyticsResultError} {
+	for _, result := range []string{analyticsResultSuccess, analyticsResultError, analyticsResultTimeout} {
 		m.runs.WithLabelValues(result)
 	}
 	return m

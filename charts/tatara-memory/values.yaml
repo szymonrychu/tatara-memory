@@ -77,9 +77,10 @@ memoryPurgeBudget: "45s"
 #
 # The two budgets below bound how many bulk requests execute at once, so the
 # pool always keeps connections for everything else. The app REFUSES TO START
-# if memoriesBulkMaxInFlight + codeGraphBulkMaxInFlight + workerPoolSize is not
-# strictly less than dbMaxOpenConns: a budget that can still exhaust the pool is
-# a limiter that cannot do its job. Defaults: 4 + 2 + 4 = 10 < 20.
+# if memoriesBulkMaxInFlight + codeGraphBulkMaxInFlight + workerPoolSize +
+# analyticsMaxConcurrency is not strictly less than dbMaxOpenConns: a budget
+# that can still exhaust the pool is a limiter that cannot do its job.
+# Defaults: 4 + 2 + 4 + 2 = 12 < 20.
 #
 # A request that cannot get a slot within admissionWait is SHED with HTTP 429
 # and a Retry-After header (base admissionRetryAfter, jittered up to +50% per
@@ -102,6 +103,55 @@ admissionRetryAfter: "5s"
 # max_connections.
 dbMaxOpenConns: 20
 dbMaxIdleConns: 5
+
+# --- Connection-hold bounds (tatara-memory#89)
+#
+# The incident: backends owned by this service's role on mem-mtg-pg grew from 4
+# to 87 over 5.5h and never terminated, exhausting all 97 non-superuser
+# connection slots (SQLSTATE 53300, "remaining connection slots are reserved for
+# roles with the SUPERUSER attribute"). The project's memory API was down 13h+
+# and the rollout deadlocked, because /readyz pings the database and could not
+# get a slot while /healthz (no DB dependency) kept the wedged pod alive.
+# Admission control bounds how many connections are taken; these bound how long
+# any one of them is held.
+#
+# dbConnMaxLifetime/dbConnMaxIdleTime recycle pooled connections on a fixed
+# cadence. Without them a connection is reused forever, so a client-side
+# connection whose server-side backend has become wedged is never replaced -
+# there is no client-side ceiling at all on how long one backend is held.
+# "0" means unlimited for either one.
+dbConnMaxLifetime: "30m"
+dbConnMaxIdleTime: "5m"
+# pgStatementTimeout / pgIdleInTransactionTimeout are sent as Postgres session
+# parameters on every connection. They are the server-side half of the same
+# guarantee, and the only half that still works when the client is gone: a
+# Postgres backend does not observe a client disconnect while it is mid
+# statement, which is why the incident's backends survived every pod restart.
+#
+# Both are deliberately generous - backstops against pathology, not latency
+# budgets. /code-graph:bulk's single Reconcile transaction legitimately runs
+# 50-194s+ on a large repo, so pgStatementTimeout sits well above that.
+# pgIdleInTransactionTimeout can be tighter: after the #89 fix moved community
+# labelling out of the analytics transaction, the only work between a
+# transaction's statements is Go-side row marshalling (milliseconds).
+# "0" disables either one.
+pgStatementTimeout: "5m"
+pgIdleInTransactionTimeout: "2m"
+# Max concurrent code-graph analytics recomputes. Each in-flight recompute holds
+# one pooled connection for its write transaction, so this is a term in the
+# oversubscription check above. It must be an explicit number: the worker's own
+# fallback is GOMAXPROCS, which would make the pool budget depend on which node
+# the pod lands on. Analytics is background batch work and must not crowd out
+# the request path, hence a small default.
+analyticsMaxConcurrency: 2
+# Deadline for ONE code-graph analytics recompute, end to end. Without it the
+# worker inherits the process-lifetime context, so a wedged run holds its
+# database work for as long as the pod lives - the incident observed a single
+# transaction whose age grew 1800s per 1800s of wall clock for 5.5h. The
+# incident's own recompute took 76.6s, so 10m is ~8x the real worst case: a run
+# that hits this is wedged, not slow. "0" disables it.
+analyticsRecomputeTimeout: "10m"
+
 
 logLevel: "info"
 otlpEndpoint: ""
@@ -156,6 +206,13 @@ prometheusRule:
   # Must stay below 10s: the histogram uses prometheus.DefBuckets whose largest
   # finite bucket is 10s, so p99 saturates there.
   retrievalLatencyP99Seconds: 2.5
+  # Fraction of the Postgres pool that may be in use before MemoryDBPoolSaturated
+  # fires. The whole process shares one pool, /readyz included.
+  dbPoolSaturationRatio: 0.8
+  # Seconds spent waiting for a pool connection, per second of wall clock,
+  # before MemoryDBPoolWaiting fires. Anything sustained above 0 means callers
+  # are queuing.
+  dbPoolWaitSecondsPerSecond: 0.5
 
 networkPolicy:
   enabled: true

@@ -100,6 +100,59 @@ spec:
             description: >-
               tatara-memory p99 request latency has exceeded
               {{ .Values.prometheusRule.retrievalLatencyP99Seconds }}s for 15m.
+        - alert: MemoryDBPoolSaturated
+          # tatara-memory#89 had NO signal from this process at all: the pool
+          # ran dry and the incident was only visible database-side, six hours
+          # later, once mem-mtg-pg started refusing logins outright. These two
+          # rules read go_sql_* (client_golang's DBStatsCollector, wired in
+          # cmd/tatara-memory/app.go) so saturation is visible from the app.
+          expr: >-
+            (
+              sum by (pod) (go_sql_in_use_connections{job=~".*tatara-memory.*"})
+              /
+              clamp_min(sum by (pod) (go_sql_max_open_connections{job=~".*tatara-memory.*"}), 1)
+            ) > {{ .Values.prometheusRule.dbPoolSaturationRatio }}
+          for: 10m
+          labels:
+            severity: {{ .Values.prometheusRule.severityLabel | quote }}
+          annotations:
+            summary: tatara-memory Postgres connection pool is saturated
+            description: >-
+              More than {{ .Values.prometheusRule.dbPoolSaturationRatio }} of
+              tatara-memory's Postgres pool has been in use for 10m. Every caller
+              in the process shares this pool, including /readyz - if it stays
+              full, readiness fails and the rollout deadlocks.
+        - alert: MemoryDBPoolWaiting
+          # Callers queuing for a connection is the earliest honest symptom: it
+          # means demand already exceeds the pool, well before anything errors.
+          expr: >-
+            sum by (pod) (rate(go_sql_wait_duration_seconds_total{job=~".*tatara-memory.*"}[5m]))
+            > {{ .Values.prometheusRule.dbPoolWaitSecondsPerSecond }}
+          for: 10m
+          labels:
+            severity: {{ .Values.prometheusRule.severityLabel | quote }}
+          annotations:
+            summary: tatara-memory callers are queuing for Postgres connections
+            description: >-
+              tatara-memory spent more than
+              {{ .Values.prometheusRule.dbPoolWaitSecondsPerSecond }}s per second
+              waiting to acquire a Postgres connection over the last 5m
+              (sustained 10m). The pool is undersized or a caller is holding a
+              connection far longer than it should.
+        - alert: MemoryAnalyticsRecomputeTimingOut
+          # The per-run deadline (ANALYTICS_RECOMPUTE_TIMEOUT) firing means a
+          # recompute is wedged, which is exactly what started tatara-memory#89.
+          expr: sum(increase(code_graph_analytics_runs_total{job=~".*tatara-memory.*", result="timeout"}[1h])) > 0
+          for: 0m
+          labels:
+            severity: {{ .Values.prometheusRule.severityLabel | quote }}
+          annotations:
+            summary: tatara-memory analytics recomputes are hitting their deadline
+            description: >-
+              One or more code-graph analytics recomputes were cut off by their
+              per-run deadline in the last hour. A recompute holds database
+              connections while it runs; a wedged one is how tatara-memory#89
+              started.
         - alert: MemoryHandlerPanics
           expr: sum(increase(http_panics_total{job=~".*tatara-memory.*"}[15m])) > 0
           for: 0m

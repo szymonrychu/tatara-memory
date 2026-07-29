@@ -43,11 +43,17 @@ type RecomputeResult struct {
 	BetweennessSkipped bool
 }
 
-// RecomputeAnalytics loads the repo's graph, computes signals via gonum, persists
-// them to code_entities + code_communities, labels communities (via labeler or
-// first non-empty member name when labeler is nil), and clears the dirty flag.
-// betweennessMaxNodes is forwarded to analytics.Config.MaxNodes; 0 means no
+// RecomputeAnalytics loads the repo's graph, computes signals via gonum, labels
+// communities (via labeler or first non-empty member name when labeler is nil),
+// persists everything to code_entities + code_communities, and clears the dirty
+// flag. betweennessMaxNodes is forwarded to analytics.Config.MaxNodes; 0 means no
 // limit (not recommended in production - pass a sane cap via AnalyticsWorkerConfig).
+//
+// Phase order is load -> compute -> label -> single write transaction, and the
+// labelling step must stay ahead of the transaction: it is the only phase that
+// makes outbound network calls, and doing it with a transaction open pinned a
+// pool connection and a Postgres backend for its whole duration
+// (tatara-memory#89). Nothing inside the transaction below may do external I/O.
 //
 // The dirty-flag clear is guarded: it only fires when reconciled_at has not
 // advanced since the snapshot was taken (finding 1). A push that lands after the
@@ -73,6 +79,20 @@ func (s *PGStore) RecomputeAnalytics(ctx context.Context, repo string, labeler C
 	}
 
 	res := analytics.Compute(ids, edges, analytics.Config{MaxNodes: betweennessMaxNodes})
+
+	// Label every community BEFORE opening the transaction (tatara-memory#89).
+	// labelCommunity makes one outbound LLM call per community when a labeler is
+	// configured (internal/codegraph/openai.go), and any network call made while
+	// a transaction is open pins a pool connection - and, server-side, one
+	// Postgres backend - for the full duration of that call. On mtg-decks (126
+	// communities) that held a single backend for the whole labelling run, out of
+	// a 10-connection pool shared with every other caller in the process, until
+	// mem-mtg-pg ran out of connection slots (SQLSTATE 53300). Labelling first
+	// makes the transaction below pure, fast SQL with no external I/O in it.
+	labels := make([]string, len(res.Communities))
+	for i, c := range res.Communities {
+		labels[i] = labelCommunity(ctx, labeler, c, names)
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -125,12 +145,11 @@ func (s *PGStore) RecomputeAnalytics(ctx context.Context, repo string, labeler C
 	if _, err := tx.ExecContext(ctx, `DELETE FROM code_communities WHERE repo=$1`, repo); err != nil {
 		return RecomputeResult{}, err
 	}
-	for _, c := range res.Communities {
-		label := labelCommunity(ctx, labeler, c, names)
+	for i, c := range res.Communities {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO code_communities(repo, community, label, cohesion, size)
 			VALUES ($1,$2,$3,$4,$5)`,
-			repo, c.Community, label, c.Cohesion, c.Size); err != nil {
+			repo, c.Community, labels[i], c.Cohesion, c.Size); err != nil {
 			return RecomputeResult{}, err
 		}
 	}

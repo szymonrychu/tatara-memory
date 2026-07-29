@@ -8,9 +8,11 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 
 	"github.com/szymonrychu/tatara-memory/internal/auth"
 	"github.com/szymonrychu/tatara-memory/internal/codegraph"
@@ -20,7 +22,8 @@ import (
 	"github.com/szymonrychu/tatara-memory/internal/memory"
 	"github.com/szymonrychu/tatara-memory/internal/obs"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 // app holds all runtime dependencies for tatara-memory.
@@ -100,11 +103,62 @@ func buildObs(_ context.Context, cfg config) (*slog.Logger, *prometheus.Registry
 	return logger, reg, nil
 }
 
-// openDB opens a pgx-backed *sql.DB. Connection limits are applied by
-// newAppWithDeps from config, so they are set in exactly one place regardless
-// of which dbOpener produced the handle.
-func openDB(dsn string) (*sql.DB, error) {
-	return sql.Open("pgx", dsn)
+// openDB opens a pgx-backed *sql.DB carrying the server-side session timeouts
+// from cfg. Pool limits and connection lifetimes are NOT set here: they are
+// applied by newAppWithDeps from config, so they land in exactly one place
+// regardless of which dbOpener produced the handle.
+//
+// The session timeouts exist because of tatara-memory#89, where
+// `tatara_memory` backends on mem-mtg-pg grew monotonically from 4 to 87 over
+// 5.5h and never came back, exhausting all 97 non-superuser connection slots
+// (SQLSTATE 53300) and taking the project's memory API down for 13h+.
+// statement_timeout / idle_in_transaction_session_timeout are the server-side
+// half of the connection-hold guarantee, and the only half that still works
+// when the client is gone entirely: a Postgres backend does not notice a client
+// disconnect while it is mid-statement, so without these a backend orphaned by
+// a client-side close survives indefinitely - exactly the state the incident
+// found (84 backends in state=active, waiting=0, oldest transaction age growing
+// 1s per 1s of wall clock).
+//
+// Defaults are deliberately generous rather than tight: /code-graph:bulk's
+// single Reconcile transaction legitimately runs 50-194s+ on a large repo, so
+// these are backstops against pathology, not latency budgets.
+func openDB(dsn string, cfg config) (*sql.DB, error) {
+	connCfg, err := pgConnConfig(dsn, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return stdlib.OpenDB(*connCfg), nil
+}
+
+// pgConnConfig parses the DSN and layers the server-side session timeouts onto
+// it as startup RuntimeParams. An explicit setting already in the DSN always
+// wins: the deploying cluster is entitled to override these without a rebuild.
+func pgConnConfig(dsn string, cfg config) (*pgx.ConnConfig, error) {
+	connCfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("parse pg dsn: %w", err)
+	}
+	if connCfg.RuntimeParams == nil {
+		connCfg.RuntimeParams = map[string]string{}
+	}
+	if cfg.PGStatementTimeout > 0 {
+		if _, ok := connCfg.RuntimeParams["statement_timeout"]; !ok {
+			connCfg.RuntimeParams["statement_timeout"] = pgTimeoutMillis(cfg.PGStatementTimeout)
+		}
+	}
+	if cfg.PGIdleInTxTimeout > 0 {
+		if _, ok := connCfg.RuntimeParams["idle_in_transaction_session_timeout"]; !ok {
+			connCfg.RuntimeParams["idle_in_transaction_session_timeout"] = pgTimeoutMillis(cfg.PGIdleInTxTimeout)
+		}
+	}
+	return connCfg, nil
+}
+
+// pgTimeoutMillis renders a duration as the integer millisecond string Postgres
+// expects for statement_timeout / idle_in_transaction_session_timeout.
+func pgTimeoutMillis(d time.Duration) string {
+	return strconv.FormatInt(d.Milliseconds(), 10)
 }
 
 // waitForDB retries ping until it succeeds or timeout elapses.
@@ -162,6 +216,25 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 		db.SetMaxIdleConns(cfg.DBMaxIdleConns)
 	}
 
+	// Bounded connection lifetimes, the client-side half of the same guarantee
+	// (tatara-memory#89). Without them a pooled connection is reused forever, so
+	// a client-side connection whose server-side backend has become wedged is
+	// never recycled. A lifetime bound means every backend this process owns is
+	// torn down and re-established on a fixed cadence, which is the only
+	// client-side mechanism that puts a ceiling on how long any one backend can
+	// be held. 0 means unlimited, database/sql's own default, so both are safe
+	// to apply unconditionally.
+	db.SetConnMaxLifetime(cfg.DBConnMaxLifetime)
+	db.SetConnMaxIdleTime(cfg.DBConnMaxIdleTime)
+
+	// Pool saturation had no signal at all before tatara-memory#89: the incident
+	// had to be reconstructed from the database side (cnpg_backends_total) because
+	// this process published nothing about its own pool. This exports
+	// go_sql_{open,in_use,idle,max_open}_connections plus the wait counters, so
+	// "the pool is full and callers are queuing" is visible here, ~10 minutes
+	// after onset rather than 6h later at the ceiling.
+	reg.MustRegister(collectors.NewDBStatsCollector(db, "tatara_memory"))
+
 	if err := waitForDB(ctx, db.PingContext, 60*time.Second, 2*time.Second); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("wait for postgres: %w", err)
@@ -205,6 +278,8 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 		Logger:              logger,
 		Registerer:          reg,
 		BetweennessMaxNodes: cfg.BetweennessMaxNodes,
+		MaxConcurrency:      cfg.AnalyticsMaxConcurrency,
+		RecomputeTimeout:    cfg.AnalyticsRecomputeTimeout,
 	})
 	go analyticsWorker.Run(analyticsCtx)
 
@@ -279,10 +354,12 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 
 // newApp wires the application with the real Postgres driver.
 func newApp(ctx context.Context, cfg config) (*app, error) {
-	return newAppWithDeps(ctx, cfg, realDeps{})
+	return newAppWithDeps(ctx, cfg, realDeps{cfg: cfg})
 }
 
-// realDeps satisfies dbOpener using the pgx driver.
-type realDeps struct{}
+// realDeps satisfies dbOpener using the pgx driver. It carries the config so
+// openDB can apply the pool and connection-lifetime settings without widening
+// the dbOpener interface that tests implement.
+type realDeps struct{ cfg config }
 
-func (realDeps) openDB(dsn string) (*sql.DB, error) { return openDB(dsn) }
+func (d realDeps) openDB(dsn string) (*sql.DB, error) { return openDB(dsn, d.cfg) }
