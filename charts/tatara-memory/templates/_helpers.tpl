@@ -75,6 +75,12 @@ INGEST_ITEM_TIMEOUT: {{ .Values.ingestItemTimeout | quote }}
 HTTP_WRITE_TIMEOUT: {{ .Values.httpWriteTimeout | quote }}
 INGEST_CREATE_JOB_TIMEOUT: {{ .Values.ingestCreateJobTimeout | quote }}
 MEMORY_PURGE_BUDGET: {{ .Values.memoryPurgeBudget | quote }}
+DB_MAX_OPEN_CONNS: {{ .Values.dbMaxOpenConns | quote }}
+DB_MAX_IDLE_CONNS: {{ .Values.dbMaxIdleConns | quote }}
+MEMORIES_BULK_MAX_IN_FLIGHT: {{ .Values.memoriesBulkMaxInFlight | quote }}
+CODE_GRAPH_BULK_MAX_IN_FLIGHT: {{ .Values.codeGraphBulkMaxInFlight | quote }}
+ADMISSION_WAIT: {{ .Values.admissionWait | quote }}
+ADMISSION_RETRY_AFTER: {{ .Values.admissionRetryAfter | quote }}
 LOG_LEVEL: {{ .Values.logLevel | quote }}
 OTLP_ENDPOINT: {{ .Values.otlpEndpoint | quote }}
 {{- end -}}

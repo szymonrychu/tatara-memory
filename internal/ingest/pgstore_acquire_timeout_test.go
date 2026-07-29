@@ -180,7 +180,7 @@ func TestPGStore_CreateJob_AcquireTimeout(t *testing.T) {
 	case r := <-done:
 		require.Error(t, r.err, "CreateJob must fail, not silently succeed, when the pool is exhausted")
 		require.True(t, errors.Is(r.err, context.DeadlineExceeded),
-			"want context.DeadlineExceeded (fast-fail path -> 503+Retry-After), got: %v", r.err)
+			"want context.DeadlineExceeded (fast-fail path -> 429+Retry-After), got: %v", r.err)
 		require.Less(t, r.elapsed, 2*time.Second,
 			"CreateJob must bound the pool acquire itself, not rely on the caller's context")
 	case <-time.After(5 * time.Second):
@@ -217,7 +217,7 @@ func TestPGStore_CreateJob_NoTimeoutConfigured_StillBoundedByCallerContext(t *te
 // fires while CreateJob is still inside its per-item ExecContext loop,
 // after the job row and the first item have already been inserted. The
 // point under test: this must still produce a clean context.DeadlineExceeded
-// (mapped by errmap.go to 503+Retry-After) with the transaction rolled back
+// (mapped by errmap.go to 429+Retry-After) with the transaction rolled back
 // - not a partial commit, and not some other error class (e.g. sql.ErrTxDone
 // racing the context-cancellation-driven auto-rollback that database/sql
 // itself runs against the same BeginTx context) leaking through as a 500.
@@ -266,7 +266,7 @@ func TestPGStore_CreateJob_DeadlineFiresMidInsertLoop(t *testing.T) {
 	case r := <-done:
 		require.Error(t, r.err, "a deadline landing mid-insert-loop must fail the call")
 		require.True(t, errors.Is(r.err, context.DeadlineExceeded),
-			"want context.DeadlineExceeded (-> 503+Retry-After in errmap.go), got a different error class: %v", r.err)
+			"want context.DeadlineExceeded (-> 429+Retry-After in errmap.go), got a different error class: %v", r.err)
 		require.Less(t, r.elapsed, 2*time.Second, "must fail near the configured deadline, not hang")
 		require.False(t, committed.Load(), "must never commit a transaction whose insert loop was cut short - that would be a partial write, worse than a clean failure")
 

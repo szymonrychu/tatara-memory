@@ -100,15 +100,11 @@ func buildObs(_ context.Context, cfg config) (*slog.Logger, *prometheus.Registry
 	return logger, reg, nil
 }
 
-// openDB opens a pgx-backed *sql.DB with conservative connection limits.
+// openDB opens a pgx-backed *sql.DB. Connection limits are applied by
+// newAppWithDeps from config, so they are set in exactly one place regardless
+// of which dbOpener produced the handle.
 func openDB(dsn string) (*sql.DB, error) {
-	db, err := sql.Open("pgx", dsn)
-	if err != nil {
-		return nil, err
-	}
-	db.SetMaxOpenConns(10)
-	db.SetMaxIdleConns(2)
-	return db, nil
+	return sql.Open("pgx", dsn)
 }
 
 // waitForDB retries ping until it succeeds or timeout elapses.
@@ -146,6 +142,24 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 	db, err := d.openDB(cfg.PGDSN)
 	if err != nil {
 		return nil, err
+	}
+
+	// One pool serves everything that touches Postgres: both bulk write routes,
+	// every /code/* read, the ingest worker pool, the analytics worker and
+	// /readyz. Its size is the budget the admission-control limits are sized
+	// against (config.validate enforces that relationship). The previous
+	// hard-coded 10 was too small for that budget - 4 ingest workers alone can
+	// hold 4 of it, and a single /code-graph:bulk reconcile holds one
+	// connection for the whole 50-194s of its transaction (tatara-memory#82),
+	// while #87 measured Postgres itself healthy at 44/100 connections during a
+	// shedding burst, i.e. the binding constraint was this client-side cap and
+	// not the server. Non-positive values leave database/sql's own defaults in
+	// place, which is what the fake-DB unit tests rely on.
+	if cfg.DBMaxOpenConns > 0 {
+		db.SetMaxOpenConns(cfg.DBMaxOpenConns)
+	}
+	if cfg.DBMaxIdleConns > 0 {
+		db.SetMaxIdleConns(cfg.DBMaxIdleConns)
 	}
 
 	if err := waitForDB(ctx, db.PingContext, 60*time.Second, 2*time.Second); err != nil {
@@ -217,6 +231,11 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 		Logger:     logger,
 		Registry:   reg,
 		ReadyCheck: readyFn,
+
+		MemoriesBulkMaxInFlight:  cfg.MemoriesBulkMaxInFlight,
+		CodeGraphBulkMaxInFlight: cfg.CodeGraphBulkMaxInFlight,
+		AdmissionWait:            cfg.AdmissionWait,
+		AdmissionRetryAfter:      cfg.AdmissionRetryAfter,
 	})
 
 	// WriteTimeout does NOT bound the handler: net/http arms it as a raw
@@ -231,7 +250,7 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 	// zero log lines); the only difference is the connection eventually
 	// dropping instead of staying open forever. The actual, load-bearing
 	// fix for that hang is ingest.WithCreateJobTimeout above, which fails
-	// fast on DB pool exhaustion and returns a clean 503 well before this
+	// fast on DB pool exhaustion and returns a clean 429 well before this
 	// fires. WriteTimeout here is only a best-effort backstop against a
 	// connection whose response write genuinely never completes (e.g. a
 	// client that stops reading); handlePostCodeGraph explicitly opts out

@@ -126,6 +126,8 @@ func TestHTTPClient_DeleteDocs_BusyExhaustsBudgetReturnsBusyError(t *testing.T) 
 	// *BusyError. It used to return the still-busy body with a nil error, which
 	// counted the call as a lightrag_calls_total success and left the caller to
 	// re-derive the failure from the response envelope (tatara-memory#90, #91).
+	// The memory service maps *BusyError -> ErrBusy (429 + Retry-After), the same
+	// classification tatara-memory#80 gave the single-response busy envelope.
 	var calls int
 	c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		calls++

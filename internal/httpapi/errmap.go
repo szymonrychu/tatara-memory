@@ -22,7 +22,19 @@ func mapServiceError(w http.ResponseWriter, r *http.Request, err error) {
 		WriteError(w, http.StatusBadRequest, "invalid input", reqID)
 	case errors.Is(err, memory.ErrNotFound):
 		WriteError(w, http.StatusNotFound, "not found", reqID)
-	case errors.Is(err, memory.ErrTransient), errors.Is(err, context.DeadlineExceeded):
+	case errors.Is(err, memory.ErrBusy), errors.Is(err, context.DeadlineExceeded):
+		// Backpressure, not failure: either an upstream told us it is busy, or
+		// one of our own deadlines fired because the service is saturated
+		// (e.g. CreateJob waiting on an exhausted DB pool). The request can
+		// succeed if the caller comes back later, and counting it as a server
+		// error is what made every concurrent-ingest burst look like an outage
+		// on the 5xx-ratio alert (tatara-memory#79/#80/#82/#87). 429 is the
+		// status that means exactly this.
+		w.Header().Set("Retry-After", "5")
+		WriteError(w, http.StatusTooManyRequests, "overloaded, retry after backoff", reqID)
+	case errors.Is(err, memory.ErrTransient):
+		// Genuine unavailability: the upstream returned 5xx or was unreachable.
+		// 503 is reserved for this - a real server-side fault worth alerting on.
 		w.Header().Set("Retry-After", "5")
 		WriteError(w, http.StatusServiceUnavailable, "upstream temporarily unavailable", reqID)
 	case errors.Is(err, context.Canceled):

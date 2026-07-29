@@ -372,7 +372,7 @@ func (c *HTTPClient) DeleteDocs(ctx context.Context, req DeleteDocRequest) (*Del
 			slog.Duration("waited", time.Since(start)),
 		)
 		// Stop before a sleep that would run past the deadline: the budget is
-		// spent, and sleeping into it only delays the 503 the caller already owes
+		// spent, and sleeping into it only delays the 429 the caller already owes
 		// its own client.
 		if time.Now().Add(delay).After(deadline) {
 			busyErr := &BusyError{Op: OpDeleteDocs, Attempts: attempt, Waited: time.Since(start)}

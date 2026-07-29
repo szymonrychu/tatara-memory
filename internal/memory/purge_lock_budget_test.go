@@ -3,15 +3,22 @@ package memory_test
 // TDD for tatara-memory#90 / #91, service half:
 //
 //  1. lightrag.BusyError (the pipeline lock never freed inside the retry
-//     budget) is transient. Without an explicit mapping wrapUpstream's
+//     budget) is backpressure. Without an explicit mapping wrapUpstream's
 //     fallthrough turns it into ErrUpstream -> HTTP 502, a permanent error
 //     the ingest client does not retry.
 //  2. The purge is serial across reconcile files and each LightRAG delete
 //     holds the pipeline lock for 6-42s, so the next file's delete meets a
 //     lock held by our own previous delete. Waiting per call therefore has to
 //     be bounded by ONE budget for the whole batch, or a wide reconcile would
-//     run past any client timeout. Exhausting it must be transient and must
+//     run past any client timeout. Exhausting it must be retryable and must
 //     leave the work done so far durable, so the client's retry resumes.
+//
+// Both assert memory.ErrBusy (429 + Retry-After), not memory.ErrTransient
+// (503). This branch predates the taxonomy split in tatara-memory#97 and
+// originally asserted ErrTransient because it was then the only non-permanent
+// class; #97 gave the single-response `status="busy"` envelope ErrBusy, and an
+// exhausted wait for that same condition must not be classified worse than one
+// busy response. Deliberate contract change, see MEMORY.md.
 
 import (
 	"context"
@@ -54,7 +61,7 @@ func (l *lockHoldingLR) DeleteDocs(ctx context.Context, req lightrag.DeleteDocRe
 	return l.Client.DeleteDocs(ctx, req)
 }
 
-func TestDeleteMemory_BusyErrorIsTransient(t *testing.T) {
+func TestDeleteMemory_BusyErrorIsBackpressure(t *testing.T) {
 	ctx := context.Background()
 	inner := fake.New()
 	svc := memory.NewService(&busyErrLR{Client: inner}, nil)
@@ -64,10 +71,12 @@ func TestDeleteMemory_BusyErrorIsTransient(t *testing.T) {
 
 	err = svc.DeleteMemory(ctx, m.ID)
 	require.Error(t, err)
-	require.ErrorIs(t, err, memory.ErrTransient,
-		"an exhausted pipeline-lock wait is transient (503 + Retry-After), the client must retry it")
+	require.ErrorIs(t, err, memory.ErrBusy,
+		"an exhausted pipeline-lock wait is backpressure (429 + Retry-After), the client must retry it")
 	require.NotErrorIs(t, err, memory.ErrUpstream,
 		"a held pipeline lock must not be reported as a permanent upstream failure (502)")
+	require.NotErrorIs(t, err, memory.ErrTransient,
+		"LightRAG answered HTTP 200 throughout: nothing is unavailable, so this must not be a 5xx")
 }
 
 func TestDeleteMemoriesBySources_PurgeBudgetBoundsTheWholeBatch(t *testing.T) {
@@ -90,8 +99,10 @@ func TestDeleteMemoriesBySources_PurgeBudgetBoundsTheWholeBatch(t *testing.T) {
 	elapsed := time.Since(start)
 
 	require.Error(t, err, "8 files x 150ms of lock wait cannot fit a 400ms purge budget")
-	require.ErrorIs(t, err, memory.ErrTransient,
-		"running out of purge budget is backpressure, not a permanent failure")
+	require.ErrorIs(t, err, memory.ErrBusy,
+		"running out of purge budget is backpressure, not a permanent failure and not unavailability")
+	require.NotErrorIs(t, err, memory.ErrTransient,
+		"a budget that ran out under load must not be reported as a server fault")
 	require.Less(t, elapsed, 2*time.Second,
 		"the budget must bound the whole batch, not each file")
 	require.Greater(t, purged, 0, "files purged before the budget ran out must be reported")
