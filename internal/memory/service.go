@@ -95,23 +95,43 @@ func (s *Service) WithLogger(l *slog.Logger) *Service { s.log = l; return s }
 // leaving DeleteMemoriesBySources governed only by the caller's context.
 func (s *Service) WithPurgeBudget(d time.Duration) *Service { s.purgeBudget = d; return s }
 
-// WithMetrics registers tatara_memory_op_total{op,result} in reg.
+// WithMetrics registers tatara_memory_op_total{op,class,result} in reg.
 func (s *Service) WithMetrics(reg prometheus.Registerer) *Service {
 	s.ops = newServiceOps(reg)
 	return s
 }
 
+// opClassMaintenance are the internal purge/reconcile ops driven by automated
+// repo reconciliation (tatara-memory-repo-ingester's reconcile_files path),
+// not by a live agent read/write. Separated out (issue #84) so an op-error-
+// ratio alert can scope itself to user-facing traffic: a burst of purge
+// errors (e.g. LightRAG pipeline-lock contention during a concurrent ingest)
+// must not read as user-facing impact when create/get/query were unaffected.
+var opClassMaintenance = map[string]bool{
+	"delete_by_source":  true,
+	"delete_by_sources": true,
+}
+
+// opClass returns "maintenance" for internal purge ops and "user" for the
+// rest of the op catalog (the live agent-facing CRUD/query surface).
+func opClass(op string) string {
+	if opClassMaintenance[op] {
+		return "maintenance"
+	}
+	return "user"
+}
+
 func newServiceOps(reg prometheus.Registerer) *prometheus.CounterVec {
 	c := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "tatara_memory_op_total",
-		Help: "Count of memory service operations by op and result.",
-	}, []string{"op", "result"})
+		Help: "Count of memory service operations by op, class, and result.",
+	}, []string{"op", "class", "result"})
 	if reg != nil {
 		reg.MustRegister(c)
 	}
 	for _, op := range []string{"create", "delete", "delete_by_source", "patch_entity", "create_edge", "delete_edge", "delete_by_sources", "get", "query", "query_data", "describe", "get_entity", "search_entities", "list_edges"} {
 		for _, r := range []string{"success", "error"} {
-			c.WithLabelValues(op, r)
+			c.WithLabelValues(op, opClass(op), r)
 		}
 	}
 	return c
@@ -122,7 +142,43 @@ func (s *Service) incOp(op string, err error) {
 	if err != nil {
 		result = "error"
 	}
-	s.ops.WithLabelValues(op, result).Inc()
+	s.ops.WithLabelValues(op, opClass(op), result).Inc()
+}
+
+// logPurgeErr logs a purge-path (delete_by_source / delete_by_sources)
+// failure with structured fields. Before this, a purge failure only ever
+// reached the HTTP layer's mapServiceError, whose backpressure and ErrNotFound
+// branches write a response but never call the logger - so the internal purge
+// path could fail with zero log lines (issue #84).
+//
+// The level split follows the error taxonomy, not the call site: ErrBusy is
+// expected, self-correcting backpressure (LightRAG's pipeline lock is held by a
+// concurrent ingest or by this batch's own previous delete, or the purge budget
+// ran out waiting for it), so it logs at WARN. Everything else - including
+// ErrTransient - logs at ERROR.
+//
+// This predicate was ErrTransient when it was written, because ErrTransient was
+// then the only non-permanent classification and carried the busy path.
+// tatara-memory#97 split the taxonomy: ErrBusy is now "saturated, come back
+// later" (429 + Retry-After) and ErrTransient is now reserved for genuine
+// unavailability, an upstream 5xx or an unreachable LightRAG (503). Keeping the
+// old predicate would have inverted the intent exactly - the one class that is
+// routine under load would page at ERROR while a real upstream outage on the
+// purge path stayed a WARN.
+//
+// The predicate deliberately matches mapServiceError's backpressure branch
+// (ErrBusy OR a bare context.DeadlineExceeded) rather than just ErrBusy, so the
+// level always agrees with the status the caller is handed: WARN iff 429. The
+// bare-deadline case is reachable here - the batch purge budget can expire
+// inside sources.TrackIDs/DeleteByFile, whose store errors never pass through
+// wrapUpstream and so are never reclassified as ErrBusy.
+func (s *Service) logPurgeErr(ctx context.Context, msg string, err error, args ...any) {
+	args = append(args, "error", err)
+	if errors.Is(err, ErrBusy) || errors.Is(err, context.DeadlineExceeded) {
+		s.log.WarnContext(ctx, msg, args...)
+		return
+	}
+	s.log.ErrorContext(ctx, msg, args...)
 }
 
 func wrapUpstream(err error) error {
@@ -365,18 +421,18 @@ func (s *Service) DeleteMemoriesBySources(ctx context.Context, repo string, file
 		n, err := s.DeleteMemoriesBySource(ctx, repo, f)
 		if err != nil {
 			s.incOp("delete_by_sources", err)
-			s.log.WarnContext(ctx, "memory.delete_by_sources.incomplete",
+			wrapped := fmt.Errorf("delete memories for %s/%s: %w", repo, f, err)
+			s.logPurgeErr(ctx, "memory.delete_by_sources.incomplete", wrapped,
 				"action", "delete_memories_by_sources",
 				"repo", repo,
 				"file_path", f,
 				"files_count", len(files),
 				"total_purged", total+n,
 				"duration_ms", time.Since(start).Milliseconds(),
-				"error", err,
 			)
 			// n is the progress DeleteMemoriesBySource made inside the file that
 			// failed; drop it and the caller under-counts what is already gone.
-			return total + n, fmt.Errorf("delete memories for %s/%s: %w", repo, f, err)
+			return total + n, wrapped
 		}
 		total += n
 	}
@@ -404,7 +460,15 @@ func (s *Service) DeleteMemoriesBySource(ctx context.Context, repo, filePath str
 	ids, err := s.sources.TrackIDs(ctx, repo, filePath)
 	if err != nil {
 		s.incOp("delete_by_source", err)
-		return 0, fmt.Errorf("source track_ids: %w", err)
+		wrapped := fmt.Errorf("source track_ids: %w", err)
+		s.logPurgeErr(ctx, "memory.delete_by_source", wrapped,
+			"action", "delete_memories_by_source",
+			"repo", repo,
+			"file_path", filePath,
+			"stage", "track_ids_lookup",
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
+		return 0, wrapped
 	}
 	purged := 0
 	for _, id := range ids {
@@ -416,13 +480,32 @@ func (s *Service) DeleteMemoriesBySource(ctx context.Context, repo, filePath str
 			// Return purged (work done so far), not 0, so callers can account for
 			// partial progress. The source-index is not cleaned up on mid-loop failure;
 			// a retry will re-read the remaining ids (ErrNotFound entries are skipped).
-			return purged, fmt.Errorf("delete memory %s for %s/%s: %w", id, repo, filePath, err)
+			wrapped := fmt.Errorf("delete memory %s for %s/%s: %w", id, repo, filePath, err)
+			s.logPurgeErr(ctx, "memory.delete_by_source", wrapped,
+				"action", "delete_memories_by_source",
+				"repo", repo,
+				"file_path", filePath,
+				"stage", "delete_track",
+				"track_id", id,
+				"purged_before_failure", purged,
+				"duration_ms", time.Since(start).Milliseconds(),
+			)
+			return purged, wrapped
 		}
 		purged++
 	}
 	if _, err := s.sources.DeleteByFile(ctx, repo, filePath); err != nil {
 		s.incOp("delete_by_source", err)
-		return purged, fmt.Errorf("purge source index %s/%s: %w", repo, filePath, err)
+		wrapped := fmt.Errorf("purge source index %s/%s: %w", repo, filePath, err)
+		s.logPurgeErr(ctx, "memory.delete_by_source", wrapped,
+			"action", "delete_memories_by_source",
+			"repo", repo,
+			"file_path", filePath,
+			"stage", "source_index_cleanup",
+			"purged", purged,
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
+		return purged, wrapped
 	}
 	s.incOp("delete_by_source", nil)
 	s.log.InfoContext(ctx, "memory.delete_by_source",
