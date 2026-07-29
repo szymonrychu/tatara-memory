@@ -2,6 +2,7 @@ package codegraph
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"runtime"
 	"sync"
@@ -28,6 +29,24 @@ type AnalyticsWorkerConfig struct {
 	// O(V*E)). Graphs larger than this skip betweenness (all values 0.0) to avoid
 	// unbounded CPU. Default 5000. Set to -1 to disable the cap (not recommended).
 	BetweennessMaxNodes int
+	// RecomputeTimeout bounds ONE RecomputeAnalytics call end to end. 0 disables
+	// it (matching ingest.WithItemTimeout), in which case the run inherits only
+	// the worker's process-lifetime context. Production sets it from
+	// ANALYTICS_RECOMPUTE_TIMEOUT; see cmd/tatara-memory/app.go.
+	//
+	// Without it, a recompute that wedges on any dependency holds its database
+	// work open for the life of the process: tatara-memory#89 observed a single
+	// transaction whose age grew 1800s per 1800s of wall clock for 5.5h, on a
+	// pool shared with /readyz and every request handler.
+	RecomputeTimeout time.Duration
+	// MaxConcurrency caps concurrent RecomputeAnalytics goroutines. Each one
+	// holds a pooled Postgres connection for the whole of its write
+	// transaction, so in the server this is a term in the shared pool's budget
+	// and config.validate refuses to start when it does not fit
+	// (tatara-memory#89). 0 falls back to recomputeMaxConcurrency (GOMAXPROCS),
+	// which is fine for a library caller but too node-dependent to budget
+	// against, so the server always passes an explicit value.
+	MaxConcurrency int
 	// Logger; defaults to slog.Default().
 	Logger *slog.Logger
 	// Registerer for the worker's Prometheus instruments. nil registers nothing
@@ -50,6 +69,7 @@ type AnalyticsWorker struct {
 	interval            time.Duration
 	debounceSecs        int
 	betweennessMaxNodes int
+	recomputeTimeout    time.Duration
 	log                 *slog.Logger
 	metrics             *AnalyticsMetrics
 	tickC               <-chan time.Time
@@ -81,7 +101,10 @@ func NewAnalyticsWorker(store AnalyticsStore, labeler CommunityLabeler, cfg Anal
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
-	concurrency := recomputeMaxConcurrency
+	concurrency := cfg.MaxConcurrency
+	if concurrency < 1 {
+		concurrency = recomputeMaxConcurrency
+	}
 	if concurrency < 1 {
 		concurrency = 1
 	}
@@ -91,6 +114,7 @@ func NewAnalyticsWorker(store AnalyticsStore, labeler CommunityLabeler, cfg Anal
 		interval:            cfg.Interval,
 		debounceSecs:        cfg.DebounceSecs,
 		betweennessMaxNodes: cfg.BetweennessMaxNodes,
+		recomputeTimeout:    cfg.RecomputeTimeout,
 		log:                 cfg.Logger,
 		metrics:             NewAnalyticsMetrics(cfg.Registerer),
 		tickC:               cfg.tickC,
@@ -179,11 +203,36 @@ func (w *AnalyticsWorker) recompute(ctx context.Context, repo string) error {
 	w.metrics.incInFlight()
 	defer w.metrics.decInFlight()
 
+	// Bound the run. RecomputeAnalytics holds pool connections (and their
+	// server-side Postgres backends) for as long as it runs, so an unbounded run
+	// is an unbounded connection hold - tatara-memory#89.
+	runCtx := ctx
+	if w.recomputeTimeout > 0 {
+		var cancel context.CancelFunc
+		runCtx, cancel = context.WithTimeout(ctx, w.recomputeTimeout)
+		defer cancel()
+	}
+
 	start := time.Now()
-	res, err := w.store.RecomputeAnalytics(ctx, repo, w.labeler, w.betweennessMaxNodes)
+	res, err := w.store.RecomputeAnalytics(runCtx, repo, w.labeler, w.betweennessMaxNodes)
 	dur := time.Since(start)
 	w.metrics.observeDuration(dur.Seconds())
 	if err != nil {
+		// A run cut off by its own deadline is counted separately from a store
+		// error: it means the bound is doing work and the repo needs attention,
+		// not that Postgres failed. ctx.Err() (parent cancelled, i.e. shutdown)
+		// is not a timeout, so check the parent first.
+		if ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
+			w.metrics.incRun(analyticsResultTimeout)
+			w.log.Warn("analytics recompute timed out",
+				"action", "recompute_analytics_timeout",
+				"resource_id", repo,
+				"repo", repo,
+				"timeout", w.recomputeTimeout.String(),
+				"duration_ms", dur.Milliseconds(),
+			)
+			return err
+		}
 		w.metrics.incRun(analyticsResultError)
 		return err
 	}
