@@ -5,8 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // maxImportCycleDepth is the maximum recursion depth used when detecting import
@@ -20,14 +24,90 @@ const maxImportCycleDepth = 20
 // package-level const so query-text unit tests can assert the guard is present.
 const importCycleBaseFilter = "e.repo=$1 AND e.relation='imports' AND e.from_id<>e.to_id"
 
+// SQLSTATEs Reconcile classifies. 55P03 can only be raised while waiting for a
+// lock; 40P01 is the deadlock victim.
+const (
+	pgCodeLockNotAvailable = "55P03"
+	pgCodeDeadlockDetected = "40P01"
+)
+
+// blockingSnapshotTimeout bounds the diagnostic pg_stat_activity read taken on
+// a lock timeout. It runs on a fresh pooled connection after the transaction
+// has already failed, so it must never become a second way to hang.
+const blockingSnapshotTimeout = 2 * time.Second
+
 // PGStore is a PostgreSQL-backed implementation of Store.
 type PGStore struct {
-	db *sql.DB
+	db               *sql.DB
+	reconcileTimeout time.Duration
+	lockTimeout      time.Duration
+}
+
+// PGStoreOption configures a PGStore.
+type PGStoreOption func(*PGStore)
+
+// WithReconcileTimeout bounds Reconcile's whole BeginTx..Commit transaction to
+// d, including the initial pool acquire. A non-positive d disables the bound,
+// which is the prior behaviour and what every test that does not opt in gets.
+//
+// This reverses the decision recorded on ingest.WithCreateJobTimeout
+// (internal/ingest/pgstore.go), which deliberately left Reconcile unbounded
+// because its transaction "legitimately runs 50-194s on a large repo". That
+// reasoning held right up until tatara-memory#98, where an abandoned
+// transaction on mem-mtg-pg-1 held code-graph write locks and every push
+// blocked inside this transaction doing zero work - no entities upserted, no
+// analytics in flight, CPU idle - for the full 900s of the ingest client's
+// timeout, three attempts per Job, for over seven hours. "Legitimately slow"
+// and "wedged forever" need different ceilings, not the same absent one; the
+// default this is wired to (5m) sits above the observed 194s worst case and
+// well below the client's 900s, so the server answers first, with a status
+// code, instead of going silent.
+//
+// The bound covers the whole call rather than only the acquire for the same
+// reason CreateJob's does: database/sql ties a *sql.Tx to the context passed to
+// BeginTx and auto-rolls-back the moment that context is done, so a short-lived
+// acquire-only context would roll back a transaction that had just been
+// legitimately acquired.
+func WithReconcileTimeout(d time.Duration) PGStoreOption {
+	return func(s *PGStore) { s.reconcileTimeout = d }
+}
+
+// WithLockTimeout makes Reconcile issue SET LOCAL lock_timeout at the top of
+// its transaction, so a statement blocked on a lock fails with 55P03 instead of
+// waiting out the whole reconcile budget. A non-positive d leaves the server
+// default (no lock timeout) in place.
+//
+// SET LOCAL, not a session-wide RuntimeParam, and the distinction is load
+// bearing. The process shares one *sql.DB (cmd/tatara-memory/app.go) across
+// migrations, ingest, the memory service and the analytics worker. A session
+// lock_timeout would also apply to codegraph.Migrate, whose ALTER TABLE
+// statements (migrations 0005/0006) take ACCESS EXCLUSIVE on the very tables
+// Reconcile holds ROW EXCLUSIVE on for its whole transaction. Today the
+// migration waits and wins; under a session lock_timeout it would fail with
+// 55P03 and abort startup, turning any rolling upgrade that overlaps a push
+// into a CrashLoopBackOff. It would equally hand 55P03 to the analytics worker,
+// which has no handling for it and would simply re-mark the repo dirty and
+// retry on the next tick - a failure storm on exactly the largest repos.
+//
+// The value this is wired to (2m) is chosen against the one legitimate
+// contender for these locks: RecomputeAnalytics takes a row lock on every
+// entity in the repo (internal/codegraph/analytics_store.go) and holds it to
+// commit. Since 4496c44 moved community labelling - and its external LLM calls
+// - out of that transaction, what remains is pure SQL, for which 2m is
+// generous. A push that does lose 2m to that contention was going to blow its
+// 5m reconcile budget three minutes later anyway; failing early with 55P03
+// converts a slow, unattributed failure into a fast, named one.
+func WithLockTimeout(d time.Duration) PGStoreOption {
+	return func(s *PGStore) { s.lockTimeout = d }
 }
 
 // NewPGStore returns a PGStore backed by the given database connection.
-func NewPGStore(db *sql.DB) *PGStore {
-	return &PGStore{db: db}
+func NewPGStore(db *sql.DB, opts ...PGStoreOption) *PGStore {
+	s := &PGStore{db: db}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // DB returns the underlying database connection (for testing).
@@ -70,8 +150,99 @@ func escapeLike(s string) string {
 // Reconcile deletes the prior graph owned by p.Files for p's Extractor origin,
 // then inserts p.Entities, p.Edges, p.Symbols, and p.Hyperedges (all tagged with
 // that extractor). When p.FileSHAs is set it upserts the semantic_extractions
-// cache. It always marks repo_analytics_state dirty. All in one transaction.
+// cache. It always marks repo_analytics_state dirty. All in one transaction,
+// bounded by WithReconcileTimeout and WithLockTimeout.
 func (s *PGStore) Reconcile(ctx context.Context, p GraphPush) (PushResult, error) {
+	if s.reconcileTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, s.reconcileTimeout)
+		defer cancel()
+	}
+	res, err := s.reconcile(ctx, p)
+	if err != nil {
+		return PushResult{}, s.classifyReconcileError(ctx, err)
+	}
+	return res, nil
+}
+
+// classifyReconcileError names the failure modes of Reconcile's transaction
+// that are not bugs in its statements, so the caller can answer 503 with a
+// Retry-After and the metric can label them. Anything unrecognised is returned
+// untouched: this must not swallow a genuine fault into a retryable bucket.
+func (s *PGStore) classifyReconcileError(ctx context.Context, err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch pgErr.Code {
+		case pgCodeLockNotAvailable:
+			// The one thing #98 never captured was who held the lock, and
+			// recovering it needed a human on pg_stat_activity hours after the
+			// fact. Take that snapshot here, while the holder is still there.
+			slog.WarnContext(ctx, "codegraph: reconcile blocked on a database lock",
+				"sqlstate", pgErr.Code,
+				"error", pgErr.Message,
+				"oldest_transactions", s.oldestTransactions(),
+			)
+			return fmt.Errorf("%w: %w", ErrLockTimeout, err)
+		case pgCodeDeadlockDetected:
+			return fmt.Errorf("%w: %w", ErrDeadlock, err)
+		}
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		// Deliberately %v, not %w, on the cause. The underlying error is
+		// whichever of context.DeadlineExceeded or sql.ErrTxDone won the race
+		// in database/sql's awaitDone goroutine, and both are traps: a bare
+		// DeadlineExceeded in the chain would be caught by errmap's
+		// backpressure arm and answered 429 (which the 5xx alert deliberately
+		// ignores - encoding this incident's own invisibility into its fix),
+		// and sql.ErrTxDone would fall through to a 500. The cause stays in the
+		// message for the log; only ErrReconcileTimeout is matchable.
+		return fmt.Errorf("%w after %s: %v", ErrReconcileTimeout, s.reconcileTimeout, err)
+	}
+	return err
+}
+
+// oldestTransactions renders the longest-running transactions in this database
+// as a single log field. It runs on a fresh pooled connection with its own
+// short deadline and its own background context: the caller's context is
+// typically already dead by the time this is reached, and a diagnostic must
+// never become a second way to hang. Any failure yields an empty string - this
+// is best-effort evidence, never a reason to change the error the caller sees.
+func (s *PGStore) oldestTransactions() string {
+	ctx, cancel := context.WithTimeout(context.Background(), blockingSnapshotTimeout)
+	defer cancel()
+	// Every column is coalesced. tatara_memory is not a superuser, and
+	// pg_stat_activity hides state/query as NULL for backends owned by another
+	// role - so an uncoalesced scan would fail on the first such row and throw
+	// away the evidence for all of them, including the one we came for.
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT pid, coalesce(state, ''), coalesce(wait_event_type, ''),
+		       round(extract(epoch FROM (now() - xact_start)))::bigint,
+		       coalesce(left(query, 200), '')
+		FROM pg_stat_activity
+		WHERE datname = current_database() AND xact_start IS NOT NULL AND pid <> pg_backend_pid()
+		ORDER BY xact_start ASC
+		LIMIT 3`)
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var pid, ageSec int64
+		var state, waitEventType, query string
+		if err := rows.Scan(&pid, &state, &waitEventType, &ageSec, &query); err != nil {
+			return ""
+		}
+		out = append(out, fmt.Sprintf("pid=%d state=%s wait=%s xact_age_s=%d query=%q",
+			pid, state, waitEventType, ageSec, query))
+	}
+	if rows.Err() != nil {
+		return ""
+	}
+	return strings.Join(out, " | ")
+}
+
+func (s *PGStore) reconcile(ctx context.Context, p GraphPush) (PushResult, error) {
 	ext := p.Extractor
 	if ext == "" {
 		ext = ExtractorAST
@@ -82,6 +253,20 @@ func (s *PGStore) Reconcile(ctx context.Context, p GraphPush) (PushResult, error
 		return PushResult{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	if s.lockTimeout > 0 {
+		// No placeholders: SET takes no bind parameters. The value is an int64
+		// derived from a time.Duration, so there is nothing to inject. A bare
+		// integer is milliseconds, which is what Postgres expects here.
+		//
+		// Clamped to at least 1: Postgres reads lock_timeout = 0 as "wait
+		// forever", so truncating a sub-millisecond duration would silently
+		// turn the tightest bound an operator can ask for into no bound at all.
+		ms := max(s.lockTimeout.Milliseconds(), 1)
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf("SET LOCAL lock_timeout = %d", ms)); err != nil {
+			return PushResult{}, err
+		}
+	}
 
 	for _, f := range p.Files {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM code_edges WHERE repo=$1 AND src_file=$2 AND extractor=$3`, p.Repo, f, ext); err != nil {

@@ -48,6 +48,14 @@ type config struct {
 	// AnalyticsRecomputeTimeout bounds one code-graph analytics recompute end to
 	// end. 0 disables.
 	AnalyticsRecomputeTimeout time.Duration
+
+	// CodeGraphReconcileTimeout and CodeGraphLockTimeout bound POST
+	// /code-graph:bulk's reconcile transaction (tatara-memory#98): an
+	// abandoned transaction on mem-mtg-pg-1 held code-graph write locks, and
+	// every subsequent push then blocked inside this transaction doing zero
+	// work until the ingest client's 900s timeout fired.
+	CodeGraphReconcileTimeout time.Duration
+	CodeGraphLockTimeout      time.Duration
 }
 
 func envOr(key, def string) string {
@@ -165,6 +173,21 @@ func loadConfig(args []string) (config, error) {
 	if err != nil {
 		return config{}, err
 	}
+	// 5m sits above the 194s observed worst case for a large-repo reconcile and
+	// well below the ingest client's 900s timeout, so the server answers first
+	// with a status code instead of going silent (tatara-memory#98).
+	codeGraphReconcileTimeout, err := envDurationOr("CODE_GRAPH_RECONCILE_TIMEOUT", 5*time.Minute)
+	if err != nil {
+		return config{}, err
+	}
+	// The only legitimate contender for these locks is the analytics
+	// recompute's row locks on code_entities; since 4496c44 moved LLM calls
+	// out of that transaction what remains is pure SQL, for which 2m is
+	// generous.
+	codeGraphLockTimeout, err := envDurationOr("CODE_GRAPH_LOCK_TIMEOUT", 2*time.Minute)
+	if err != nil {
+		return config{}, err
+	}
 	cfg := config{
 		HTTPAddr:               envOr("HTTP_ADDR", ":8080"),
 		PGDSN:                  envOr("PG_DSN", ""),
@@ -192,6 +215,9 @@ func loadConfig(args []string) (config, error) {
 		PGIdleInTxTimeout:         pgIdleInTxTimeout,
 		AnalyticsMaxConcurrency:   analyticsMaxConcurrency,
 		AnalyticsRecomputeTimeout: analyticsRecomputeTimeout,
+
+		CodeGraphReconcileTimeout: codeGraphReconcileTimeout,
+		CodeGraphLockTimeout:      codeGraphLockTimeout,
 	}
 
 	fs := flag.NewFlagSet("tatara-memory", flag.ContinueOnError)
@@ -219,6 +245,8 @@ func loadConfig(args []string) (config, error) {
 	fs.DurationVar(&cfg.PGIdleInTxTimeout, "pg-idle-in-transaction-timeout", cfg.PGIdleInTxTimeout, "Server-side idle_in_transaction_session_timeout applied to every connection (0 disables)")
 	fs.IntVar(&cfg.AnalyticsMaxConcurrency, "analytics-max-concurrency", cfg.AnalyticsMaxConcurrency, "Max concurrent code-graph analytics recomputes; each holds one pooled connection")
 	fs.DurationVar(&cfg.AnalyticsRecomputeTimeout, "analytics-recompute-timeout", cfg.AnalyticsRecomputeTimeout, "Deadline for one code-graph analytics recompute (0 disables)")
+	fs.DurationVar(&cfg.CodeGraphReconcileTimeout, "code-graph-reconcile-timeout", cfg.CodeGraphReconcileTimeout, "Bound on one POST /code-graph:bulk reconcile transaction, end to end (0 disables)")
+	fs.DurationVar(&cfg.CodeGraphLockTimeout, "code-graph-lock-timeout", cfg.CodeGraphLockTimeout, "SET LOCAL lock_timeout applied inside the /code-graph:bulk reconcile transaction (0 leaves the server default)")
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
 	}
@@ -285,6 +313,21 @@ func (c config) validate() error {
 	}
 	if c.AnalyticsRecomputeTimeout < 0 {
 		return fmt.Errorf("analytics-recompute-timeout must be >= 0")
+	}
+	if c.CodeGraphReconcileTimeout < 0 {
+		return fmt.Errorf("code-graph-reconcile-timeout must be >= 0")
+	}
+	if c.CodeGraphLockTimeout < 0 {
+		return fmt.Errorf("code-graph-lock-timeout must be >= 0")
+	}
+	// A lock timeout at or above the reconcile budget can never fire before the
+	// budget does, so it would silently buy nothing (tatara-memory#98). Only
+	// meaningful to compare when both are enabled.
+	if c.CodeGraphReconcileTimeout > 0 && c.CodeGraphLockTimeout > 0 &&
+		c.CodeGraphLockTimeout >= c.CodeGraphReconcileTimeout {
+		return fmt.Errorf(
+			"code-graph-lock-timeout(%s) must be < code-graph-reconcile-timeout(%s): a lock timeout at or above the reconcile budget can never fire before the budget does",
+			c.CodeGraphLockTimeout, c.CodeGraphReconcileTimeout)
 	}
 	// The admission budgets exist to keep the shared Postgres pool from being
 	// oversubscribed (tatara-memory#82: a long /code-graph:bulk transaction

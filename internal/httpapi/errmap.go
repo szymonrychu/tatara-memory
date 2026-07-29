@@ -22,6 +22,27 @@ func mapServiceError(w http.ResponseWriter, r *http.Request, err error) {
 		WriteError(w, http.StatusBadRequest, "invalid input", reqID)
 	case errors.Is(err, memory.ErrNotFound):
 		WriteError(w, http.StatusNotFound, "not found", reqID)
+	case errors.Is(err, codegraph.ErrLockTimeout),
+		errors.Is(err, codegraph.ErrDeadlock),
+		errors.Is(err, codegraph.ErrReconcileTimeout):
+		// The code-graph write transaction could not get, or could not hold,
+		// its locks (tatara-memory#98). Retryable, hence Retry-After - but 503
+		// rather than the 429 the DeadlineExceeded arm below would produce.
+		// 429 means "you offered too much work", and backing off does not clear
+		// a transaction someone else abandoned. It is also deliberately
+		// invisible to MemoryHigh5xx (charts/tatara-memory/templates/
+		// prometheusrule.yaml), so classifying this as shed load would page
+		// nobody while every push failed and code_graph_entities_upserted_total
+		// sat flat - precisely how #98 ran undetected for seven hours.
+		//
+		// This arm MUST stay above the DeadlineExceeded case, which would
+		// otherwise swallow anything wrapping a context error.
+		w.Header().Set("Retry-After", "5")
+		loggerFromContext(r.Context()).ErrorContext(r.Context(), "code-graph write path blocked",
+			"request_id", reqID,
+			"error", err,
+		)
+		WriteError(w, http.StatusServiceUnavailable, "code-graph write path blocked, retry after backoff", reqID)
 	case errors.Is(err, memory.ErrBusy), errors.Is(err, context.DeadlineExceeded):
 		// Backpressure, not failure: either an upstream told us it is busy, or
 		// one of our own deadlines fired because the service is saturated

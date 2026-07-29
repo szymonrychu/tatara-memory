@@ -39,9 +39,13 @@ type PGStoreOption func(*PGStore)
 // been legitimately acquired. Bounding the whole call is the only correct
 // way to fail fast without that footgun. CreateJob is a single cheap
 // transaction (one job row plus one row per item, no external calls, no
-// LightRAG round trip), so this stays "fast" for realistic batch sizes;
-// it is deliberately not applied to codegraph.PGStore.Reconcile, whose
-// single transaction legitimately runs 50-194s on a large repo.
+// LightRAG round trip), so this stays "fast" for realistic batch sizes.
+//
+// This comment used to record that the same bound was deliberately NOT applied
+// to codegraph.PGStore.Reconcile, whose transaction legitimately runs 50-194s
+// on a large repo. tatara-memory#98 showed that "legitimately slow" and "wedged
+// forever" need different ceilings, not the same absent one: Reconcile now
+// carries its own, far more generous bound (codegraph.WithReconcileTimeout).
 func WithCreateJobTimeout(d time.Duration) PGStoreOption {
 	return func(s *PGStore) { s.createJobTimeout = d }
 }

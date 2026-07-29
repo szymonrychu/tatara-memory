@@ -112,6 +112,16 @@ func TestConfigValidate_RejectsIncoherentPoolBounds(t *testing.T) {
 		"negative recompute":    func(c *config) { c.AnalyticsRecomputeTimeout = -time.Second },
 		"unset analytics conc":  func(c *config) { c.AnalyticsMaxConcurrency = 0 },
 		"negative analytics cc": func(c *config) { c.AnalyticsMaxConcurrency = -1 },
+		"negative cg reconcile": func(c *config) { c.CodeGraphReconcileTimeout = -time.Second },
+		"negative cg lock":      func(c *config) { c.CodeGraphLockTimeout = -time.Second },
+		"cg lock equals reconcile": func(c *config) {
+			c.CodeGraphReconcileTimeout = 5 * time.Minute
+			c.CodeGraphLockTimeout = 5 * time.Minute
+		},
+		"cg lock exceeds reconcile": func(c *config) {
+			c.CodeGraphReconcileTimeout = 5 * time.Minute
+			c.CodeGraphLockTimeout = 6 * time.Minute
+		},
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -185,4 +195,35 @@ func TestLoadConfig_PoolDefaults(t *testing.T) {
 	require.Equal(t, 2*time.Minute, cfg.PGIdleInTxTimeout)
 	require.Equal(t, 2, cfg.AnalyticsMaxConcurrency)
 	require.Equal(t, 10*time.Minute, cfg.AnalyticsRecomputeTimeout)
+	require.Equal(t, 5*time.Minute, cfg.CodeGraphReconcileTimeout)
+	require.Equal(t, 2*time.Minute, cfg.CodeGraphLockTimeout)
+}
+
+// tatara-memory#98: an abandoned transaction on mem-mtg-pg-1 held code-graph
+// write locks; every subsequent push then blocked inside Reconcile doing zero
+// work until the ingest client's 900s timeout fired, three attempts per Job,
+// for over seven hours.
+func TestLoadConfig_CodeGraphTimeoutsEnvOverride(t *testing.T) {
+	t.Setenv("PG_DSN", "postgres://u:p@h:5432/d")
+	t.Setenv("LIGHTRAG_BASE_URL", "http://lr:9621")
+	t.Setenv("CODE_GRAPH_RECONCILE_TIMEOUT", "10m")
+	t.Setenv("CODE_GRAPH_LOCK_TIMEOUT", "3m")
+
+	cfg, err := loadConfig(nil)
+	require.NoError(t, err)
+	require.NoError(t, cfg.validate())
+	require.Equal(t, 10*time.Minute, cfg.CodeGraphReconcileTimeout)
+	require.Equal(t, 3*time.Minute, cfg.CodeGraphLockTimeout)
+}
+
+func TestConfigValidate_CodeGraphTimeoutsBothZeroAccepted(t *testing.T) {
+	c := config{
+		PGDSN:                   "x",
+		LightRAGBaseURL:         "y",
+		WorkerPoolSize:          1,
+		DBMaxOpenConns:          10,
+		DBMaxIdleConns:          2,
+		AnalyticsMaxConcurrency: 1,
+	}
+	require.NoError(t, c.validate())
 }

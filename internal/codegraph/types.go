@@ -15,6 +15,34 @@ var ErrEntityNotFound = errors.New("codegraph: entity not found")
 // edge whose owning file is not in the push's declared file set.
 var ErrInvalidScope = errors.New("codegraph: invalid push scope")
 
+// The three errors below classify the ways Reconcile's single transaction can
+// fail without any of its statements being wrong (tatara-memory#98). They exist
+// so the HTTP layer can answer 503 with a Retry-After instead of a bare 500,
+// and so the failure is nameable in a metric label - the incident ran for seven
+// hours with no signal beyond a code_graph_entities_upserted_total that had
+// simply stopped moving.
+
+// ErrReconcileTimeout is returned when Reconcile exceeds its own end-to-end
+// transaction budget. Neither existing guardrail can produce this: Postgres's
+// statement_timeout bounds a single statement, so a transaction made of
+// thousands of individually-fast statements grows unboundedly, and
+// idle_in_transaction_session_timeout only fires when the session goes idle
+// mid-transaction, which a blocked-on-a-lock backend never does (#98 observed
+// the wedged backend in state=active for over seven hours).
+var ErrReconcileTimeout = errors.New("codegraph: reconcile exceeded its transaction budget")
+
+// ErrLockTimeout is returned on SQLSTATE 55P03 (lock_not_available): the
+// transaction gave up waiting for a row or table lock. Unlike statement_timeout
+// (57014), this can only occur while waiting for a lock, which is precisely the
+// distinction it took #98 seven hours of telemetry archaeology to establish.
+var ErrLockTimeout = errors.New("codegraph: blocked waiting for a database lock")
+
+// ErrDeadlock is returned on SQLSTATE 40P01. Reconcile and the analytics
+// recompute both take code_entities row locks and then repo_analytics_state
+// with no agreed ordering, so either can be chosen as the deadlock victim. That
+// is a retryable condition, not a server fault.
+var ErrDeadlock = errors.New("codegraph: transaction chosen as a deadlock victim")
+
 // Relation constants used by the named-traversal endpoints. The producer
 // (sub-project B) emits the full relation vocabulary; this service only needs
 // the relations it groups into traversal sets.

@@ -56,6 +56,10 @@ tests:
       - isNotNullOrEmpty:
           path: data.ANALYTICS_RECOMPUTE_TIMEOUT
       - isNotNullOrEmpty:
+          path: data.CODE_GRAPH_RECONCILE_TIMEOUT
+      - isNotNullOrEmpty:
+          path: data.CODE_GRAPH_LOCK_TIMEOUT
+      - isNotNullOrEmpty:
           path: data.LOG_LEVEL
   # The shipped defaults are the configuration the app boots with, and the app
   # refuses to start when the admission budgets plus the worker pool plus the
@@ -114,6 +118,8 @@ tests:
       pgIdleInTransactionTimeout: "90s"
       analyticsMaxConcurrency: 3
       analyticsRecomputeTimeout: "15m"
+      codeGraphReconcileTimeout: "8m"
+      codeGraphLockTimeout: "3m"
     asserts:
       - equal:
           path: data.DB_MAX_OPEN_CONNS
@@ -136,6 +142,12 @@ tests:
       - equal:
           path: data.ANALYTICS_RECOMPUTE_TIMEOUT
           value: "15m"
+      - equal:
+          path: data.CODE_GRAPH_RECONCILE_TIMEOUT
+          value: "8m"
+      - equal:
+          path: data.CODE_GRAPH_LOCK_TIMEOUT
+          value: "3m"
   - it: rejects any kebab-case keys leaking through
     asserts:
       - isNull:

@@ -60,7 +60,13 @@ func (s *Service) Push(ctx context.Context, p GraphPush) (PushResult, error) {
 			return PushResult{}, fmt.Errorf("%w: symbol %s role %q must be provides|requires", ErrInvalidScope, sym.Symbol, sym.Role)
 		}
 	}
+	// Observed on both paths, deliberately: a write path that failed every
+	// single time used to produce no signal at all (tatara-memory#98). The
+	// validation failures above are not counted - they never reach Postgres,
+	// and folding client mistakes into this series would blunt the alert built
+	// on it.
 	res, err := s.store.Reconcile(ctx, p)
+	s.metrics.observePushResult(p.Repo, err)
 	if err != nil {
 		return PushResult{}, err
 	}

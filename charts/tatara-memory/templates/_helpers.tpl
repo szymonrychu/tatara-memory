@@ -87,6 +87,8 @@ PG_STATEMENT_TIMEOUT: {{ .Values.pgStatementTimeout | quote }}
 PG_IDLE_IN_TRANSACTION_TIMEOUT: {{ .Values.pgIdleInTransactionTimeout | quote }}
 ANALYTICS_MAX_CONCURRENCY: {{ .Values.analyticsMaxConcurrency | quote }}
 ANALYTICS_RECOMPUTE_TIMEOUT: {{ .Values.analyticsRecomputeTimeout | quote }}
+CODE_GRAPH_RECONCILE_TIMEOUT: {{ .Values.codeGraphReconcileTimeout | quote }}
+CODE_GRAPH_LOCK_TIMEOUT: {{ .Values.codeGraphLockTimeout | quote }}
 LOG_LEVEL: {{ .Values.logLevel | quote }}
 OTLP_ENDPOINT: {{ .Values.otlpEndpoint | quote }}
 {{- end -}}

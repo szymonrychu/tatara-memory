@@ -263,7 +263,13 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 
 	enqueuer := ingest.NewEnqueuer(store, pool)
 
-	cgStore := codegraph.NewPGStore(db)
+	// tatara-memory#98: an abandoned transaction on mem-mtg-pg-1 held code-graph
+	// write locks; every push then blocked inside this transaction doing zero
+	// work until the ingest client's 900s timeout fired, three attempts per
+	// Job, for over seven hours.
+	cgStore := codegraph.NewPGStore(db,
+		codegraph.WithReconcileTimeout(cfg.CodeGraphReconcileTimeout),
+		codegraph.WithLockTimeout(cfg.CodeGraphLockTimeout))
 	cgMetrics := codegraph.NewMetrics(reg)
 	cgSvc := codegraph.NewService(cgStore, cgMetrics)
 

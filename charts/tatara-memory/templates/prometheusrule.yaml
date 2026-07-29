@@ -153,6 +153,33 @@ spec:
               per-run deadline in the last hour. A recompute holds database
               connections while it runs; a wedged one is how tatara-memory#89
               started.
+        - alert: MemoryCodeGraphWriteBlocked
+          # tatara-memory#98: an abandoned transaction on mem-mtg-pg held
+          # code-graph write locks, every /code-graph:bulk push blocked inside
+          # its transaction doing zero work, and the only evidence was
+          # code_graph_entities_upserted_total sitting frozen - a counter that
+          # stops moving, which is indistinguishable from a repo nobody pushes
+          # to. It took an ingest-side alert 78 minutes to fire and seven hours
+          # to attribute. code_graph_push_total makes the failure a positive
+          # observation, and these three result labels can only come from
+          # Postgres refusing the write path its locks.
+          expr: >-
+            sum by (repo) (
+              increase(code_graph_push_total{job=~".*tatara-memory.*", result=~"lock_timeout|deadlock|timeout"}[15m])
+            ) > 0
+          for: 0m
+          labels:
+            severity: {{ .Values.prometheusRule.severityLabel | quote }}
+          annotations:
+            summary: tatara-memory code-graph writes are blocked on Postgres locks
+            description: >-
+              One or more code-graph pushes failed in the last 15m because the
+              reconcile transaction could not get or hold its locks
+              (result=lock_timeout|deadlock|timeout). Reads are unaffected -
+              MVCC readers do not block on writers - so the service will look
+              healthy. Check cnpg_backends_max_tx_duration_seconds for the
+              instance backing this project: a single transaction whose age
+              climbs 1s per 1s has been abandoned and is holding the locks.
         - alert: MemoryHandlerPanics
           expr: sum(increase(http_panics_total{job=~".*tatara-memory.*"}[15m])) > 0
           for: 0m

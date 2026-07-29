@@ -1,6 +1,7 @@
 package codegraph
 
 import (
+	"errors"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -58,6 +59,39 @@ type Metrics struct {
 	// traversal/path/stats methods that run recursive-CTE queries.
 	queryTotal    *prometheus.CounterVec
 	queryDuration *prometheus.HistogramVec
+	// pushTotal counts every attempted code-graph write by outcome
+	// (tatara-memory#98). entitiesUpserted alone cannot express failure: a
+	// counter that stops moving is indistinguishable from a repo nobody is
+	// pushing to, which is why #98's dead write path stayed invisible for
+	// seven hours with nothing an alert could be written against.
+	pushTotal *prometheus.CounterVec
+}
+
+// Result labels for code_graph_push_total.
+const (
+	pushResultSuccess     = "success"
+	pushResultLockTimeout = "lock_timeout"
+	pushResultDeadlock    = "deadlock"
+	pushResultTimeout     = "timeout"
+	pushResultError       = "error"
+)
+
+// pushResultFor maps a Reconcile error onto its result label. The three
+// classified errors get their own label precisely so an alert can distinguish
+// "the write path is blocked on Postgres locks" from "a push was malformed".
+func pushResultFor(err error) string {
+	switch {
+	case err == nil:
+		return pushResultSuccess
+	case errors.Is(err, ErrLockTimeout):
+		return pushResultLockTimeout
+	case errors.Is(err, ErrDeadlock):
+		return pushResultDeadlock
+	case errors.Is(err, ErrReconcileTimeout):
+		return pushResultTimeout
+	default:
+		return pushResultError
+	}
 }
 
 // NewMetrics creates and registers the code-graph metrics with reg.
@@ -80,8 +114,12 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Help:    "Duration of code-graph query/traversal operations by op.",
 			Buckets: prometheus.DefBuckets,
 		}, []string{"op"}),
+		pushTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "code_graph_push_total",
+			Help: "Count of attempted code-graph pushes by repo and outcome.",
+		}, []string{"repo", "result"}),
 	}
-	reg.MustRegister(m.entitiesUpserted, m.edgesUpserted, m.queryTotal, m.queryDuration)
+	reg.MustRegister(m.entitiesUpserted, m.edgesUpserted, m.queryTotal, m.queryDuration, m.pushTotal)
 	for _, op := range queryOps {
 		for _, result := range []string{"success", "error"} {
 			m.queryTotal.WithLabelValues(op, result)
@@ -89,6 +127,17 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		m.queryDuration.WithLabelValues(op)
 	}
 	return m
+}
+
+// observePushResult records the outcome of one attempted push. Repos are not
+// pre-created here the way query ops are: the label set is discovered from
+// traffic, so pre-creating every result for a repo we have never seen would
+// publish zeros that no alert should treat as evidence of a healthy write path.
+func (m *Metrics) observePushResult(repo string, err error) {
+	if m == nil {
+		return
+	}
+	m.pushTotal.WithLabelValues(repo, pushResultFor(err)).Inc()
 }
 
 func (m *Metrics) observePush(repo string, entities, edges int) {

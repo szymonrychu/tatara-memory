@@ -55,6 +55,9 @@ tests:
           value: MemoryAnalyticsRecomputeTimingOut
       - equal:
           path: spec.groups[0].rules[9].alert
+          value: MemoryCodeGraphWriteBlocked
+      - equal:
+          path: spec.groups[0].rules[10].alert
           value: MemoryHandlerPanics
   - it: pool-saturation thresholds flow from values into the alert expressions
     set:

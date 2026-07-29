@@ -152,6 +152,24 @@ analyticsMaxConcurrency: 2
 # that hits this is wedged, not slow. "0" disables it.
 analyticsRecomputeTimeout: "10m"
 
+# codeGraphReconcileTimeout / codeGraphLockTimeout bound POST
+# /code-graph:bulk's reconcile transaction (tatara-memory#98): an abandoned
+# transaction on mem-mtg-pg-1 held code-graph write locks, and every
+# subsequent push then blocked inside this transaction doing zero work until
+# the ingest client's 900s timeout fired, three attempts per Job, for over
+# seven hours.
+#
+# codeGraphReconcileTimeout bounds the whole transaction end to end: 5m sits
+# above the 194s observed worst case for a large-repo reconcile and well below
+# the ingest client's 900s timeout, so the server answers first with a status
+# code instead of going silent. codeGraphLockTimeout is a SET LOCAL
+# lock_timeout applied inside that same transaction; the only legitimate
+# contender for these locks is the analytics recompute's row locks on
+# code_entities, and since 4496c44 moved LLM calls out of that transaction
+# what remains is pure SQL, for which 2m is generous. "0" disables either one.
+codeGraphReconcileTimeout: "5m"
+codeGraphLockTimeout: "2m"
+
 
 logLevel: "info"
 otlpEndpoint: ""
