@@ -1,6 +1,11 @@
 min_version = "2026.6.3"
 
 [tools]
+# Every [tasks.*] below shells out to make, and the pre-push hook runs
+# `mise run test` -> `make test`, but make was never pinned here - so on any
+# image without a system make the shim resolves to "No version is set for
+# shim: make" and lint/test/build fail before running anything.
+make = "4.4.1"
 go = "1.26.3"
 helm = "4.2.1"
 helmfile = "1.4.4"
