@@ -20,8 +20,16 @@ var ErrNotFound = errors.New("memory: not found")
 // ErrUpstream is returned when the LightRAG backend returns an unexpected error.
 var ErrUpstream = errors.New("memory: upstream error")
 
-// ErrTransient is returned when the LightRAG backend is temporarily unavailable.
+// ErrTransient is returned when the LightRAG backend is genuinely unavailable
+// (5xx or unreachable). It maps to HTTP 503: a real server-side fault.
 var ErrTransient = errors.New("memory: transient upstream error")
+
+// ErrBusy is returned when an upstream refuses work because it is saturated
+// rather than broken: LightRAG's pipeline lock is held (delete status="busy"),
+// it answered 429, or a call ran out of its time budget under load. It maps to
+// HTTP 429 + Retry-After, not 503 - the request is retryable and nothing is
+// down, so it must not inflate the 5xx error ratio (tatara-memory#80).
+var ErrBusy = errors.New("memory: upstream busy")
 
 // ErrInvalid is returned when the caller supplies a malformed identifier or payload.
 var ErrInvalid = errors.New("memory: invalid input")
@@ -41,32 +49,53 @@ type sourceIndex interface {
 	DeleteByFile(ctx context.Context, repo, filePath string) (int64, error)
 }
 
+// DefaultPurgeBudget bounds one DeleteMemoriesBySources call end to end.
+//
+// The purge is serial over reconcile files, and a LightRAG document delete
+// returns immediately but holds the pipeline lock for the 6-42s its graph
+// rebuild takes (41.85s worst case measured, tatara-memory#90 Q9). So file N+1
+// waits out the lock file N just took: waiting per file is unbounded in the
+// file count and would run a wide reconcile past any client timeout. One budget
+// for the whole batch keeps the request bounded; whatever does not fit comes
+// back as ErrBusy -> 429 + Retry-After with the completed files already cleared
+// from the source index, so the client's retry resumes instead of restarting.
+//
+// 45s covers a single full lock hold (so no file is shed that a wait would have
+// saved) and leaves headroom under tatara-memory-repo-ingester's 60s HTTP
+// client default.
+const DefaultPurgeBudget = 45 * time.Second
+
 // Service provides memory CRUD and retrieval operations backed by LightRAG.
 type Service struct {
-	lr      lightrag.Client
-	tomb    tombstoner
-	sources sourceIndex
-	now     func() time.Time
-	log     *slog.Logger
-	ops     *prometheus.CounterVec
+	lr          lightrag.Client
+	tomb        tombstoner
+	sources     sourceIndex
+	now         func() time.Time
+	log         *slog.Logger
+	ops         *prometheus.CounterVec
+	purgeBudget time.Duration
 }
 
 // NewService returns a Service backed by the given LightRAG client.
 // tomb may be nil; if nil, tombstone checks are skipped (no-op).
 func NewService(lr lightrag.Client, tomb tombstoner) *Service {
-	return &Service{lr: lr, tomb: tomb, now: time.Now, log: slog.Default(), ops: newServiceOps(nil)}
+	return &Service{lr: lr, tomb: tomb, now: time.Now, log: slog.Default(), ops: newServiceOps(nil), purgeBudget: DefaultPurgeBudget}
 }
 
 // NewServiceWithSources is NewService plus a sources index that backs
 // DeleteMemoriesBySource. sources may be nil (delete-by-source is a no-op).
 func NewServiceWithSources(lr lightrag.Client, tomb tombstoner, sources sourceIndex) *Service {
-	return &Service{lr: lr, tomb: tomb, sources: sources, now: time.Now, log: slog.Default(), ops: newServiceOps(nil)}
+	return &Service{lr: lr, tomb: tomb, sources: sources, now: time.Now, log: slog.Default(), ops: newServiceOps(nil), purgeBudget: DefaultPurgeBudget}
 }
 
 // WithLogger sets the logger on the service (functional option on the pointer).
 func (s *Service) WithLogger(l *slog.Logger) *Service { s.log = l; return s }
 
-// WithMetrics registers tatara_memory_op_total{op,result} in reg.
+// WithPurgeBudget overrides DefaultPurgeBudget. 0 or less disables the bound,
+// leaving DeleteMemoriesBySources governed only by the caller's context.
+func (s *Service) WithPurgeBudget(d time.Duration) *Service { s.purgeBudget = d; return s }
+
+// WithMetrics registers tatara_memory_op_total{op,class,result} in reg.
 func (s *Service) WithMetrics(reg prometheus.Registerer) *Service {
 	s.ops = newServiceOps(reg)
 	return s
@@ -117,15 +146,35 @@ func (s *Service) incOp(op string, err error) {
 }
 
 // logPurgeErr logs a purge-path (delete_by_source / delete_by_sources)
-// failure with structured fields. ErrTransient (LightRAG pipeline "busy",
-// i.e. concurrent-ingest lock contention) is expected and retryable, so it
-// logs at WARN; everything else logs at ERROR. Before this, a purge failure
-// only ever reached the HTTP layer's mapServiceError, whose ErrTransient and
-// ErrNotFound branches write a response but never call the logger - so the
-// internal purge path could fail with zero log lines (issue #84).
+// failure with structured fields. Before this, a purge failure only ever
+// reached the HTTP layer's mapServiceError, whose backpressure and ErrNotFound
+// branches write a response but never call the logger - so the internal purge
+// path could fail with zero log lines (issue #84).
+//
+// The level split follows the error taxonomy, not the call site: ErrBusy is
+// expected, self-correcting backpressure (LightRAG's pipeline lock is held by a
+// concurrent ingest or by this batch's own previous delete, or the purge budget
+// ran out waiting for it), so it logs at WARN. Everything else - including
+// ErrTransient - logs at ERROR.
+//
+// This predicate was ErrTransient when it was written, because ErrTransient was
+// then the only non-permanent classification and carried the busy path.
+// tatara-memory#97 split the taxonomy: ErrBusy is now "saturated, come back
+// later" (429 + Retry-After) and ErrTransient is now reserved for genuine
+// unavailability, an upstream 5xx or an unreachable LightRAG (503). Keeping the
+// old predicate would have inverted the intent exactly - the one class that is
+// routine under load would page at ERROR while a real upstream outage on the
+// purge path stayed a WARN.
+//
+// The predicate deliberately matches mapServiceError's backpressure branch
+// (ErrBusy OR a bare context.DeadlineExceeded) rather than just ErrBusy, so the
+// level always agrees with the status the caller is handed: WARN iff 429. The
+// bare-deadline case is reachable here - the batch purge budget can expire
+// inside sources.TrackIDs/DeleteByFile, whose store errors never pass through
+// wrapUpstream and so are never reclassified as ErrBusy.
 func (s *Service) logPurgeErr(ctx context.Context, msg string, err error, args ...any) {
 	args = append(args, "error", err)
-	if errors.Is(err, ErrTransient) {
+	if errors.Is(err, ErrBusy) || errors.Is(err, context.DeadlineExceeded) {
 		s.log.WarnContext(ctx, msg, args...)
 		return
 	}
@@ -136,18 +185,44 @@ func wrapUpstream(err error) error {
 	if err == nil {
 		return nil
 	}
+	// A held LightRAG pipeline lock is backpressure, not an upstream failure:
+	// LightRAG answers HTTP 200 in milliseconds throughout. Without this case it
+	// falls through to ErrUpstream -> 502, which the ingest client treats as
+	// permanent (tatara-memory#90, #91).
+	//
+	// ErrBusy, not ErrTransient: an exhausted purge budget means the work is
+	// still doable, we just ran out of time waiting for the lock. The caller
+	// should come back later, which is exactly what 429 + Retry-After says;
+	// 503 would claim the service is unavailable when nothing is down and would
+	// put pure load on the 5xx-ratio alert. Both clients honour Retry-After on
+	// 429 (tatara-memory-repo-ingester#32, tatara-operator#484). This also keeps
+	// the two busy paths coherent: the single-response `status="busy"` envelope
+	// below already maps to ErrBusy (tatara-memory#80), so waiting the full 45s
+	// for that same condition must not come back as a worse class of error.
+	var busy *lightrag.BusyError
+	if errors.As(err, &busy) {
+		return fmt.Errorf("%w: %v", ErrBusy, err)
+	}
 	var he *lightrag.HTTPError
 	if errors.As(err, &he) {
 		switch {
 		case he.Status == http.StatusNotFound:
 			return fmt.Errorf("%w: %v", ErrNotFound, err)
+		case he.Status == http.StatusTooManyRequests:
+			// Explicit upstream backpressure. Previously fell through to the
+			// default branch and became a permanent 502.
+			return fmt.Errorf("%w: %v", ErrBusy, err)
 		case he.Status >= 500:
 			return fmt.Errorf("%w: %v", ErrTransient, err)
 		default:
 			return fmt.Errorf("%w: %v", ErrUpstream, err)
 		}
 	}
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+	if errors.Is(err, context.DeadlineExceeded) {
+		// Ran out of budget under load: retryable backpressure, not a fault.
+		return fmt.Errorf("%w: %v", ErrBusy, err)
+	}
+	if errors.Is(err, context.Canceled) {
 		return fmt.Errorf("%w: %v", ErrTransient, err)
 	}
 	return fmt.Errorf("%w: %v", ErrUpstream, err)
@@ -310,15 +385,16 @@ func (s *Service) deleteMemoryRaw(ctx context.Context, trackID string) error {
 		return wrapUpstream(err)
 	}
 	// LightRAG v1.4.16 returns "deletion_started" (async) or "success" (sync) on accepted deletes.
-	// "busy" means the pipeline lock is held (LightRAG is mid-ingest): transient, so callers
-	// must retry, not fail permanently. Any other status (e.g. "failure") is a logical upstream
+	// "busy" means the pipeline lock is held (LightRAG is mid-ingest): backpressure, so callers
+	// must retry (ErrBusy -> 429 + Retry-After), not fail permanently and not be told the
+	// service is unavailable. Any other status (e.g. "failure") is a logical upstream
 	// rejection even though HTTP returned 200.
 	if resp.Status != "deletion_started" && resp.Status != "success" {
 		if s.tomb != nil {
 			_ = s.tomb.Unmark(ctx, trackID)
 		}
 		if resp.Status == "busy" {
-			return fmt.Errorf("%w: delete returned status=%q", ErrTransient, resp.Status)
+			return fmt.Errorf("%w: delete returned status=%q", ErrBusy, resp.Status)
 		}
 		return fmt.Errorf("%w: delete returned status=%q", ErrUpstream, resp.Status)
 	}
@@ -331,21 +407,32 @@ func (s *Service) deleteMemoryRaw(ctx context.Context, trackID string) error {
 // no-op returning 0.
 func (s *Service) DeleteMemoriesBySources(ctx context.Context, repo string, files []string) (int, error) {
 	start := time.Now()
+	// One budget for the whole batch (see DefaultPurgeBudget): each file's delete
+	// may have to wait out the pipeline lock the previous file's delete took, so
+	// a per-file bound would scale with the file count. The deadline also
+	// propagates into lightrag.DeleteDocs, which sizes its busy wait from it.
+	if s.purgeBudget > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, s.purgeBudget)
+		defer cancel()
+	}
 	total := 0
 	for _, f := range files {
 		n, err := s.DeleteMemoriesBySource(ctx, repo, f)
 		if err != nil {
 			s.incOp("delete_by_sources", err)
 			wrapped := fmt.Errorf("delete memories for %s/%s: %w", repo, f, err)
-			s.logPurgeErr(ctx, "memory.delete_by_sources", wrapped,
+			s.logPurgeErr(ctx, "memory.delete_by_sources.incomplete", wrapped,
 				"action", "delete_memories_by_sources",
 				"repo", repo,
 				"file_path", f,
-				"files_total", len(files),
-				"purged_before_failure", total,
+				"files_count", len(files),
+				"total_purged", total+n,
 				"duration_ms", time.Since(start).Milliseconds(),
 			)
-			return total, wrapped
+			// n is the progress DeleteMemoriesBySource made inside the file that
+			// failed; drop it and the caller under-counts what is already gone.
+			return total + n, wrapped
 		}
 		total += n
 	}

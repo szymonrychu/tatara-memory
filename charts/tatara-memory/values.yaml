@@ -44,9 +44,65 @@ httpWriteTimeout: "240s"
 # acquire. This is the load-bearing bound: when the shared Postgres pool is
 # exhausted (e.g. by a stuck backend, tatara-memory#86), BeginTx now fails
 # fast with this deadline instead of parking the request until the caller
-# gives up, converting a 300s hang + 499 into a fast 503 + Retry-After that
+# gives up, converting a 300s hang + 499 into a fast 429 + Retry-After that
 # the ingest client already retries. "0" disables it.
 ingestCreateJobTimeout: "10s"
+# Budget for one /memories:bulk reconcile purge, end to end, including the time
+# spent waiting out LightRAG's pipeline lock (tatara-memory#90, #91).
+#
+# A LightRAG document delete returns in milliseconds but then holds the pipeline
+# lock for the 6-42s its knowledge-graph rebuild takes (41.85s worst case
+# measured in #90). While it is held LightRAG answers concurrent deletes HTTP
+# 200 with body status="busy". The purge is serial over reconcile files, so
+# file N+1 waits out the lock file N just took - which is why this is one budget
+# for the whole batch rather than a per-file or per-attempt bound.
+#
+# 45s covers a single full lock hold (so nothing is shed that waiting would have
+# saved) and stays under tatara-memory-repo-ingester's 60s HTTP client default.
+# Whatever does not fit comes back as 429 + Retry-After (an exhausted budget is
+# backpressure, not unavailability - tatara-memory#80) with the files already
+# purged cleared from the source index, so the client's retry resumes rather
+# than restarting. Raise it only in step with that client's timeout. "0"
+# disables the bound, leaving the purge governed only by the request context.
+memoryPurgeBudget: "45s"
+
+# --- Admission control on the bulk write routes (tatara-memory#79/#80/#82/#87)
+#
+# One Postgres connection pool is shared by /memories:bulk, /code-graph:bulk,
+# every /code/* read, the ingest worker pool, the analytics worker and /readyz.
+# A single /code-graph:bulk reconcile holds one connection for its whole
+# transaction (measured 50-194s on a large repo), so an unbounded concurrent
+# re-ingest wave could take every connection and starve /memories:bulk's
+# CreateJob until its deadline fired - which the API then reported as 503.
+#
+# The two budgets below bound how many bulk requests execute at once, so the
+# pool always keeps connections for everything else. The app REFUSES TO START
+# if memoriesBulkMaxInFlight + codeGraphBulkMaxInFlight + workerPoolSize is not
+# strictly less than dbMaxOpenConns: a budget that can still exhaust the pool is
+# a limiter that cannot do its job. Defaults: 4 + 2 + 4 = 10 < 20.
+#
+# A request that cannot get a slot within admissionWait is SHED with HTTP 429
+# and a Retry-After header (base admissionRetryAfter, jittered up to +50% per
+# response so a shed wave does not re-arrive in lockstep). 503 is now reserved
+# for genuine upstream unavailability. Clients must treat 429 as retryable and
+# honour Retry-After.
+#
+# "0" disables a budget (unbounded, pre-admission-control behaviour) and skips
+# the oversubscription check for it.
+memoriesBulkMaxInFlight: 4
+codeGraphBulkMaxInFlight: 2
+admissionWait: "5s"
+admissionRetryAfter: "5s"
+
+# Shared Postgres pool limits. Raised from the previous hard-coded 10, which
+# could not fit the admission budgets plus the ingest workers plus reads;
+# tatara-memory#87 measured the Postgres side healthy at 44/100 connections
+# during a shedding burst, so the binding constraint was this client-side cap.
+# Keep replicaCount * dbMaxOpenConns comfortably below the cluster's
+# max_connections.
+dbMaxOpenConns: 20
+dbMaxIdleConns: 5
+
 logLevel: "info"
 otlpEndpoint: ""
 
@@ -92,6 +148,10 @@ prometheusRule:
   additionalLabels: {}
   # Fraction of HTTP responses that may be 5xx before MemoryHigh5xx fires.
   http5xxRatio: 0.05
+  # Bulk requests/s shed with 429 by admission control before
+  # MemoryBulkAdmissionShedding fires. 0.05/s is ~30 shed requests over the
+  # 10m window: a sustained overload, not a single burst.
+  admissionShedRate: 0.05
   # p99 request-latency threshold (seconds) for MemoryRetrievalLatencyHigh.
   # Must stay below 10s: the histogram uses prometheus.DefBuckets whose largest
   # finite bucket is 10s, so p99 saturates there.
@@ -113,7 +173,49 @@ postgres:
   # pgvector ships with the cnpg postgres image. postInitApplicationSQL
   # runs on the tatara_memory database (as the app user) so the extension
   # lives where lightrag's vector store needs it.
+  #
+  # These are cnpg Cluster SPEC values, not workload env config, so the
+  # "no lists / no plain ENVs in values.yaml" rule does not apply to them
+  # (same carve-out postInitApplicationSQL already relies on). Sizes stay
+  # cluster-agnostic: no storageClass is set anywhere, so every volume lands
+  # on the deploying cluster's default StorageClass.
+  #
+  # Every storage field below is REQUIRED and template-validated
+  # (tatara-memory.validatePostgres). Leaving one out is what took the
+  # platform's memory backends down three times, so the chart refuses to
+  # render rather than silently fall back to a cnpg default:
+  #
+  #   2026-07-05  WAL shared the PGDATA volume, filled it, and postgres could
+  #               no longer write; /memories:bulk 503'd (tatara-operator#238).
+  #   2026-07-06  a standby-resync WAL burst overran a 2Gi WAL volume whose
+  #               slot cap already claimed half of it, crashlooping both
+  #               replicas.
+  #   2026-07-25  a diverged replica's orphan replication slot pinned WAL on
+  #               the primary with nothing to bound it (tatara-helmfile#263).
   cluster:
+    instances: 3
+    storage:
+      # PGDATA only. WAL is on its own volume below. cnpg's chart default is
+      # 8Gi; 20Gi is the size the platform's own memory backend has run on
+      # since the 2026-07-05 fill.
+      size: 20Gi
+    walStorage:
+      # A DEDICATED WAL volume. cnpg's chart defaults this to disabled, which
+      # puts pg_wal back on the PGDATA volume - the 2026-07-05 failure. cnpg
+      # accepts adding walStorage to a cluster that never had it, but REJECTS
+      # disabling or shrinking it afterwards, so this is a one-way door.
+      enabled: true
+      size: 10Gi
+    postgresql:
+      parameters:
+        # Caps how much WAL one replication slot may force the primary to
+        # retain for a lagging, stuck, or permanently diverged standby. Past
+        # the cap postgres invalidates that slot (the standby must re-clone)
+        # instead of filling the volume and taking the PRIMARY's writes down
+        # with it. Without this a single orphan slot grows unbounded.
+        # MUST NOT exceed half of walStorage.size (validated at render time):
+        # the other half is what checkpoint WAL and any archive backlog need.
+        max_slot_wal_keep_size: 5120MB
     initdb:
       database: tatara_memory
       owner: tatara_memory

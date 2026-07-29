@@ -10,8 +10,15 @@ package memory_test
 //     purge ops, "user" for everything else) so an alert can scope itself to
 //     user-facing traffic only.
 //  2. every purge failure path emits a structured log line (WARN for
-//     transient/retryable failures, ERROR for hard failures) instead of
-//     failing silently.
+//     backpressure, ERROR for everything else) instead of failing silently.
+//
+// The WARN class is memory.ErrBusy, not memory.ErrTransient. This branch was
+// written before the taxonomy split in tatara-memory#97, when ErrTransient was
+// the only non-permanent class and carried LightRAG's delete status="busy".
+// #97 gave busy its own ErrBusy (429 + Retry-After) and reserved ErrTransient
+// for genuine unavailability (upstream 5xx / unreachable, 503). Since the whole
+// point of the split is "expected backpressure at WARN, real faults at ERROR",
+// the predicate had to follow busy to ErrBusy - see MEMORY.md.
 
 import (
 	"bytes"
@@ -34,7 +41,7 @@ import (
 
 // deleteDocsOverride wraps the fake lightrag client but overrides DeleteDocs
 // so tests can force the two upstream failure shapes DeleteMemoriesBySource
-// must handle: a transient "busy" pipeline-lock response, and a hard HTTP
+// must handle: a "busy" pipeline-lock response (backpressure), and a hard HTTP
 // error status.
 type deleteDocsOverride struct {
 	*fake.Client
@@ -47,6 +54,8 @@ func (w *deleteDocsOverride) DeleteDocs(ctx context.Context, req lightrag.Delete
 		return &lightrag.DeleteDocByIdResponse{Status: "busy", Message: "pipeline busy"}, nil
 	case "httperr":
 		return nil, &lightrag.HTTPError{Status: 400, Path: "/documents/delete_document", Body: "bad request"}
+	case "unavailable":
+		return nil, &lightrag.HTTPError{Status: 502, Path: "/documents/delete_document", Body: "bad gateway"}
 	default:
 		return w.Client.DeleteDocs(ctx, req)
 	}
@@ -220,7 +229,12 @@ func TestDeleteMemoriesBySource_TrackIDsFailure_LogsError(t *testing.T) {
 	require.NotEmpty(t, entry["error"])
 }
 
-func TestDeleteMemoriesBySource_TransientDeleteFailure_LogsWarn(t *testing.T) {
+// A held LightRAG pipeline lock is the one purge failure that is routine under
+// load, so it must log at WARN rather than ERROR. Post-#97 that class is
+// ErrBusy; this test asserted ErrTransient before the merge because that was
+// then where status="busy" landed. Intentional change: the classification moved
+// on main, the WARN intent did not.
+func TestDeleteMemoriesBySource_BusyDeleteFailure_LogsWarn(t *testing.T) {
 	ctx := context.Background()
 	lr := &deleteDocsOverride{Client: fake.New()}
 	tomb := newInMemTombstone()
@@ -236,13 +250,15 @@ func TestDeleteMemoriesBySource_TransientDeleteFailure_LogsWarn(t *testing.T) {
 	lr.mode = "busy"
 	_, err = svc.DeleteMemoriesBySource(ctx, "repoZ", "b.go")
 	require.Error(t, err)
-	require.ErrorIs(t, err, memory.ErrTransient)
+	require.ErrorIs(t, err, memory.ErrBusy)
+	require.NotErrorIs(t, err, memory.ErrTransient,
+		"busy is backpressure (429), not unavailability (503) - tatara-memory#97")
 
 	lines := findLogLine(t, &buf, "memory.delete_by_source")
-	require.NotEmpty(t, lines, "a transient (busy) purge failure must still be logged")
+	require.NotEmpty(t, lines, "a busy purge failure must still be logged")
 	entry := lines[0]
 	require.Equal(t, "WARN", entry["level"],
-		"a transient/retryable purge failure (LightRAG busy) should log at WARN, not ERROR")
+		"expected, retryable purge backpressure (LightRAG busy) should log at WARN, not ERROR")
 	require.Equal(t, "repoZ", entry["repo"])
 	require.Equal(t, "b.go", entry["file_path"])
 }
@@ -271,6 +287,34 @@ func TestDeleteMemoriesBySource_HardDeleteFailure_LogsError(t *testing.T) {
 	require.Equal(t, "ERROR", entry["level"])
 	require.Equal(t, "repoW", entry["repo"])
 	require.Equal(t, "c.go", entry["file_path"])
+}
+
+// The other half of the post-#97 predicate: ErrTransient no longer means
+// "retryable", it means the upstream is genuinely unavailable (5xx /
+// unreachable, 503 on the wire). That is a real fault on the purge path and
+// must reach ERROR, not be muted to WARN by the pre-split predicate.
+func TestDeleteMemoriesBySource_UpstreamUnavailable_LogsError(t *testing.T) {
+	ctx := context.Background()
+	lr := &deleteDocsOverride{Client: fake.New()}
+	tomb := newInMemTombstone()
+	src := newInMemSources()
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	svc := memory.NewServiceWithSources(lr, tomb, src).WithLogger(logger)
+
+	m1, err := svc.CreateMemory(ctx, memory.Memory{Text: "one"})
+	require.NoError(t, err)
+	require.NoError(t, src.Add(ctx, "repoT", "f.go", m1.ID))
+
+	lr.mode = "unavailable"
+	_, err = svc.DeleteMemoriesBySource(ctx, "repoT", "f.go")
+	require.Error(t, err)
+	require.ErrorIs(t, err, memory.ErrTransient)
+
+	lines := findLogLine(t, &buf, "memory.delete_by_source")
+	require.NotEmpty(t, lines)
+	require.Equal(t, "ERROR", lines[0]["level"],
+		"post-#97 ErrTransient is genuine unavailability (503), not routine backpressure - it must not be downgraded to WARN")
 }
 
 func TestDeleteMemoriesBySource_SourceIndexCleanupFailure_LogsError(t *testing.T) {
@@ -305,9 +349,41 @@ func TestDeleteMemoriesBySources_PropagatedFailure_LogsError(t *testing.T) {
 	_, err := svc.DeleteMemoriesBySources(ctx, "repoU", []string{"e.go"})
 	require.Error(t, err)
 
-	lines := findLogLine(t, &buf, "memory.delete_by_sources")
+	// The failure line keeps the ".incomplete" suffix introduced by the purge
+	// budget work (tatara-memory#93) so it is distinguishable from the success
+	// INFO line by message alone; the level is now chosen by logPurgeErr.
+	lines := findLogLine(t, &buf, "memory.delete_by_sources.incomplete")
 	require.NotEmpty(t, lines, "DeleteMemoriesBySources must also log when a per-file purge fails")
 	entry := lines[0]
 	require.Equal(t, "ERROR", entry["level"])
 	require.Equal(t, "repoU", entry["repo"])
+	require.NotEmpty(t, entry["error"])
+	require.Contains(t, entry, "total_purged",
+		"the partial purge count (tatara-memory#93) must survive on the failure line")
+}
+
+// The batch failure line follows the same taxonomy as the per-file one: a
+// propagated ErrBusy is backpressure and logs WARN, so a wide reconcile that
+// simply outruns the pipeline lock does not fill the log with ERRORs.
+func TestDeleteMemoriesBySources_PropagatedBusy_LogsWarn(t *testing.T) {
+	ctx := context.Background()
+	lr := &deleteDocsOverride{Client: fake.New()}
+	tomb := newInMemTombstone()
+	src := newInMemSources()
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	svc := memory.NewServiceWithSources(lr, tomb, src).WithLogger(logger)
+
+	m1, err := svc.CreateMemory(ctx, memory.Memory{Text: "one"})
+	require.NoError(t, err)
+	require.NoError(t, src.Add(ctx, "repoS", "g.go", m1.ID))
+
+	lr.mode = "busy"
+	_, err = svc.DeleteMemoriesBySources(ctx, "repoS", []string{"g.go"})
+	require.Error(t, err)
+	require.ErrorIs(t, err, memory.ErrBusy)
+
+	lines := findLogLine(t, &buf, "memory.delete_by_sources.incomplete")
+	require.NotEmpty(t, lines)
+	require.Equal(t, "WARN", lines[0]["level"])
 }

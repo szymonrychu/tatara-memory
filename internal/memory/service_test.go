@@ -269,11 +269,9 @@ func TestServiceErrTransient(t *testing.T) {
 		require.ErrorIs(t, err, memory.ErrTransient)
 	})
 
-	t.Run("context.DeadlineExceeded yields ErrTransient", func(t *testing.T) {
-		svc := memory.NewService(&errClient{err: context.DeadlineExceeded}, nil)
-		_, err := svc.GetMemory(ctx, "x")
-		require.ErrorIs(t, err, memory.ErrTransient)
-	})
+	// context.DeadlineExceeded moved to ErrBusy (429) in tatara-memory#80:
+	// running out of time budget is saturation, not unavailability. Covered by
+	// TestWrapUpstream_DeadlineExceededIsBackpressure.
 
 	t.Run("context.Canceled yields ErrTransient", func(t *testing.T) {
 		svc := memory.NewService(&errClient{err: context.Canceled}, nil)

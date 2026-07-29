@@ -6,6 +6,8 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/szymonrychu/tatara-memory/internal/memory"
 )
 
 type config struct {
@@ -20,6 +22,14 @@ type config struct {
 	BetweennessMaxNodes    int
 	HTTPWriteTimeout       time.Duration
 	IngestCreateJobTimeout time.Duration
+	MemoryPurgeBudget      time.Duration
+
+	DBMaxOpenConns           int
+	DBMaxIdleConns           int
+	MemoriesBulkMaxInFlight  int
+	CodeGraphBulkMaxInFlight int
+	AdmissionWait            time.Duration
+	AdmissionRetryAfter      time.Duration
 }
 
 func envOr(key, def string) string {
@@ -74,6 +84,34 @@ func loadConfig(args []string) (config, error) {
 	if err != nil {
 		return config{}, err
 	}
+	purgeBudget, err := envDurationOr("MEMORY_PURGE_BUDGET", memory.DefaultPurgeBudget)
+	if err != nil {
+		return config{}, err
+	}
+	maxOpenConns, err := envIntOr("DB_MAX_OPEN_CONNS", 20)
+	if err != nil {
+		return config{}, err
+	}
+	maxIdleConns, err := envIntOr("DB_MAX_IDLE_CONNS", 5)
+	if err != nil {
+		return config{}, err
+	}
+	memoriesBulkMaxInFlight, err := envIntOr("MEMORIES_BULK_MAX_IN_FLIGHT", 4)
+	if err != nil {
+		return config{}, err
+	}
+	codeGraphBulkMaxInFlight, err := envIntOr("CODE_GRAPH_BULK_MAX_IN_FLIGHT", 2)
+	if err != nil {
+		return config{}, err
+	}
+	admissionWait, err := envDurationOr("ADMISSION_WAIT", 5*time.Second)
+	if err != nil {
+		return config{}, err
+	}
+	admissionRetryAfter, err := envDurationOr("ADMISSION_RETRY_AFTER", 5*time.Second)
+	if err != nil {
+		return config{}, err
+	}
 	cfg := config{
 		HTTPAddr:               envOr("HTTP_ADDR", ":8080"),
 		PGDSN:                  envOr("PG_DSN", ""),
@@ -86,6 +124,14 @@ func loadConfig(args []string) (config, error) {
 		BetweennessMaxNodes:    betweennessMaxNodes,
 		HTTPWriteTimeout:       writeTimeout,
 		IngestCreateJobTimeout: createJobTimeout,
+		MemoryPurgeBudget:      purgeBudget,
+
+		DBMaxOpenConns:           maxOpenConns,
+		DBMaxIdleConns:           maxIdleConns,
+		MemoriesBulkMaxInFlight:  memoriesBulkMaxInFlight,
+		CodeGraphBulkMaxInFlight: codeGraphBulkMaxInFlight,
+		AdmissionWait:            admissionWait,
+		AdmissionRetryAfter:      admissionRetryAfter,
 	}
 
 	fs := flag.NewFlagSet("tatara-memory", flag.ContinueOnError)
@@ -100,6 +146,13 @@ func loadConfig(args []string) (config, error) {
 	fs.IntVar(&cfg.BetweennessMaxNodes, "betweenness-max-nodes", cfg.BetweennessMaxNodes, "Max graph nodes for betweenness centrality (0 = default 5000)")
 	fs.DurationVar(&cfg.HTTPWriteTimeout, "http-write-timeout", cfg.HTTPWriteTimeout, "http.Server WriteTimeout: a raw socket write deadline armed before the handler runs, NOT a handler-abort bound (does not cancel r.Context()); code-graph:bulk opts out of it explicitly (0 disables)")
 	fs.DurationVar(&cfg.IngestCreateJobTimeout, "ingest-create-job-timeout", cfg.IngestCreateJobTimeout, "Deadline for /memories:bulk's CreateJob transaction, including DB pool acquire (0 disables)")
+	fs.DurationVar(&cfg.MemoryPurgeBudget, "memory-purge-budget", cfg.MemoryPurgeBudget, "Budget for one /memories:bulk reconcile purge, including waiting out LightRAG's pipeline lock (0 disables)")
+	fs.IntVar(&cfg.DBMaxOpenConns, "db-max-open-conns", cfg.DBMaxOpenConns, "Max open Postgres connections in the shared pool")
+	fs.IntVar(&cfg.DBMaxIdleConns, "db-max-idle-conns", cfg.DBMaxIdleConns, "Max idle Postgres connections kept in the shared pool")
+	fs.IntVar(&cfg.MemoriesBulkMaxInFlight, "memories-bulk-max-in-flight", cfg.MemoriesBulkMaxInFlight, "Admission-control budget: concurrent POST /memories:bulk requests (0 disables)")
+	fs.IntVar(&cfg.CodeGraphBulkMaxInFlight, "code-graph-bulk-max-in-flight", cfg.CodeGraphBulkMaxInFlight, "Admission-control budget: concurrent POST /code-graph:bulk requests (0 disables)")
+	fs.DurationVar(&cfg.AdmissionWait, "admission-wait", cfg.AdmissionWait, "How long a bulk request may queue for an admission slot before it is shed with 429")
+	fs.DurationVar(&cfg.AdmissionRetryAfter, "admission-retry-after", cfg.AdmissionRetryAfter, "Base Retry-After advertised on a shed (429) response; jittered up to +50% per response")
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
 	}
@@ -124,6 +177,43 @@ func (c config) validate() error {
 	}
 	if c.IngestCreateJobTimeout < 0 {
 		return fmt.Errorf("ingest-create-job-timeout must be >= 0")
+	}
+	if c.MemoryPurgeBudget < 0 {
+		return fmt.Errorf("memory-purge-budget must be >= 0")
+	}
+	if c.DBMaxOpenConns < 1 {
+		return fmt.Errorf("db-max-open-conns must be >= 1")
+	}
+	if c.DBMaxIdleConns < 0 || c.DBMaxIdleConns > c.DBMaxOpenConns {
+		return fmt.Errorf("db-max-idle-conns must be between 0 and db-max-open-conns (%d)", c.DBMaxOpenConns)
+	}
+	if c.MemoriesBulkMaxInFlight < 0 {
+		return fmt.Errorf("memories-bulk-max-in-flight must be >= 0")
+	}
+	if c.CodeGraphBulkMaxInFlight < 0 {
+		return fmt.Errorf("code-graph-bulk-max-in-flight must be >= 0")
+	}
+	if c.AdmissionWait < 0 {
+		return fmt.Errorf("admission-wait must be >= 0")
+	}
+	if c.AdmissionRetryAfter < 0 {
+		return fmt.Errorf("admission-retry-after must be >= 0")
+	}
+	// The admission budgets exist to keep the shared Postgres pool from being
+	// oversubscribed (tatara-memory#82: a long /code-graph:bulk transaction
+	// holds one connection for its whole life). Every admitted bulk request
+	// plus every ingest worker can hold a connection simultaneously, so if
+	// those alone can exhaust the pool the budgets are not actually protecting
+	// anything - reads, /readyz and the worker pool would starve exactly as
+	// before. Refuse to start on such a configuration rather than shipping a
+	// limiter that cannot do its job. Skipped when either budget is disabled
+	// (0 = unbounded, an explicit operator opt-out).
+	if c.MemoriesBulkMaxInFlight > 0 && c.CodeGraphBulkMaxInFlight > 0 {
+		if reserved := c.MemoriesBulkMaxInFlight + c.CodeGraphBulkMaxInFlight + c.WorkerPoolSize; reserved >= c.DBMaxOpenConns {
+			return fmt.Errorf(
+				"admission budgets oversubscribe the DB pool: memories-bulk-max-in-flight(%d) + code-graph-bulk-max-in-flight(%d) + worker-pool-size(%d) = %d must be < db-max-open-conns(%d)",
+				c.MemoriesBulkMaxInFlight, c.CodeGraphBulkMaxInFlight, c.WorkerPoolSize, reserved, c.DBMaxOpenConns)
+		}
 	}
 	return nil
 }
