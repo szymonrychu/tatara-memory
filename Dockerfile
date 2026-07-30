@@ -1,6 +1,9 @@
 # syntax=docker/dockerfile:1.7
 
-ARG GO_VERSION=1.25
+# Must satisfy go.mod's `go` directive: the builder runs with
+# GOTOOLCHAIN=local, so a builder older than go.mod fails `go mod download`
+# outright rather than fetching a newer toolchain.
+ARG GO_VERSION=1.26.3
 FROM golang:${GO_VERSION}-alpine AS builder
 
 WORKDIR /src
