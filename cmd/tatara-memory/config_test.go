@@ -34,6 +34,19 @@ func TestLoadConfig_DBWaitDefaults(t *testing.T) {
 	require.Equal(t, 2*time.Second, cfg.DBWaitInterval)
 }
 
+// TestLoadConfig_PGLockTimeoutDefault pins tatara-memory#98's bound. 30s is a
+// LOCK WAIT, not a transaction duration: /code-graph:bulk's own reconcile
+// legitimately runs 50-194s, but none of that is spent queued behind another
+// session, so waiting this long means someone else's transaction is stuck.
+func TestLoadConfig_PGLockTimeoutDefault(t *testing.T) {
+	os.Clearenv()
+	cfg, err := loadConfig([]string{})
+	require.NoError(t, err)
+	require.Equal(t, 30*time.Second, cfg.PGLockTimeout)
+	require.Less(t, cfg.PGLockTimeout, cfg.PGStatementTimeout,
+		"a lock wait must be cut short well before the statement budget, or lock_timeout adds nothing")
+}
+
 func TestLoadConfig_DBWaitConfigurable(t *testing.T) {
 	os.Clearenv()
 	t.Setenv("DB_WAIT_TIMEOUT", "10m")

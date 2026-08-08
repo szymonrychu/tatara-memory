@@ -85,6 +85,7 @@ DB_CONN_MAX_LIFETIME: {{ .Values.dbConnMaxLifetime | quote }}
 DB_CONN_MAX_IDLE_TIME: {{ .Values.dbConnMaxIdleTime | quote }}
 PG_STATEMENT_TIMEOUT: {{ .Values.pgStatementTimeout | quote }}
 PG_IDLE_IN_TRANSACTION_TIMEOUT: {{ .Values.pgIdleInTransactionTimeout | quote }}
+PG_LOCK_TIMEOUT: {{ .Values.pgLockTimeout | quote }}
 ANALYTICS_MAX_CONCURRENCY: {{ .Values.analyticsMaxConcurrency | quote }}
 ANALYTICS_RECOMPUTE_TIMEOUT: {{ .Values.analyticsRecomputeTimeout | quote }}
 DB_WAIT_TIMEOUT: {{ .Values.dbWaitTimeout | quote }}

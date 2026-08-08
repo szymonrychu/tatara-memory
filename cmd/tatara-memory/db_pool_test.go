@@ -28,6 +28,32 @@ func TestPGConnConfig_AppliesSessionTimeouts(t *testing.T) {
 		"idle_in_transaction_session_timeout must be sent in ms: it is what reaps a transaction whose client is gone")
 }
 
+// TestPGConnConfig_AppliesLockTimeout guards tatara-memory#98: statement_timeout
+// bounds how long a statement RUNS, but a statement blocked on a lock is not
+// running - it is queued behind another session's transaction doing no work at
+// all. lock_timeout is the only bound that distinguishes the two, and there was
+// none.
+func TestPGConnConfig_AppliesLockTimeout(t *testing.T) {
+	c, err := pgConnConfig("postgres://u:p@h:5432/d?sslmode=disable",
+		config{PGLockTimeout: 30 * time.Second})
+	require.NoError(t, err)
+	require.Equal(t, "30000", c.RuntimeParams["lock_timeout"],
+		"lock_timeout must be sent in ms so a write can never queue on a lock indefinitely")
+}
+
+func TestPGConnConfig_DSNLockTimeoutOverrideWins(t *testing.T) {
+	c, err := pgConnConfig("postgres://u:p@h:5432/d?sslmode=disable&lock_timeout=9000",
+		config{PGLockTimeout: 30 * time.Second})
+	require.NoError(t, err)
+	require.Equal(t, "9000", c.RuntimeParams["lock_timeout"])
+}
+
+func TestPGConnConfig_ZeroDisablesLockTimeout(t *testing.T) {
+	c, err := pgConnConfig("postgres://u:p@h:5432/d?sslmode=disable", config{})
+	require.NoError(t, err)
+	require.NotContains(t, c.RuntimeParams, "lock_timeout")
+}
+
 func TestPGConnConfig_DSNOverrideWins(t *testing.T) {
 	cfg := config{PGStatementTimeout: 5 * time.Minute, PGIdleInTxTimeout: 2 * time.Minute}
 	c, err := pgConnConfig(
@@ -110,6 +136,7 @@ func TestConfigValidate_RejectsIncoherentPoolBounds(t *testing.T) {
 		"negative idle time":    func(c *config) { c.DBConnMaxIdleTime = -time.Second },
 		"negative stmt":         func(c *config) { c.PGStatementTimeout = -time.Second },
 		"negative idle in tx":   func(c *config) { c.PGIdleInTxTimeout = -time.Second },
+		"negative lock timeout": func(c *config) { c.PGLockTimeout = -time.Second },
 		"negative recompute":    func(c *config) { c.AnalyticsRecomputeTimeout = -time.Second },
 		"unset analytics conc":  func(c *config) { c.AnalyticsMaxConcurrency = 0 },
 		"negative analytics cc": func(c *config) { c.AnalyticsMaxConcurrency = -1 },

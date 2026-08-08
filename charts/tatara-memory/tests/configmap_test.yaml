@@ -51,6 +51,9 @@ tests:
           path: data.PG_STATEMENT_TIMEOUT
       - isNotNullOrEmpty:
           path: data.PG_IDLE_IN_TRANSACTION_TIMEOUT
+      - equal:
+          path: data.PG_LOCK_TIMEOUT
+          value: "30s"
       - isNotNullOrEmpty:
           path: data.ANALYTICS_MAX_CONCURRENCY
       - isNotNullOrEmpty:

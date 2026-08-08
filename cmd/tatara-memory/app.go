@@ -170,6 +170,20 @@ func pgConnConfig(dsn string, cfg config) (*pgx.ConnConfig, error) {
 			connCfg.RuntimeParams["idle_in_transaction_session_timeout"] = pgTimeoutMillis(cfg.PGIdleInTxTimeout)
 		}
 	}
+	// lock_timeout is the bound the other two cannot provide (tatara-memory#98).
+	// statement_timeout measures how long a statement RUNS; a statement queued
+	// behind another session's row locks is not running, it is waiting, and it
+	// can wait for as long as that session lives. In the incident an abandoned
+	// tatara_memory transaction on mem-mtg-pg-1 sat open for 89 minutes and
+	// counting, and every /code-graph:bulk write for mtg-decks queued behind it
+	// doing zero work until the ingester gave up 900s later - three times, then
+	// BackoffLimitExceeded. Reads never noticed, because MVCC readers do not
+	// block on writers.
+	if cfg.PGLockTimeout > 0 {
+		if _, ok := connCfg.RuntimeParams["lock_timeout"]; !ok {
+			connCfg.RuntimeParams["lock_timeout"] = pgTimeoutMillis(cfg.PGLockTimeout)
+		}
+	}
 	return connCfg, nil
 }
 

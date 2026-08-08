@@ -40,6 +40,10 @@ type config struct {
 	DBConnMaxIdleTime  time.Duration
 	PGStatementTimeout time.Duration
 	PGIdleInTxTimeout  time.Duration
+	// PGLockTimeout bounds how long a statement may QUEUE for a lock another
+	// session holds, which statement_timeout does not distinguish from real work
+	// (tatara-memory#98).
+	PGLockTimeout time.Duration
 
 	// Startup database wait (tatara-memory#102). DBWaitTimeout is the total
 	// budget, 0 meaning unlimited; DBWaitInterval is the FIRST retry interval,
@@ -159,6 +163,17 @@ func loadConfig(args []string) (config, error) {
 	if err != nil {
 		return config{}, err
 	}
+	// A LOCK WAIT, not a transaction duration. /code-graph:bulk's reconcile
+	// legitimately runs 50-194s, but none of that time is spent queued behind
+	// another session's locks, so a 30s wait means the holder is stuck rather
+	// than slow. Deliberately far below statement_timeout: the point is to fail
+	// a blocked write fast enough that the caller can retry inside its own
+	// timeout, instead of holding an admission slot and a pool connection for
+	// nothing (tatara-memory#98).
+	pgLockTimeout, err := envDurationOr("PG_LOCK_TIMEOUT", 30*time.Second)
+	if err != nil {
+		return config{}, err
+	}
 	// 0 = wait for Postgres for as long as the process lives. The old behaviour
 	// was a hardcoded 60s budget that exited the process on expiry, which made
 	// the API outage outlast the database outage that caused it
@@ -211,6 +226,7 @@ func loadConfig(args []string) (config, error) {
 		DBConnMaxIdleTime:         dbConnMaxIdleTime,
 		PGStatementTimeout:        pgStatementTimeout,
 		PGIdleInTxTimeout:         pgIdleInTxTimeout,
+		PGLockTimeout:             pgLockTimeout,
 		DBWaitTimeout:             dbWaitTimeout,
 		DBWaitInterval:            dbWaitInterval,
 		AnalyticsMaxConcurrency:   analyticsMaxConcurrency,
@@ -240,6 +256,7 @@ func loadConfig(args []string) (config, error) {
 	fs.DurationVar(&cfg.DBConnMaxIdleTime, "db-conn-max-idle-time", cfg.DBConnMaxIdleTime, "Max idle time of a pooled Postgres connection before it is closed (0 = unlimited)")
 	fs.DurationVar(&cfg.PGStatementTimeout, "pg-statement-timeout", cfg.PGStatementTimeout, "Server-side statement_timeout applied to every connection (0 disables)")
 	fs.DurationVar(&cfg.PGIdleInTxTimeout, "pg-idle-in-transaction-timeout", cfg.PGIdleInTxTimeout, "Server-side idle_in_transaction_session_timeout applied to every connection (0 disables)")
+	fs.DurationVar(&cfg.PGLockTimeout, "pg-lock-timeout", cfg.PGLockTimeout, "Server-side lock_timeout applied to every connection: how long a statement may queue for a lock another session holds (0 disables)")
 	fs.DurationVar(&cfg.DBWaitTimeout, "db-wait-timeout", cfg.DBWaitTimeout, "Total budget for the startup wait on Postgres (0 = wait for as long as the process lives; the process never exits on expiry, it stays unready)")
 	fs.DurationVar(&cfg.DBWaitInterval, "db-wait-interval", cfg.DBWaitInterval, "First retry interval for the startup wait on Postgres; doubles up to 30s")
 	fs.IntVar(&cfg.AnalyticsMaxConcurrency, "analytics-max-concurrency", cfg.AnalyticsMaxConcurrency, "Max concurrent code-graph analytics recomputes; each holds one pooled connection")
@@ -301,6 +318,9 @@ func (c config) validate() error {
 	}
 	if c.PGIdleInTxTimeout < 0 {
 		return fmt.Errorf("pg-idle-in-transaction-timeout must be >= 0")
+	}
+	if c.PGLockTimeout < 0 {
+		return fmt.Errorf("pg-lock-timeout must be >= 0")
 	}
 	if c.DBWaitTimeout < 0 {
 		return fmt.Errorf("db-wait-timeout must be >= 0")

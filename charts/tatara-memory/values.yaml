@@ -137,6 +137,26 @@ dbConnMaxIdleTime: "5m"
 # "0" disables either one.
 pgStatementTimeout: "5m"
 pgIdleInTransactionTimeout: "2m"
+# pgLockTimeout is the bound the other two cannot give (tatara-memory#98).
+# statement_timeout measures how long a statement RUNS; a statement queued
+# behind another session's row locks is not running, so it can queue for as
+# long as that session lives. In the incident an abandoned tatara_memory
+# transaction on mem-mtg-pg-1 stayed open for 89 minutes and counting, and
+# every /code-graph:bulk write for mtg-decks queued behind it doing zero work
+# until the ingester gave up 900s later - three times, then
+# BackoffLimitExceeded. Reads never noticed, because MVCC readers do not block
+# on writers.
+#
+# 30s is a LOCK WAIT, not a transaction duration: /code-graph:bulk's own
+# reconcile legitimately runs 50-194s, but none of that is spent queued behind
+# another session, so waiting this long means the holder is stuck rather than
+# slow. Well below pgStatementTimeout on purpose, so a blocked write fails
+# early enough for the caller to retry inside its own timeout instead of
+# holding an admission slot and a pool connection for nothing. Expect the
+# background analytics recompute to be the usual loser of a real race with a
+# long push; it leaves the repo dirty and retries on the next tick. "0"
+# disables it.
+pgLockTimeout: "30s"
 # Max concurrent code-graph analytics recomputes. Each in-flight recompute holds
 # one pooled connection for its write transaction, so this is a term in the
 # oversubscription check above. It must be an explicit number: the worker's own
