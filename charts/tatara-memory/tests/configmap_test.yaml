@@ -55,6 +55,12 @@ tests:
           path: data.ANALYTICS_MAX_CONCURRENCY
       - isNotNullOrEmpty:
           path: data.ANALYTICS_RECOMPUTE_TIMEOUT
+      - equal:
+          path: data.DB_WAIT_TIMEOUT
+          value: "0"
+      - equal:
+          path: data.DB_WAIT_INTERVAL
+          value: "2s"
       - isNotNullOrEmpty:
           path: data.LOG_LEVEL
   # The shipped defaults are the configuration the app boots with, and the app

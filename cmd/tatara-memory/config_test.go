@@ -20,6 +20,35 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	require.Equal(t, "info", cfg.LogLevel)
 }
 
+// TestLoadConfig_DBWaitDefaults pins the default that removes the crash loop in
+// tatara-memory#102: the startup wait on Postgres is UNLIMITED unless an
+// operator asks otherwise. The old behaviour was a hardcoded, non-configurable
+// 60s budget that ended in os.Exit(1), so a 4-minute database outage became an
+// 8-minute API outage on CrashLoopBackOff's slower backoff.
+func TestLoadConfig_DBWaitDefaults(t *testing.T) {
+	os.Clearenv()
+	cfg, err := loadConfig([]string{})
+	require.NoError(t, err)
+	require.Equal(t, time.Duration(0), cfg.DBWaitTimeout,
+		"the default must be an unlimited wait, not a fixed budget that exits the process")
+	require.Equal(t, 2*time.Second, cfg.DBWaitInterval)
+}
+
+func TestLoadConfig_DBWaitConfigurable(t *testing.T) {
+	os.Clearenv()
+	t.Setenv("DB_WAIT_TIMEOUT", "10m")
+	t.Setenv("DB_WAIT_INTERVAL", "5s")
+	cfg, err := loadConfig([]string{})
+	require.NoError(t, err)
+	require.Equal(t, 10*time.Minute, cfg.DBWaitTimeout)
+	require.Equal(t, 5*time.Second, cfg.DBWaitInterval)
+
+	cfg, err = loadConfig([]string{"--db-wait-timeout", "30s", "--db-wait-interval", "1s"})
+	require.NoError(t, err)
+	require.Equal(t, 30*time.Second, cfg.DBWaitTimeout)
+	require.Equal(t, time.Second, cfg.DBWaitInterval)
+}
+
 func TestLoadConfig_EnvOverrides(t *testing.T) {
 	os.Clearenv()
 	t.Setenv("HTTP_ADDR", ":9090")

@@ -98,6 +98,7 @@ func TestConfigValidate_RejectsIncoherentPoolBounds(t *testing.T) {
 			DBMaxOpenConns:          10,
 			DBMaxIdleConns:          2,
 			AnalyticsMaxConcurrency: 1,
+			DBWaitInterval:          2 * time.Second,
 		}
 	}
 	require.NoError(t, base().validate())
@@ -112,6 +113,11 @@ func TestConfigValidate_RejectsIncoherentPoolBounds(t *testing.T) {
 		"negative recompute":    func(c *config) { c.AnalyticsRecomputeTimeout = -time.Second },
 		"unset analytics conc":  func(c *config) { c.AnalyticsMaxConcurrency = 0 },
 		"negative analytics cc": func(c *config) { c.AnalyticsMaxConcurrency = -1 },
+		"negative db wait":      func(c *config) { c.DBWaitTimeout = -time.Second },
+		// A non-positive retry interval would hot-loop the startup wait against
+		// a database that is already struggling (tatara-memory#102).
+		"zero db wait interval":     func(c *config) { c.DBWaitInterval = 0 },
+		"negative db wait interval": func(c *config) { c.DBWaitInterval = -time.Second },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
