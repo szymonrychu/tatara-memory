@@ -137,6 +137,26 @@ dbConnMaxIdleTime: "5m"
 # "0" disables either one.
 pgStatementTimeout: "5m"
 pgIdleInTransactionTimeout: "2m"
+# pgLockTimeout is the bound the other two cannot give (tatara-memory#98).
+# statement_timeout measures how long a statement RUNS; a statement queued
+# behind another session's row locks is not running, so it can queue for as
+# long as that session lives. In the incident an abandoned tatara_memory
+# transaction on mem-mtg-pg-1 stayed open for 89 minutes and counting, and
+# every /code-graph:bulk write for mtg-decks queued behind it doing zero work
+# until the ingester gave up 900s later - three times, then
+# BackoffLimitExceeded. Reads never noticed, because MVCC readers do not block
+# on writers.
+#
+# 30s is a LOCK WAIT, not a transaction duration: /code-graph:bulk's own
+# reconcile legitimately runs 50-194s, but none of that is spent queued behind
+# another session, so waiting this long means the holder is stuck rather than
+# slow. Well below pgStatementTimeout on purpose, so a blocked write fails
+# early enough for the caller to retry inside its own timeout instead of
+# holding an admission slot and a pool connection for nothing. Expect the
+# background analytics recompute to be the usual loser of a real race with a
+# long push; it leaves the repo dirty and retries on the next tick. "0"
+# disables it.
+pgLockTimeout: "30s"
 # Max concurrent code-graph analytics recomputes. Each in-flight recompute holds
 # one pooled connection for its write transaction, so this is a term in the
 # oversubscription check above. It must be an explicit number: the worker's own
@@ -151,6 +171,26 @@ analyticsMaxConcurrency: 2
 # incident's own recompute took 76.6s, so 10m is ~8x the real worst case: a run
 # that hits this is wedged, not slow. "0" disables it.
 analyticsRecomputeTimeout: "10m"
+
+# --- Startup wait on Postgres (tatara-memory#102)
+#
+# The incident: all three mem-* stacks are re-rendered at 03:30Z every 86400s,
+# which bounces every Postgres, Neo4j and LightRAG pod NotReady for 4-8 min.
+# The API's startup gate was a hardcoded, non-configurable 60s wait whose expiry
+# exited the process, so the kubelet took over the retrying with CrashLoopBackOff
+# (10 -> 20 -> 40 -> 80 -> 160 -> 300s) - strictly slower than the app's own poll
+# loop. Six restarts per pod, and the API stayed down LONGER than the database
+# outage that caused it.
+#
+# The wait now runs behind the readiness probe: the container serves /healthz
+# throughout (so the kubelet leaves it alone) and reports 503 on /readyz until
+# Postgres is reachable and the schema is migrated. "0" means wait for as long
+# as the pod lives, which is the recommended setting - an unready pod holds the
+# rollout and keeps the previous ReplicaSet serving, which is what you want. A
+# positive value only stops the retrying; the process still never exits.
+dbWaitTimeout: "0"
+# First retry interval; the app doubles it up to 30s.
+dbWaitInterval: "2s"
 
 
 logLevel: "info"
