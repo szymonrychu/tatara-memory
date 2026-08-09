@@ -34,9 +34,9 @@ func run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := a.migrate(ctx); err != nil {
-		return err
-	}
+	// Migrations moved into the background startup path (tatara-memory#102):
+	// running them here made Postgres a hard start-up dependency a second time,
+	// so a database that was merely slow to come back still exited the process.
 	a.log.Info("starting", "action", "service_start", "version", version.Version, "addr", cfg.HTTPAddr)
 
 	ln, err := newListener(cfg.HTTPAddr)

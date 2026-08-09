@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,16 +34,53 @@ type okDriver struct{}
 
 func (okDriver) Open(string) (driver.Conn, error) { return okConn{}, nil }
 
+// okConn models a database that is simply fine. It has to be able to run the
+// schema migrations, because tatara-memory#102 moved them off the process's
+// critical path and behind the readiness gate: an "always OK" database that
+// cannot migrate would leave the app permanently unready.
 type okConn struct{}
 
 func (okConn) Prepare(string) (driver.Stmt, error) { return okStmt{}, nil }
 func (okConn) Close() error                        { return nil }
-func (okConn) Begin() (driver.Tx, error)           { return nil, driver.ErrSkip }
+func (okConn) Begin() (driver.Tx, error)           { return okTx{}, nil }
 func (okConn) Ping(_ context.Context) error        { return nil }
 func (okConn) Exec(string, []driver.Value) (driver.Result, error) {
 	return driver.RowsAffected(0), nil
 }
+
+// QueryContext answers the one query shape the migration runner reads back:
+// memory.Migrate's "SELECT EXISTS (... memory_schema_migrations ...)" probe,
+// whose Scan needs an actual row. Everything else stays an empty result set.
+func (okConn) QueryContext(_ context.Context, q string, _ []driver.NamedValue) (driver.Rows, error) {
+	if strings.Contains(q, "SELECT EXISTS") {
+		return &boolRows{v: false}, nil
+	}
+	return okRows{}, nil
+}
+
 func (okConn) Query(string, []driver.Value) (driver.Rows, error) { return okRows{}, nil }
+
+type okTx struct{}
+
+func (okTx) Commit() error   { return nil }
+func (okTx) Rollback() error { return nil }
+
+// boolRows is a single-row, single-column result carrying a boolean.
+type boolRows struct {
+	v    bool
+	done bool
+}
+
+func (*boolRows) Columns() []string { return []string{"exists"} }
+func (*boolRows) Close() error      { return nil }
+func (r *boolRows) Next(dest []driver.Value) error {
+	if r.done {
+		return io.EOF
+	}
+	r.done = true
+	dest[0] = r.v
+	return nil
+}
 
 type okStmt struct{}
 
@@ -105,6 +143,15 @@ func TestApp_EndToEnd(t *testing.T) {
 	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	// /readyz is gated on the background startup (tatara-memory#102), so wait
+	// for it rather than racing it.
+	select {
+	case <-a.startupDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("background startup never completed")
+	}
+	require.NoError(t, a.startupStatus())
 
 	resp, err = http.Get("http://" + ln.Addr().String() + "/readyz") //nolint:noctx
 	require.NoError(t, err)

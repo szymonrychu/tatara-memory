@@ -22,7 +22,7 @@ func mapServiceError(w http.ResponseWriter, r *http.Request, err error) {
 		WriteError(w, http.StatusBadRequest, "invalid input", reqID)
 	case errors.Is(err, memory.ErrNotFound):
 		WriteError(w, http.StatusNotFound, "not found", reqID)
-	case errors.Is(err, memory.ErrBusy), errors.Is(err, context.DeadlineExceeded):
+	case errors.Is(err, memory.ErrBusy), errors.Is(err, context.DeadlineExceeded), isDBLockContention(err):
 		// Backpressure, not failure: either an upstream told us it is busy, or
 		// one of our own deadlines fired because the service is saturated
 		// (e.g. CreateJob waiting on an exhausted DB pool). The request can
@@ -37,6 +37,18 @@ func mapServiceError(w http.ResponseWriter, r *http.Request, err error) {
 		// 503 is reserved for this - a real server-side fault worth alerting on.
 		w.Header().Set("Retry-After", "5")
 		WriteError(w, http.StatusServiceUnavailable, "upstream temporarily unavailable", reqID)
+	case isDBUnavailable(err):
+		// The same class as ErrTransient, arriving without a domain wrapper: the
+		// code-graph store hands pgx errors back verbatim, so a Postgres that is
+		// down, restarting or out of connection slots used to surface as a 500
+		// "internal error" - non-retryable to the caller and indistinguishable
+		// from a bug on the 5xx-ratio alert (tatara-memory#102).
+		loggerFromContext(r.Context()).WarnContext(r.Context(), "database unavailable",
+			"request_id", reqID,
+			"error", err,
+		)
+		w.Header().Set("Retry-After", "5")
+		WriteError(w, http.StatusServiceUnavailable, "database temporarily unavailable", reqID)
 	case errors.Is(err, context.Canceled):
 		// Client disconnected mid-request (499 Client Closed Request). This is
 		// not a server error; writing 499 keeps it off the 5xx dashboards and

@@ -37,6 +37,13 @@ type app struct {
 	reaper          *memory.Reaper
 	reaperCancel    context.CancelFunc
 	analyticsCancel context.CancelFunc
+
+	// Deferred, database-dependent startup (tatara-memory#102). startup is the
+	// readiness gate /readyz consults; startupDone is closed when awaitDatabase
+	// returns; startupCancel ends the wait on shutdown.
+	startup       *startupGate
+	startupDone   chan struct{}
+	startupCancel context.CancelFunc
 }
 
 // shutdown drains the HTTP server, stops the ingest pool, and closes the DB.
@@ -49,6 +56,17 @@ func (a *app) shutdown(ctx context.Context) error {
 	}
 	if a.reaperCancel != nil {
 		a.reaperCancel()
+	}
+	// End the startup wait before closing the DB it is probing, so a pod that
+	// is still waiting for Postgres drains as cleanly as a healthy one.
+	if a.startupCancel != nil {
+		a.startupCancel()
+	}
+	if a.startupDone != nil {
+		select {
+		case <-a.startupDone:
+		case <-shutdownCtx.Done():
+		}
 	}
 	var errs []error
 	if a.server != nil {
@@ -152,6 +170,20 @@ func pgConnConfig(dsn string, cfg config) (*pgx.ConnConfig, error) {
 			connCfg.RuntimeParams["idle_in_transaction_session_timeout"] = pgTimeoutMillis(cfg.PGIdleInTxTimeout)
 		}
 	}
+	// lock_timeout is the bound the other two cannot provide (tatara-memory#98).
+	// statement_timeout measures how long a statement RUNS; a statement queued
+	// behind another session's row locks is not running, it is waiting, and it
+	// can wait for as long as that session lives. In the incident an abandoned
+	// tatara_memory transaction on mem-mtg-pg-1 sat open for 89 minutes and
+	// counting, and every /code-graph:bulk write for mtg-decks queued behind it
+	// doing zero work until the ingester gave up 900s later - three times, then
+	// BackoffLimitExceeded. Reads never noticed, because MVCC readers do not
+	// block on writers.
+	if cfg.PGLockTimeout > 0 {
+		if _, ok := connCfg.RuntimeParams["lock_timeout"]; !ok {
+			connCfg.RuntimeParams["lock_timeout"] = pgTimeoutMillis(cfg.PGLockTimeout)
+		}
+	}
 	return connCfg, nil
 }
 
@@ -161,21 +193,64 @@ func pgTimeoutMillis(d time.Duration) string {
 	return strconv.FormatInt(d.Milliseconds(), 10)
 }
 
-// waitForDB retries ping until it succeeds or timeout elapses.
-// A transient postgres restart retries every interval instead of aborting startup.
-func waitForDB(ctx context.Context, ping func(context.Context) error, timeout, interval time.Duration) error {
-	deadline := time.Now().Add(timeout)
+// dbWaitMaxInterval caps the exponential backoff between startup probes. An
+// unlimited wait is only affordable as a default if it stops hammering a
+// dependency that is going to take minutes; 30s is short enough that recovery
+// is still prompt and long enough that a multi-minute outage costs a handful of
+// probes rather than hundreds.
+const dbWaitMaxInterval = 30 * time.Second
+
+// waitForDB retries probe with exponential backoff (starting at interval,
+// doubling up to dbWaitMaxInterval) until it succeeds, ctx is cancelled, or
+// timeout elapses. A NON-POSITIVE timeout means "retry for as long as this
+// process lives" and is the default.
+//
+// That default is the fix for tatara-memory#102. The budget used to be a
+// hardcoded 60s whose expiry propagated to main's os.Exit(1), so a ~4-minute
+// Postgres outage (every mem-* stack re-rendered at 03:30Z, all seven Postgres
+// pods NotReady for 4-8 min) turned into a ~8-minute API outage: six restarts
+// riding CrashLoopBackOff's 10 -> 20 -> 40 -> 80 -> 160 -> 300s backoff, which
+// is strictly slower than the 2s poll loop the process was already running.
+// Exiting handed retry to the kubelet and got a worse retry policy in exchange.
+//
+// On expiry the error wraps the last probe failure: the old message named only
+// the budget, which told an operator nothing about why the database was
+// unreachable.
+func waitForDB(ctx context.Context, probe func(context.Context) error, timeout, interval time.Duration) error {
+	if interval <= 0 {
+		interval = time.Second
+	}
+	var deadline time.Time
+	if timeout > 0 {
+		deadline = time.Now().Add(timeout)
+	}
+	wait := interval
 	for {
-		if err := ping(ctx); err == nil {
+		err := probe(ctx)
+		if err == nil {
 			return nil
 		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("database not reachable within %s", timeout)
+		if !deadline.IsZero() && !time.Now().Before(deadline) {
+			return fmt.Errorf("database not reachable within %s: %w", timeout, err)
+		}
+		sleep := wait
+		if !deadline.IsZero() {
+			if remaining := time.Until(deadline); remaining < sleep {
+				sleep = remaining
+			}
+		}
+		if sleep < 0 {
+			sleep = 0
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(interval):
+		case <-time.After(sleep):
+		}
+		if wait < dbWaitMaxInterval {
+			if wait *= 2; wait > dbWaitMaxInterval {
+				wait = dbWaitMaxInterval
+			}
 		}
 	}
 }
@@ -235,11 +310,6 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 	// after onset rather than 6h later at the ceiling.
 	reg.MustRegister(collectors.NewDBStatsCollector(db, "tatara_memory"))
 
-	if err := waitForDB(ctx, db.PingContext, 60*time.Second, 2*time.Second); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("wait for postgres: %w", err)
-	}
-
 	lrc, err := lightrag.NewHTTPClient(lightrag.HTTPConfig{
 		BaseURL:  cfg.LightRAGBaseURL,
 		Logger:   logger,
@@ -255,11 +325,8 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 	memSvc := memory.NewServiceWithSources(lrc, tomb, srcStore).WithLogger(logger).WithMetrics(reg).WithPurgeBudget(cfg.MemoryPurgeBudget)
 	pool := ingest.NewPoolWithSources(store, memSvc, cfg.WorkerPoolSize, srcStore, ingest.WithItemTimeout(cfg.IngestItemTimeout), ingest.WithMetrics(reg), ingest.WithLogger(logger))
 	pool.Start(ctx)
-	if n, err := pool.Resume(ctx); err != nil {
-		logger.Error("ingest pool resume failed", "error", err)
-	} else if n > 0 {
-		logger.Info("ingest pool resumed unfinished jobs", "jobs", n)
-	}
+	// Resume needs a live, migrated database, so it moved into awaitDatabase
+	// alongside the wait and the migration (tatara-memory#102).
 
 	enqueuer := ingest.NewEnqueuer(store, pool)
 
@@ -297,7 +364,8 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 	reaperCtx, reaperCancel := context.WithCancel(context.Background())
 	go reaper.Run(reaperCtx)
 
-	readyFn := readyzFunc(db, lrc)
+	gate := &startupGate{}
+	readyFn := readyzFunc(gate.status, db, lrc)
 	router := httpapi.NewRouter(httpapi.Config{
 		Service:    memSvc,
 		Ingest:     enqueuer,
@@ -339,7 +407,8 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 		WriteTimeout:      cfg.HTTPWriteTimeout,
 	}
 
-	return &app{
+	startupCtx, startupCancel := context.WithCancel(context.Background())
+	a := &app{
 		log:             logger,
 		reg:             reg,
 		db:              db,
@@ -349,7 +418,22 @@ func newAppWithDeps(ctx context.Context, cfg config, d dbOpener) (*app, error) {
 		reaper:          reaper,
 		reaperCancel:    reaperCancel,
 		analyticsCancel: analyticsCancel,
-	}, nil
+		startup:         gate,
+		startupDone:     make(chan struct{}),
+		startupCancel:   startupCancel,
+	}
+
+	// The database wait, the migrations and the ingest resume run here rather
+	// than on the caller's critical path. newAppWithDeps returning successfully
+	// while Postgres is down is the whole point of tatara-memory#102: the pod
+	// serves /healthz, reports 503 on /readyz, and recovers in place when the
+	// database comes back - instead of exiting and letting CrashLoopBackOff
+	// stretch a 4-minute dependency outage into an 8-minute API outage. It uses
+	// its own context, not ctx, so the wait is bound to the process lifetime and
+	// ended by shutdown.
+	go a.awaitDatabase(startupCtx, cfg.DBWaitTimeout, cfg.DBWaitInterval)
+
+	return a, nil
 }
 
 // newApp wires the application with the real Postgres driver.
