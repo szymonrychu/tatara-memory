@@ -1,7 +1,7 @@
 # MEMORY.md
 
-Component-local memory for tatara-memory. Cross-repo decisions live in
-`~/Documents/tatara/MEMORY.md`.
+Component-local memory for tatara-memory. Cross-repo decisions live in each
+repo's own `MEMORY.md`; there is no parent repo.
 
 Format: `YYYY-MM-DD - decision/finding`
 

@@ -1,9 +1,10 @@
 # tatara-memory
 
-> Part of the tatara platform - see ARCHITECTURE.md in the tatara repo.
+> Part of the tatara platform - see `CLAUDE.md` for the repo map.
 
 REST memory service over LightRAG, OIDC-gated. Part of the tatara
-platform. See `~/Documents/tatara/README.md` for the platform overview.
+platform; see [tatara-documentation](https://szymonrychu.github.io/tatara-documentation/)
+for the platform overview.
 
 ## Status
 
