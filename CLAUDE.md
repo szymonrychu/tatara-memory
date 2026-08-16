@@ -194,7 +194,6 @@ is local to this repo and is never touched by the sync, which is where a repo
 records how these rules apply to it.
 <!-- END tatara-shared-contract -->
 
-
 ## Local notes
 
 - Rule 16 exists because of this repo: the v0.1.1 -> v0.1.2 upgrade was
