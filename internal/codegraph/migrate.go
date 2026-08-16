@@ -41,8 +41,19 @@ var migration0006 string
 // as fully migrated: the first probe that fails ends baselining and every
 // migration from there on executes for real (see pgmigrate.Runner.Run).
 //
-// A new migration added here must ship a probe too, or it re-runs on the boot
-// after the one that applies it against every database that skipped it.
+// The probes deliberately check a SUBSET of each migration's statements - the
+// tables and columns, not every index. That is only sound because the runner
+// this replaces executed each file as one zero-argument ExecContext, which pgx
+// sends as a simple query and Postgres wraps in one implicit transaction: no
+// database can hold half of a codegraph migration file. Keep that true. A
+// migration file split across several Execs would need its probe to cover every
+// statement in it.
+//
+// A migration added here without a probe is not skipped - the tracker stamps it
+// - but it executes ONCE against the production database that already has its
+// effect, which for a statement shaped like 0005 is the whole bug. With a probe,
+// note that pgmigrate consults it on a fully stamped database too, so it must
+// test that migration's exact end state and nothing weaker.
 var runner = pgmigrate.Runner{
 	Tracker: "codegraph_schema_migrations",
 	Migrations: []pgmigrate.Migration{

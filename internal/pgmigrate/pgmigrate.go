@@ -45,8 +45,10 @@ const (
 	// Reconcile transaction, which runs 50-194s+ on a large repo, and a migration
 	// that gives up at 30s does not stop taking the lock - it retries through the
 	// startup backoff, and each attempt queues a fresh ACCESS EXCLUSIVE request
-	// that blocks every later lock request on the table behind it. One longer
-	// wait is strictly cheaper than N short ones.
+	// that blocks every later lock request on the table behind it for the whole
+	// of its own wait. One longer wait is strictly cheaper than N short ones, so
+	// the bound has to clear the documented worst case rather than sit inside it:
+	// 5m is 194s plus headroom.
 	//
 	// statement_timeout defaults to 5m, which is a backstop against a pathological
 	// query, not a budget for an index build on the largest table in the graph.
@@ -54,7 +56,7 @@ const (
 	// Deliberately not env-configurable: the PG_* knobs were incident responses
 	// with an operator asking for them, and three MigrateWith variants plus config
 	// plumbing is real API surface for a knob nobody has requested.
-	migrationLockTimeout      = 2 * time.Minute
+	migrationLockTimeout      = 5 * time.Minute
 	migrationStatementTimeout = 30 * time.Minute
 )
 
@@ -76,12 +78,24 @@ type Migration struct {
 	// SQL is the migration body. It is executed with no bind parameters, so pgx
 	// uses the simple query protocol and multi-statement bodies run as one
 	// implicit transaction inside the runner's explicit one.
+	//
+	// It therefore may NOT contain a statement that refuses to run inside a
+	// transaction block - CREATE INDEX CONCURRENTLY, VACUUM, ALTER SYSTEM - which
+	// fail with SQLSTATE 25001. The codegraph migrations used to run in
+	// autocommit and so could have used CONCURRENTLY; none did. If a future index
+	// on code_edges needs it, add an explicit opt-out here rather than shipping a
+	// blocking CREATE INDEX, which is the failure class this package exists for.
 	SQL string
 	// AlreadyApplied is an optional FINAL-STATE probe. When it reports that this
 	// migration's end state is already present, the tracker row is stamped and
-	// SQL is NOT executed. Set it only where a migration must never replay
-	// against a database that predates the tracker; see Runner.Run for the
-	// baselining rule that makes a wrong probe survivable.
+	// SQL is NOT executed.
+	//
+	// A probe is consulted whenever no migration has yet had to execute in this
+	// run - which, once a database is fully stamped, is every run. It is
+	// therefore AUTHORITATIVE for the migration it guards: a probe that can be
+	// satisfied for a reason unrelated to its own migration skips that migration
+	// permanently, everywhere. Test the migration's exact end state, or leave it
+	// nil and let the SQL run.
 	AlreadyApplied func(ctx context.Context, q Querier) (bool, error)
 }
 
@@ -149,10 +163,18 @@ func (r Runner) SQL() string {
 // consulted, and a migration whose end state is already present is stamped
 // without running. The FIRST migration that must actually execute ends
 // baselining - every later migration then runs unconditionally, even if its own
-// probe would have passed. That rule is what keeps a partially migrated
-// database safe: a probe can only ever short-circuit an unbroken prefix, so a
-// database stuck at 0001 cannot be stamped as fully migrated by a later probe
-// that happens to be satisfied for an unrelated reason.
+// probe would have passed. A database stuck at 0001 therefore cannot be stamped
+// as fully migrated by a later probe that happens to be satisfied for an
+// unrelated reason: the executed 0002 has already ended baselining.
+//
+// A migration SKIPPED because its tracker row exists does NOT end baselining,
+// and that is deliberate: a pod killed part-way through the first baselining run
+// must resume baselining the rest on the next boot, not fall back to executing
+// 0005's ACCESS EXCLUSIVE pkey rebuild against a database that already has it.
+// The consequence is that on a fully stamped database baselining is still in
+// effect, so a NEW migration's probe is authoritative there too. See
+// Migration.AlreadyApplied: a probe is a promise about that migration's exact
+// end state, not a hint.
 func (r Runner) Run(ctx context.Context, db *sql.DB) error {
 	if !safeTrackerName.MatchString(r.Tracker) {
 		return fmt.Errorf("pgmigrate: unsafe tracker table name %q", r.Tracker)

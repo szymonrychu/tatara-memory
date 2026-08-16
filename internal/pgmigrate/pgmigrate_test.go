@@ -87,6 +87,27 @@ func TestRun_BaselineStopsAtFirstGap(t *testing.T) {
 	require.Equal(t, []string{"0001_a", "0002_b", "0003_c"}, rec.Applied())
 }
 
+// A migration skipped because its tracker row already exists must NOT end
+// baselining. The scenario: the first baselining run against a legacy database
+// stamps 0001 and the pod is killed before 0002 commits. On the next boot 0001
+// is tracker-skipped, and if that ended baselining, 0002 would execute its DDL
+// against a database that already has its effect - which for codegraph/0005 is
+// the ACCESS EXCLUSIVE pkey rebuild this whole package exists to stop.
+func TestRun_TrackerSkipDoesNotEndBaselining(t *testing.T) {
+	db, rec := pgmigratetest.New(t)
+	rec.SetProbe("0001_a", true)
+	rec.SetProbe("0002_b", true)
+	first := runner(probed("0001_a", "CREATE TABLE a ()"))
+	require.NoError(t, first.Run(context.Background(), db)) // the interrupted boot
+
+	rec.Reset()
+	full := runner(probed("0001_a", "CREATE TABLE a ()"), probed("0002_b", "ALTER TABLE a ADD PRIMARY KEY (x)"))
+	require.NoError(t, full.Run(context.Background(), db))
+
+	require.Empty(t, rec.MigrationStatements(), "0002 must still be baselined after 0001 was tracker-skipped")
+	require.Equal(t, []string{"0001_a", "0002_b"}, rec.Applied())
+}
+
 // C1: migration DDL must not inherit the request-path lock budget
 // (PG_LOCK_TIMEOUT, 30s by default) that pgConnConfig layers onto every pooled
 // connection.
