@@ -1,7 +1,6 @@
 package memory_test
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -55,10 +54,11 @@ func TestMigrate_VersionTracking(t *testing.T) {
 			"migrations must be in ascending order: %q >= %q", names[i-1], names[i])
 	}
 
-	// Verify the tracker table DDL references the expected table name.
-	trackerSQL := memory.CreateSchemaMigrationsSQL()
-	require.Contains(t, strings.ToLower(trackerSQL), "memory_schema_migrations",
+	// The tracker table name and the migration names are load-bearing on the
+	// production database, which already carries their rows: renaming either
+	// re-runs every migration.
+	require.Equal(t, "memory_schema_migrations", memory.TrackerTable(),
 		"tracker table must be named memory_schema_migrations (finding 6)")
-	require.Contains(t, strings.ToLower(trackerSQL), "name",
-		"tracker table must record migration name (finding 6)")
+	require.Equal(t, []string{"0001_tombstones", "0002_memory_sources", "0003_tombstone_backoff"}, names,
+		"migration names are recorded in the production tracker and must not change")
 }

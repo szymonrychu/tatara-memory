@@ -89,8 +89,12 @@ func (a *app) shutdown(ctx context.Context) error {
 	return nil
 }
 
-// migrate applies all embedded schema migrations. It is idempotent
-// (CREATE TABLE IF NOT EXISTS) and runs at startup before serving.
+// migrate applies all embedded schema migrations and runs at startup before
+// serving. It is safe to call on every boot because each package runs its
+// migrations through internal/pgmigrate, which records what it has applied and
+// never re-runs it - NOT because the statements are individually re-runnable.
+// They are not: codegraph/0005 rebuilds code_edges_pkey under ACCESS EXCLUSIVE
+// and this comment used to claim otherwise (tatara-memory#107).
 func (a *app) migrate(ctx context.Context) error {
 	if err := ingest.Migrate(ctx, a.db); err != nil {
 		return fmt.Errorf("migrate ingest schema: %w", err)
