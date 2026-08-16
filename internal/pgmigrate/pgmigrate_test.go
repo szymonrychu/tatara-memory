@@ -130,6 +130,16 @@ func TestRun_RaisesLockAndStatementTimeoutsPerMigration(t *testing.T) {
 	require.Less(t, indexOf(rec.Statements(), session), indexOf(rec.Statements(), "CREATE TABLE a ()"))
 }
 
+// A migration body starting with the runner's own tag would be classified as
+// bookkeeping, so the replay tests would report zero DDL while it executed.
+func TestRun_RejectsAMigrationImpersonatingTheRunnerTag(t *testing.T) {
+	db, rec := pgmigratetest.New(t)
+	r := runner(plain("0001_a", pgmigrate.StatementTag+"not really\nDROP TABLE code_edges"))
+
+	require.Error(t, r.Run(context.Background(), db))
+	require.Empty(t, rec.Statements(), "the runner must refuse before issuing anything")
+}
+
 func TestRun_RejectsAnUnsafeTrackerName(t *testing.T) {
 	db, _ := pgmigratetest.New(t)
 	r := pgmigrate.Runner{Tracker: `x"; DROP TABLE code_edges; --`}

@@ -41,6 +41,8 @@ func TestMigrate_BaselineStampsWithoutDDL(t *testing.T) {
 
 	require.Empty(t, rec.MigrationStatements(), "a fully migrated database must be baselined, not re-migrated")
 	require.Equal(t, codegraph.MigrationNames(), rec.Applied())
+	require.Equal(t, codegraph.MigrationNames(), rec.Probed(),
+		"every migration must carry a baseline probe; one without it executes against the production database that already has its effect")
 }
 
 // Pre-mortem 1. A database that stopped at 0004 must NOT be stamped as fully
@@ -64,18 +66,11 @@ func TestMigrate_BaselineStopsAtFirstGap(t *testing.T) {
 	require.Equal(t, names, rec.Applied())
 }
 
-// Every migration name must carry a baseline probe: codegraph is the package
-// whose production database predates the tracker, so a migration added without
-// one would re-run its DDL against that database on the next boot.
-func TestMigrate_EveryMigrationHasABaselineProbe(t *testing.T) {
-	db, rec := pgmigratetest.New(t)
-	for _, name := range codegraph.MigrationNames() {
-		rec.SetProbe(name, true)
-	}
-
-	require.NoError(t, codegraph.Migrate(context.Background(), db))
-
-	// If any migration lacked a probe, its SQL would have executed above.
-	require.Len(t, rec.Applied(), len(codegraph.MigrationNames()))
-	require.Empty(t, rec.MigrationStatements())
+// Migration bodies run inside an explicit transaction now, so a statement that
+// refuses to run in one fails with SQLSTATE 25001 at boot and leaves the pod
+// permanently unready. Nothing else in the unit suite would catch it: the stub
+// driver accepts any SQL. codegraph is the package most likely to want
+// CREATE INDEX CONCURRENTLY, since its growth pattern is another code_edges index.
+func TestMigrationSQL_IsTransactionSafe(t *testing.T) {
+	pgmigratetest.RequireTransactionSafe(t, codegraph.MigrationSQL())
 }

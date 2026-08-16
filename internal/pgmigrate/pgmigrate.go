@@ -16,6 +16,7 @@ import (
 	"database/sql"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -124,8 +125,8 @@ func Probe(name, query string) func(context.Context, Querier) (bool, error) {
 	}
 }
 
-// BootstrapSQL returns the DDL that creates the tracker table.
-func (r Runner) BootstrapSQL() string {
+// bootstrapSQL returns the DDL that creates the tracker table.
+func (r Runner) bootstrapSQL() string {
 	return StatementTag + "bootstrap tracker\n" +
 		"CREATE TABLE IF NOT EXISTS " + r.Tracker + " (\n" +
 		"    name       TEXT PRIMARY KEY,\n" +
@@ -179,7 +180,14 @@ func (r Runner) Run(ctx context.Context, db *sql.DB) error {
 	if !safeTrackerName.MatchString(r.Tracker) {
 		return fmt.Errorf("pgmigrate: unsafe tracker table name %q", r.Tracker)
 	}
-	if _, err := db.ExecContext(ctx, r.BootstrapSQL()); err != nil {
+	for _, m := range r.Migrations {
+		// A migration body starting with StatementTag would be indistinguishable
+		// from runner bookkeeping, which is what the replay tests classify on.
+		if strings.HasPrefix(strings.TrimSpace(m.SQL), StatementTag) {
+			return fmt.Errorf("pgmigrate %s: migration %s starts with the reserved runner tag %q", r.Tracker, m.Name, StatementTag)
+		}
+	}
+	if _, err := db.ExecContext(ctx, r.bootstrapSQL()); err != nil {
 		return fmt.Errorf("pgmigrate %s: create tracker: %w", r.Tracker, err)
 	}
 

@@ -36,6 +36,7 @@ type Recorder struct {
 	applied      map[string]bool
 	appliedOrder []string
 	probes       map[string]bool
+	probedOrder  []string
 	stmts        []string
 	failOn       map[string]error
 }
@@ -106,6 +107,32 @@ func (r *Recorder) Applied() []string {
 	return append([]string(nil), r.appliedOrder...)
 }
 
+// Probed returns the migration names whose baseline probe was consulted, in
+// order. A migration missing from this list shipped without a probe.
+func (r *Recorder) Probed() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.probedOrder...)
+}
+
+// transactionUnsafe are the statements that cannot run inside a transaction
+// block. pgmigrate wraps every migration body in one, so any of these fails at
+// boot with SQLSTATE 25001 and leaves the pod permanently unready.
+var transactionUnsafe = []string{"CONCURRENTLY", "VACUUM", "ALTER SYSTEM"}
+
+// RequireTransactionSafe fails the test if sql contains a statement that
+// Postgres refuses to run inside a transaction block. The stub driver accepts
+// any SQL, so nothing else in a unit suite can catch this.
+func RequireTransactionSafe(t *testing.T, sql string) {
+	t.Helper()
+	upper := strings.ToUpper(sql)
+	for _, bad := range transactionUnsafe {
+		if strings.Contains(upper, bad) {
+			t.Fatalf("migration SQL contains %q, which cannot run inside the transaction pgmigrate opens per migration (SQLSTATE 25001)", bad)
+		}
+	}
+}
+
 func (r *Recorder) record(q string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -140,6 +167,7 @@ func (r *Recorder) probe(q string) (bool, bool) {
 	name := strings.TrimSpace(strings.SplitN(strings.TrimPrefix(q, prefix), "\n", 2)[0])
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.probedOrder = append(r.probedOrder, name)
 	return r.probes[name], true
 }
 
@@ -200,11 +228,12 @@ func (c *conn) ExecContext(ctx context.Context, q string, args []driver.NamedVal
 		if err != nil {
 			return nil, err
 		}
+		// The runner must stamp inside the migration's own transaction, or a
+		// migration that fails after its DDL would still be recorded as applied.
 		if c.tx == nil {
-			c.r.commit([]string{name})
-		} else {
-			c.tx.pending = append(c.tx.pending, name)
+			return nil, fmt.Errorf("pgmigratetest: tracker insert for %q was issued outside a transaction", name)
 		}
+		c.tx.pending = append(c.tx.pending, name)
 	}
 	return driver.RowsAffected(1), nil
 }

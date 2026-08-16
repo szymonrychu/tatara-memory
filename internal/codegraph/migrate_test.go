@@ -54,7 +54,9 @@ func TestMigrationSQL_ColumnsDroppedByLaterMigrations(t *testing.T) {
 			t.Fatalf("expected %q to appear in the migration SQL", col)
 		}
 		stmt := strings.TrimSpace(sql[strings.LastIndex(sql[:last], ";")+1 : last])
-		if !strings.Contains(stmt, "DROP COLUMN IF EXISTS") {
+		// Both clauses matter: code_communities.cohesion is a real column that
+		// 0004 adds on purpose, so "something drops a cohesion" is not the claim.
+		if !strings.Contains(stmt, "DROP COLUMN IF EXISTS") || !strings.Contains(stmt, "code_entities") {
 			t.Fatalf("code_entities.%s must end up dropped, last statement touching it was %q", col, stmt)
 		}
 	}

@@ -25,3 +25,7 @@ func TestMigrate_ReplayIssuesNoDDL(t *testing.T) {
 	require.NoError(t, memory.Migrate(ctx, db))
 	require.Empty(t, rec.MigrationStatements(), "replay must issue no schema DDL")
 }
+
+func TestMigrationSQL_IsTransactionSafe(t *testing.T) {
+	pgmigratetest.RequireTransactionSafe(t, memory.MigrationSQL())
+}
