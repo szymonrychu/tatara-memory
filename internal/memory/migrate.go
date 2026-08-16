@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	_ "embed"
 	"fmt"
+
+	"github.com/szymonrychu/tatara-memory/internal/pgmigrate"
 )
 
 //go:embed migrations/0001_tombstones.sql
@@ -16,84 +18,36 @@ var migration0002 string
 //go:embed migrations/0003_tombstone_backoff.sql
 var migration0003 string
 
+// runner is the ordered migration set for this package. The names are recorded
+// in memory_schema_migrations and are already present in the production
+// database: neither a name nor the tracker table may be renamed, or every
+// migration re-runs. No baseline probes - this package has had a version
+// tracker since 2026-06-16, so its tracker rows already exist everywhere.
+var runner = pgmigrate.Runner{
+	Tracker: "memory_schema_migrations",
+	Migrations: []pgmigrate.Migration{
+		{Name: "0001_tombstones", SQL: migration0001},
+		{Name: "0002_memory_sources", SQL: migration0002},
+		{Name: "0003_tombstone_backoff", SQL: migration0003},
+	},
+}
+
 // MigrationSQL returns the DDL for the memory schema (tombstones plus the
 // repo/file -> track_id source index used by per-file reconcile).
-func MigrationSQL() string {
-	return migration0001 + "\n" + migration0002 + "\n" + migration0003
-}
+func MigrationSQL() string { return runner.SQL() }
 
-// migrations is the ordered set of named migrations for this package.
-// Each entry is (name, sql). Names match the embedded file name so that
-// the schema_migrations tracking table records a human-readable applied set.
-var migrations = []struct {
-	name string
-	sql  string
-}{
-	{"0001_tombstones", migration0001},
-	{"0002_memory_sources", migration0002},
-	{"0003_tombstone_backoff", migration0003},
-}
+// MigrationNames returns the ordered migration names recorded in the tracker.
+func MigrationNames() []string { return runner.Names() }
 
-const createSchemaMigrations = `
-CREATE TABLE IF NOT EXISTS memory_schema_migrations (
-    name       TEXT PRIMARY KEY,
-    applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
-)`
+// TrackerTable returns the name of this package's version-tracking table.
+func TrackerTable() string { return runner.Tracker }
 
-// Migrate applies the memory schema to db using a version-tracked migration
-// runner. A memory_schema_migrations table records which migrations have been
-// applied; each unapplied migration runs in its own transaction so a failure
-// leaves the table in a consistent state with a clear high-water mark.
-// Already-applied migrations are skipped, making Migrate safe to call on every
-// startup without re-running idempotent or future non-idempotent migrations.
+// Migrate applies the memory schema to db via the shared version-tracked
+// runner. Already-applied migrations are skipped, so Migrate is safe to call on
+// every startup; see internal/pgmigrate for the tracker and baseline rules.
 func Migrate(ctx context.Context, db *sql.DB) error {
-	// Bootstrap the tracker table first (idempotent CREATE IF NOT EXISTS).
-	if _, err := db.ExecContext(ctx, createSchemaMigrations); err != nil {
-		return fmt.Errorf("memory migrate: create tracker: %w", err)
-	}
-
-	for _, m := range migrations {
-		applied, err := migrationApplied(ctx, db, m.name)
-		if err != nil {
-			return fmt.Errorf("memory migrate: check %s: %w", m.name, err)
-		}
-		if applied {
-			continue
-		}
-		if err := applyMigration(ctx, db, m.name, m.sql); err != nil {
-			return fmt.Errorf("memory migrate: apply %s: %w", m.name, err)
-		}
+	if err := runner.Run(ctx, db); err != nil {
+		return fmt.Errorf("memory migrate: %w", err)
 	}
 	return nil
-}
-
-func migrationApplied(ctx context.Context, db *sql.DB, name string) (bool, error) {
-	var exists bool
-	err := db.QueryRowContext(ctx,
-		`SELECT EXISTS (SELECT 1 FROM memory_schema_migrations WHERE name = $1)`, name).
-		Scan(&exists)
-	return exists, err
-}
-
-func applyMigration(ctx context.Context, db *sql.DB, name, sqlStr string) error {
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	if _, err := tx.ExecContext(ctx, sqlStr); err != nil {
-		return fmt.Errorf("exec: %w", err)
-	}
-	// ON CONFLICT DO NOTHING makes the tracker insert idempotent so that two
-	// replicas racing through the same migration (TOCTOU between the applied
-	// check and the apply tx) do not conflict on the PK: both succeed, with one
-	// of them being a no-op on the tracker row. Migrations must remain strictly
-	// idempotent (CREATE ... IF NOT EXISTS / ADD COLUMN IF NOT EXISTS) for this
-	// to be safe.
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO memory_schema_migrations (name) VALUES ($1) ON CONFLICT (name) DO NOTHING`, name); err != nil {
-		return fmt.Errorf("record: %w", err)
-	}
-	return tx.Commit()
 }

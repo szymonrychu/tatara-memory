@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/szymonrychu/tatara-memory/internal/pgmigrate"
 )
 
 // alwaysOKConnector is a fake driver.Connector whose Ping and Connect succeed.
@@ -48,11 +50,13 @@ func (okConn) Exec(string, []driver.Value) (driver.Result, error) {
 	return driver.RowsAffected(0), nil
 }
 
-// QueryContext answers the one query shape the migration runner reads back:
-// memory.Migrate's "SELECT EXISTS (... memory_schema_migrations ...)" probe,
-// whose Scan needs an actual row. Everything else stays an empty result set.
+// QueryContext answers the queries the migration runner reads back: the
+// applied check and the codegraph baseline probes, both single-boolean and both
+// tagged as pgmigrate bookkeeping, whose Scan needs an actual row. false for
+// every one models an empty database, so every migration runs. Everything else
+// stays an empty result set.
 func (okConn) QueryContext(_ context.Context, q string, _ []driver.NamedValue) (driver.Rows, error) {
-	if strings.Contains(q, "SELECT EXISTS") {
+	if strings.HasPrefix(strings.TrimSpace(q), pgmigrate.StatementTag) {
 		return &boolRows{v: false}, nil
 	}
 	return okRows{}, nil

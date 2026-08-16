@@ -13,21 +13,6 @@ func TickForTest(r *Reaper, ctx context.Context) {
 	r.tick(ctx)
 }
 
-// MigrationNames returns the ordered list of migration names tracked by Migrate.
-// Used by unit tests to verify versioning without a real database.
-func MigrationNames() []string {
-	names := make([]string, len(migrations))
-	for i, m := range migrations {
-		names[i] = m.name
-	}
-	return names
-}
-
-// CreateSchemaMigrationsSQL returns the DDL used to bootstrap the tracker table.
-func CreateSchemaMigrationsSQL() string {
-	return createSchemaMigrations
-}
-
 // FakeTombstoneStore is an in-memory reapStore for unit tests.
 type FakeTombstoneStore struct {
 	IDs []string
