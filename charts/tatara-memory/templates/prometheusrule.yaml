@@ -85,8 +85,11 @@ spec:
               tatara-memory finalized one or more ingest jobs with status="failed"
               in the last hour. New memories may not be getting indexed.
         - alert: MemoryRetrievalLatencyHigh
-          # p99 over DefBuckets (largest finite bucket 10s); keep the threshold
-          # below 10s or the quantile saturates and can never exceed it.
+          # p99 over requestDurationBuckets (internal/httpapi/middleware.go),
+          # not DefBuckets; largest finite bucket is 300s, so keep the
+          # threshold below 300s or the quantile saturates. The old 10s claim
+          # was stale since those wider buckets landed; found in
+          # tatara-observability#120.
           expr: >-
             histogram_quantile(
               0.99,
