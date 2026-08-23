@@ -243,8 +243,10 @@ prometheusRule:
   # 10m window: a sustained overload, not a single burst.
   admissionShedRate: 0.05
   # p99 request-latency threshold (seconds) for MemoryRetrievalLatencyHigh.
-  # Must stay below 10s: the histogram uses prometheus.DefBuckets whose largest
-  # finite bucket is 10s, so p99 saturates there.
+  # Must stay below 300s: the histogram uses requestDurationBuckets
+  # (internal/httpapi/middleware.go), whose largest finite bucket is 300s, not
+  # DefBuckets' 10s. The old 10s claim went stale when those wider buckets
+  # landed; found in tatara-observability#120.
   retrievalLatencyP99Seconds: 2.5
   # Fraction of the Postgres pool that may be in use before MemoryDBPoolSaturated
   # fires. The whole process shares one pool, /readyz included.
