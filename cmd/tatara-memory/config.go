@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/szymonrychu/tatara-memory/internal/memory"
+	"github.com/szymonrychu/tatara-memory/internal/poolbudget"
 )
 
 type config struct {
@@ -347,8 +348,14 @@ func (c config) validate() error {
 	// budgets are not actually protecting anything - reads, /readyz and the
 	// worker pool would starve exactly as before. Refuse to start on such a
 	// configuration rather than shipping a limiter that cannot do its job.
-	// Skipped when either bulk budget is disabled (0 = unbounded, an explicit
-	// operator opt-out): with an unbounded class there is no budget to check.
+	// A bulk budget of 0 is an explicit operator opt-out that makes that class
+	// unbounded. It drops that class's own term from the sum, since there is no
+	// number to add, but it does NOT skip the check: an unbounded class can only
+	// draw MORE from the pool, and the terms that remain - the other bulk class,
+	// the ingest workers and the analytics recomputes - are exactly #89's set.
+	// Until tatara-memory#114 a single 0 disarmed the whole guard, so
+	// {memories:0, code-graph:2, workers:16, analytics:2, pool:20} started
+	// cleanly with all 20 connections reserved.
 	//
 	// analytics-max-concurrency joined this sum in tatara-memory#89. The
 	// original arithmetic omitted the analytics worker, but that worker holds a
@@ -356,13 +363,11 @@ func (c config) validate() error {
 	// exactly like an ingest worker does, so leaving it out understated the
 	// reserved total by up to GOMAXPROCS connections - the same class of
 	// undercount that let #89's pool exhaustion go unmodelled.
-	if c.MemoriesBulkMaxInFlight > 0 && c.CodeGraphBulkMaxInFlight > 0 {
-		reserved := c.MemoriesBulkMaxInFlight + c.CodeGraphBulkMaxInFlight + c.WorkerPoolSize + c.AnalyticsMaxConcurrency
-		if reserved >= c.DBMaxOpenConns {
-			return fmt.Errorf(
-				"admission budgets oversubscribe the DB pool: memories-bulk-max-in-flight(%d) + code-graph-bulk-max-in-flight(%d) + worker-pool-size(%d) + analytics-max-concurrency(%d) = %d must be < db-max-open-conns(%d)",
-				c.MemoriesBulkMaxInFlight, c.CodeGraphBulkMaxInFlight, c.WorkerPoolSize, c.AnalyticsMaxConcurrency, reserved, c.DBMaxOpenConns)
-		}
-	}
-	return nil
+	return poolbudget.Budget{
+		MemoriesBulk:  c.MemoriesBulkMaxInFlight,
+		CodeGraphBulk: c.CodeGraphBulkMaxInFlight,
+		WorkerPool:    c.WorkerPoolSize,
+		Analytics:     c.AnalyticsMaxConcurrency,
+		MaxOpenConns:  c.DBMaxOpenConns,
+	}.Check()
 }

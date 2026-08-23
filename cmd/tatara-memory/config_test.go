@@ -262,9 +262,77 @@ func TestLoadConfig_RejectsOversubscribedAdmissionBudgets(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "oversubscribe the DB pool")
 
-	// 0 disables a budget entirely; that is an explicit opt-out, not a
-	// misconfiguration, so the oversubscription check does not apply.
+	// 0 disables a budget entirely, and that is an explicit opt-out - but an
+	// unbounded class can only draw MORE from the pool, never less, so it drops
+	// its own term from the sum and leaves the rest of the check armed. Here
+	// the remaining floor is code-graph(2) + workers(4) + analytics(2) = 8,
+	// which is not strictly less than the 8-connection pool.
 	cfg.MemoriesBulkMaxInFlight = 0
+	err = cfg.validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "oversubscribe the DB pool")
+
+	// The same opt-out is accepted the moment the pool can hold the floor.
+	cfg.DBMaxOpenConns = 9
+	require.NoError(t, cfg.validate())
+}
+
+// The terms tatara-memory#89 was about - the ingest worker pool and the
+// analytics recomputes - stay finite when a bulk class is unbounded, so they
+// stay checked. Before this, a single 0 removed them from the model: the
+// configuration below reserves 20 of 20 connections and started cleanly.
+func TestLoadConfig_UnboundedBulkClassStillChecksTheReservedFloor(t *testing.T) {
+	os.Clearenv()
+	cfg, err := loadConfig([]string{
+		"--db-max-open-conns", "20",
+		"--memories-bulk-max-in-flight", "0",
+		"--code-graph-bulk-max-in-flight", "2",
+		"--worker-pool-size", "16",
+		"--analytics-max-concurrency", "2",
+	})
+	require.NoError(t, err)
+	cfg.PGDSN = "x"
+	cfg.LightRAGBaseURL = "y"
+
+	err = cfg.validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "oversubscribe the DB pool")
+	// Names the unbounded class, then enumerates every term that remains, so
+	// the numbers in the message add up to the ones the reader can see.
+	require.Contains(t, err.Error(), "memories-bulk-max-in-flight is unbounded")
+	require.Contains(t, err.Error(), "code-graph-bulk-max-in-flight(2)")
+	require.Contains(t, err.Error(), "worker-pool-size(16)")
+	require.Contains(t, err.Error(), "analytics-max-concurrency(2)")
+	require.Contains(t, err.Error(), "db-max-open-conns(20)")
+	// The unbounded class must not appear as a numeric term in the sum.
+	require.NotContains(t, err.Error(), "memories-bulk-max-in-flight(0)")
+}
+
+// Both classes unbounded is the weakest configuration this service can be given,
+// so it is the one where the floor check matters most: workers plus analytics
+// alone must still fit.
+func TestLoadConfig_BothBulkClassesUnboundedStillChecksWorkersAndAnalytics(t *testing.T) {
+	os.Clearenv()
+	cfg, err := loadConfig([]string{
+		"--db-max-open-conns", "6",
+		"--memories-bulk-max-in-flight", "0",
+		"--code-graph-bulk-max-in-flight", "0",
+		"--worker-pool-size", "4",
+		"--analytics-max-concurrency", "2",
+	})
+	require.NoError(t, err)
+	cfg.PGDSN = "x"
+	cfg.LightRAGBaseURL = "y"
+
+	// 4+2 = 6, not < 6.
+	err = cfg.validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "oversubscribe the DB pool")
+	require.Contains(t, err.Error(), "memories-bulk-max-in-flight and code-graph-bulk-max-in-flight are unbounded")
+	require.Contains(t, err.Error(), "worker-pool-size(4)")
+	require.Contains(t, err.Error(), "analytics-max-concurrency(2)")
+
+	cfg.DBMaxOpenConns = 7
 	require.NoError(t, cfg.validate())
 }
 
