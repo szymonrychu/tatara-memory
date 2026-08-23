@@ -75,6 +75,12 @@ func (s *Service) Push(ctx context.Context, p GraphPush) (PushResult, error) {
 		// satisfy a len check and still store a one-member hyperedge.
 		distinct := make(map[string]struct{}, len(h.Members))
 		for _, m := range h.Members {
+			// An empty member id is garbage, not the unresolvable-but-intended id
+			// the member-existence check was dropped over (MEMORY.md 2026-08-23):
+			// it stores an entity_id='' row no query can ever join.
+			if m == "" {
+				return PushResult{}, fmt.Errorf("%w: hyperedge %s has an empty member id", ErrInvalidScope, h.ID)
+			}
 			distinct[m] = struct{}{}
 		}
 		if len(distinct) < minHyperedgeMembers {

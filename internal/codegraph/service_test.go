@@ -198,6 +198,24 @@ func TestPushRejectsHyperedgeBelowArity(t *testing.T) {
 	}
 }
 
+// TestPushRejectsHyperedgeWithEmptyMember rejects a member id naming nothing at
+// all. This is NOT the "member names no code_entities row" check that was
+// designed and deliberately dropped (MEMORY.md, 2026-08-23): an unresolvable id
+// is the ingester's documented design, an EMPTY id is garbage no producer
+// emits. Without it, code_hyperedge_members stores an entity_id=” row that no
+// query can ever join.
+func TestPushRejectsHyperedgeWithEmptyMember(t *testing.T) {
+	svc, _ := newSvc()
+	_, err := svc.Push(context.Background(), codegraph.GraphPush{
+		Repo:  "r",
+		Files: []string{"a.go"},
+		Hyperedges: []codegraph.Hyperedge{
+			{ID: "h1", Label: "trio", Relation: "form", SrcFile: "a.go", Members: []string{"e1", "", "e2", "e3"}},
+		},
+	})
+	require.ErrorIs(t, err, codegraph.ErrInvalidScope)
+}
+
 func TestPushAcceptsInScopeHyperedge(t *testing.T) {
 	svc, fs := newSvc()
 	_, err := svc.Push(context.Background(), codegraph.GraphPush{
