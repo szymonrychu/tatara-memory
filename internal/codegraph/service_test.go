@@ -202,7 +202,7 @@ func TestPushRejectsHyperedgeBelowArity(t *testing.T) {
 // all. This is NOT the "member names no code_entities row" check that was
 // designed and deliberately dropped (MEMORY.md, 2026-08-23): an unresolvable id
 // is the ingester's documented design, an EMPTY id is garbage no producer
-// emits. Without it, code_hyperedge_members stores an entity_id=” row that no
+// emits. Without it, code_hyperedge_members stores a member row with an empty entity_id that no
 // query can ever join.
 func TestPushRejectsHyperedgeWithEmptyMember(t *testing.T) {
 	svc, _ := newSvc()
