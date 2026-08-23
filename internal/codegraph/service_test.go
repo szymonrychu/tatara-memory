@@ -89,16 +89,6 @@ func newSvc() (*codegraph.Service, *fakeStore) {
 	return codegraph.NewService(fs, codegraph.NewMetrics(prometheus.NewRegistry())), fs
 }
 
-func TestPushRejectsEntityOutsideFiles(t *testing.T) {
-	svc, _ := newSvc()
-	_, err := svc.Push(context.Background(), codegraph.GraphPush{
-		Repo:     "r",
-		Files:    []string{"a.go"},
-		Entities: []codegraph.Entity{{ID: "x", FilePath: "b.go"}},
-	})
-	require.ErrorIs(t, err, codegraph.ErrInvalidScope)
-}
-
 func TestPushAllowsFilelessEntity(t *testing.T) {
 	svc, fs := newSvc()
 	_, err := svc.Push(context.Background(), codegraph.GraphPush{
@@ -111,16 +101,6 @@ func TestPushAllowsFilelessEntity(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, fs.pushed.Entities, 2)
-}
-
-func TestPushRejectsEdgeOutsideFiles(t *testing.T) {
-	svc, _ := newSvc()
-	_, err := svc.Push(context.Background(), codegraph.GraphPush{
-		Repo:  "r",
-		Files: []string{"a.go"},
-		Edges: []codegraph.Edge{{From: "x", To: "y", Relation: "calls", SrcFile: "b.go"}},
-	})
-	require.ErrorIs(t, err, codegraph.ErrInvalidScope)
 }
 
 func TestPushRequiresRepoAndFiles(t *testing.T) {
@@ -142,18 +122,6 @@ func TestPushOK(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, res.EntitiesUpserted)
 	require.Equal(t, "r", fs.pushed.Repo)
-}
-
-func TestPushRejectsSymbolOutsideFiles(t *testing.T) {
-	svc, _ := newSvc()
-	_, err := svc.Push(context.Background(), codegraph.GraphPush{
-		Repo:  "r",
-		Files: []string{"a.go"},
-		Symbols: []codegraph.SymbolRow{
-			{Symbol: "Foo", Lang: "go", Kind: "func", Role: codegraph.RoleProvides, EntityID: "e1", SrcFile: "b.go"},
-		},
-	})
-	require.ErrorIs(t, err, codegraph.ErrInvalidScope)
 }
 
 func TestPushRejectsSymbolInvalidRole(t *testing.T) {
@@ -189,6 +157,56 @@ func TestPushWithValidSymbols(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
+}
+
+// TestPushRejectsHyperedgeWithEmptySrcFile pins the one place a hyperedge is NOT
+// treated like an entity. Push allows a fileless entity because entities are
+// keyed and upserted by id, so one that no reconcile purges is still replaced in
+// place. A hyperedge has no such justification: code_hyperedges.src_file is the
+// sole delete key, so an empty one would be a permanently unpurgeable row.
+// 0003_phase0_graphify.sql declares the column NOT NULL and nothing produces an
+// empty one, so rejecting costs no producer anything.
+func TestPushRejectsHyperedgeWithEmptySrcFile(t *testing.T) {
+	svc, _ := newSvc()
+	_, err := svc.Push(context.Background(), codegraph.GraphPush{
+		Repo:  "r",
+		Files: []string{"a.go"},
+		Hyperedges: []codegraph.Hyperedge{
+			{ID: "h1", Label: "trio", Relation: "form", SrcFile: "", Members: []string{"e1", "e2", "e3"}},
+		},
+	})
+	require.ErrorIs(t, err, codegraph.ErrInvalidScope)
+}
+
+// TestPushRejectsHyperedgeBelowArity enforces the "3+ entities" arity the
+// Hyperedge doc declares. Only the ingester's semantic path enforced it, and only
+// client-side.
+func TestPushRejectsHyperedgeBelowArity(t *testing.T) {
+	for _, members := range [][]string{nil, {"e1"}, {"e1", "e2"}} {
+		svc, _ := newSvc()
+		_, err := svc.Push(context.Background(), codegraph.GraphPush{
+			Repo:  "r",
+			Files: []string{"a.go"},
+			Hyperedges: []codegraph.Hyperedge{
+				{ID: "h1", Label: "trio", Relation: "form", SrcFile: "a.go", Members: members},
+			},
+		})
+		require.ErrorIs(t, err, codegraph.ErrInvalidScope, "members=%v", members)
+	}
+}
+
+func TestPushAcceptsInScopeHyperedge(t *testing.T) {
+	svc, fs := newSvc()
+	_, err := svc.Push(context.Background(), codegraph.GraphPush{
+		Repo:     "r",
+		Files:    []string{"a.go"},
+		Entities: []codegraph.Entity{{ID: "e1", FilePath: "a.go"}, {ID: "e2", FilePath: "a.go"}, {ID: "e3", FilePath: "a.go"}},
+		Hyperedges: []codegraph.Hyperedge{
+			{ID: "h1", Label: "trio", Relation: "form", SrcFile: "a.go", Members: []string{"e1", "e2", "e3"}},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, fs.pushed.Hyperedges, 1)
 }
 
 func TestCrossRepoPassThrough(t *testing.T) {

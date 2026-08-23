@@ -26,8 +26,10 @@ func NewService(store Store, metrics *Metrics) *Service {
 	return &Service{store: store, metrics: metrics}
 }
 
-// Push validates that every entity and edge in p is owned by a file in p.Files,
-// then reconciles the graph for that file set.
+// Push validates that every row in p that names an owning file - entities,
+// edges, symbols and hyperedges - is owned by a file in p.Files, then reconciles
+// the graph for that file set. Reconcile purges by exactly those owning-file
+// fields, so a row outside p.Files would be written and never reclaimed.
 func (s *Service) Push(ctx context.Context, p GraphPush) (PushResult, error) {
 	if p.Repo == "" {
 		return PushResult{}, fmt.Errorf("%w: repo required", ErrInvalidScope)
@@ -58,6 +60,18 @@ func (s *Service) Push(ctx context.Context, p GraphPush) (PushResult, error) {
 		}
 		if sym.Role != RoleProvides && sym.Role != RoleRequires {
 			return PushResult{}, fmt.Errorf("%w: symbol %s role %q must be provides|requires", ErrInvalidScope, sym.Symbol, sym.Role)
+		}
+	}
+	for _, h := range p.Hyperedges {
+		// No fileless carve-out here, unlike entities above: src_file is the sole
+		// key Reconcile purges hyperedges by, so an empty one is a row no
+		// reconcile can ever reclaim. The column is NOT NULL and no producer
+		// emits an empty one.
+		if _, ok := files[h.SrcFile]; !ok {
+			return PushResult{}, fmt.Errorf("%w: hyperedge %s src_file %q not in files", ErrInvalidScope, h.ID, h.SrcFile)
+		}
+		if len(h.Members) < minHyperedgeMembers {
+			return PushResult{}, fmt.Errorf("%w: hyperedge %s has %d members, need %d+", ErrInvalidScope, h.ID, len(h.Members), minHyperedgeMembers)
 		}
 	}
 	res, err := s.store.Reconcile(ctx, p)

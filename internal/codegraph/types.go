@@ -11,9 +11,13 @@ import (
 // ErrEntityNotFound is returned when a requested entity does not exist.
 var ErrEntityNotFound = errors.New("codegraph: entity not found")
 
-// ErrInvalidScope is returned when a push is malformed or contains an entity or
-// edge whose owning file is not in the push's declared file set.
+// ErrInvalidScope is returned when a push is malformed or contains a row whose
+// owning file is not in the push's declared file set.
 var ErrInvalidScope = errors.New("codegraph: invalid push scope")
+
+// minHyperedgeMembers is the arity floor from the Hyperedge contract: a
+// hyperedge is a genuinely n-ary relationship, and anything narrower is an edge.
+const minHyperedgeMembers = 3
 
 // Relation constants used by the named-traversal endpoints. The producer
 // (sub-project B) emits the full relation vocabulary; this service only needs

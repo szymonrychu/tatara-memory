@@ -38,7 +38,7 @@ func TestRelated_SemanticEdgesWithConfidence(t *testing.T) {
 	hi, err := s.Related(ctx, "rel", "rel:a", nil, 0.5, 100)
 	require.NoError(t, err)
 	require.Len(t, hi, 1)
-	require.Equal(t, "rel:b", hi[0].Entity.ID)
+	require.Equal(t, "rel:b", hi[0].ID)
 	require.Equal(t, codegraph.RelConceptuallyRelated, hi[0].Relation)
 	require.InDelta(t, 0.9, hi[0].ConfidenceScore, 1e-6)
 
@@ -46,7 +46,7 @@ func TestRelated_SemanticEdgesWithConfidence(t *testing.T) {
 	sim, err := s.Related(ctx, "rel", "rel:a", []string{codegraph.RelSemanticallySimilar}, 0, 100)
 	require.NoError(t, err)
 	require.Len(t, sim, 1)
-	require.Equal(t, "rel:c", sim[0].Entity.ID)
+	require.Equal(t, "rel:c", sim[0].ID)
 }
 
 func TestHyperedges_AndHyperedge(t *testing.T) {

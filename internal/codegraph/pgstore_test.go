@@ -281,3 +281,59 @@ func TestReconcilePurgesAndInsertsHyperedgesPerFile(t *testing.T) {
 	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM code_hyperedge_members WHERE repo='rh'`).Scan(&mcount))
 	require.Equal(t, 0, mcount)
 }
+
+// TestReconcileRejectsDanglingHyperedgeMember is the live-SQL twin of
+// hyperedge_members_test.go: it exercises the unnest/NOT EXISTS query against a
+// real Postgres, which the stub-driver tests cannot. It also pins the two
+// acceptance cases that make the check usable - a member created by the same
+// push, and a member that is a pre-existing entity owned by a file this push
+// does not touch.
+func TestReconcileRejectsDanglingHyperedgeMember(t *testing.T) {
+	s, db, ctx := freshStoreWithDB(t)
+
+	// Seed b.go's entity in its own push, so the later a.go push does not own it.
+	_, err := s.Reconcile(ctx, codegraph.GraphPush{
+		Repo:     "rm",
+		Files:    []string{"b.go"},
+		Entities: []codegraph.Entity{ent("go:func:rm/b.D", "go_func", "b.go")},
+	})
+	require.NoError(t, err)
+
+	// A member naming no entity anywhere in the repo is rejected, and nothing
+	// from the push is committed.
+	_, err = s.Reconcile(ctx, codegraph.GraphPush{
+		Repo:     "rm",
+		Files:    []string{"a.go"},
+		Entities: []codegraph.Entity{ent("go:func:rm/a.A", "go_func", "a.go")},
+		Hyperedges: []codegraph.Hyperedge{
+			{ID: "rm:h1", Label: "trio", Relation: "form", SrcFile: "a.go",
+				Members: []string{"go:func:rm/a.A", "go:func:rm/b.D", "go:func:rm/nope"}},
+		},
+	})
+	require.ErrorIs(t, err, codegraph.ErrInvalidScope)
+	require.ErrorContains(t, err, "go:func:rm/nope")
+
+	var n int
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM code_hyperedges WHERE repo='rm'`).Scan(&n))
+	require.Zero(t, n, "the rejected push must not leave a hyperedge behind")
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM code_entities WHERE repo='rm' AND file_path='a.go'`).Scan(&n))
+	require.Zero(t, n, "the whole transaction must roll back, entities included")
+
+	// Same push minus the dangling member: the same-push entity and the
+	// pre-existing entity in another file both resolve.
+	_, err = s.Reconcile(ctx, codegraph.GraphPush{
+		Repo:  "rm",
+		Files: []string{"a.go"},
+		Entities: []codegraph.Entity{
+			ent("go:func:rm/a.A", "go_func", "a.go"),
+			ent("go:func:rm/a.B", "go_func", "a.go"),
+		},
+		Hyperedges: []codegraph.Hyperedge{
+			{ID: "rm:h1", Label: "trio", Relation: "form", SrcFile: "a.go",
+				Members: []string{"go:func:rm/a.A", "go:func:rm/a.B", "go:func:rm/b.D"}},
+		},
+	})
+	require.NoError(t, err)
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM code_hyperedge_members WHERE repo='rm' AND hyperedge_id='rm:h1'`).Scan(&n))
+	require.Equal(t, 3, n)
+}

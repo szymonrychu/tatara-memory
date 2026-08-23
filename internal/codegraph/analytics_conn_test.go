@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -22,6 +23,11 @@ import (
 // real against RecomputeAnalytics, without a live Postgres. That is the point:
 // the assertions in this file are all about pool accounting (db.Stats().InUse),
 // which only means anything when the real database/sql pool is in the loop.
+//
+// hyperedge_members_test.go reuses it for a second purpose: driving Reconcile's
+// hyperedge-member existence check without a live Postgres, because CI does not
+// run the integration build tag and a membership guard tested only there would
+// never be executed by a required check.
 //
 // Regression target: tatara-memory#89. RecomputeAnalytics used to open its
 // transaction before labelling communities, so a pool connection - and its
@@ -43,6 +49,16 @@ type stubDB struct {
 
 	entities [][2]string
 	edges    [][2]string
+
+	// missingMembers is the set of entity ids the stub reports as absent from
+	// code_entities when Reconcile runs its hyperedge-member existence check.
+	missingMembers []string
+	// queriedMembers records the id list that check actually asked about, so a
+	// test can assert members already present in the push are not re-queried.
+	// nil means the check never ran.
+	queriedMembers []string
+	// commits counts driver-level Commit calls: a rejected push must not reach one.
+	commits int
 }
 
 // newStubDB seeds two dense triangles bridged by c-d, which analytics.Compute
@@ -110,7 +126,7 @@ func (c stubConn) BeginTx(ctx context.Context, _ driver.TxOptions) (driver.Tx, e
 	return stubTx(c), nil
 }
 
-func (c stubConn) QueryContext(ctx context.Context, q string, _ []driver.NamedValue) (driver.Rows, error) {
+func (c stubConn) QueryContext(ctx context.Context, q string, args []driver.NamedValue) (driver.Rows, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -118,6 +134,13 @@ func (c stubConn) QueryContext(ctx context.Context, q string, _ []driver.NamedVa
 		return nil, err
 	}
 	switch {
+	case strings.Contains(q, "NOT EXISTS (SELECT 1 FROM code_entities"):
+		// Reconcile's hyperedge-member existence check. args[1] is the []string
+		// the query unnests; the real query is ordered and LIMIT 1, so at most
+		// one row comes back.
+		ids, _ := args[1].Value.([]string)
+		c.s.queriedMembers = append([]string{}, ids...)
+		return &stubRows{cols: []string{"id"}, data: firstMissing(ids, c.s.missingMembers)}, nil
 	case strings.Contains(q, "COALESCE(reconciled_at"):
 		return &stubRows{
 			cols: []string{"reconciled_at"},
@@ -141,6 +164,27 @@ func (c stubConn) ExecContext(ctx context.Context, q string, _ []driver.NamedVal
 	return driver.RowsAffected(1), nil
 }
 
+// firstMissing returns the single-row result the member existence check expects:
+// the lowest queried id that the stub is configured to treat as absent, in the
+// sorted order the real query's ORDER BY produces, or no rows at all.
+func firstMissing(queried, missing []string) [][]driver.Value {
+	absent := map[string]bool{}
+	for _, m := range missing {
+		absent[m] = true
+	}
+	hits := []string{}
+	for _, q := range queried {
+		if absent[q] {
+			hits = append(hits, q)
+		}
+	}
+	if len(hits) == 0 {
+		return nil
+	}
+	sort.Strings(hits)
+	return [][]driver.Value{{hits[0]}}
+}
+
 func pairRows(pairs [][2]string) [][]driver.Value {
 	out := make([][]driver.Value, 0, len(pairs))
 	for _, p := range pairs {
@@ -151,7 +195,10 @@ func pairRows(pairs [][2]string) [][]driver.Value {
 
 type stubTx struct{ s *stubDB }
 
-func (t stubTx) Commit() error { return t.s.failCommit }
+func (t stubTx) Commit() error {
+	t.s.commits++
+	return t.s.failCommit
+}
 func (stubTx) Rollback() error { return nil }
 
 type stubRows struct {

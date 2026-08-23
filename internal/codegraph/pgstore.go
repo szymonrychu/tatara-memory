@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 )
@@ -158,6 +159,10 @@ func (s *PGStore) Reconcile(ctx context.Context, p GraphPush) (PushResult, error
 		}
 	}
 
+	if err := checkHyperedgeMembers(ctx, tx, p); err != nil {
+		return PushResult{}, err
+	}
+
 	for _, h := range p.Hyperedges {
 		score := h.ConfidenceScore
 		if score == 0 {
@@ -211,6 +216,52 @@ func (s *PGStore) Reconcile(ctx context.Context, p GraphPush) (PushResult, error
 		EntitiesUpserted: len(p.Entities),
 		EdgesUpserted:    len(p.Edges),
 	}, nil
+}
+
+// checkHyperedgeMembers rejects a hyperedge member that names no entity in the
+// repo. code_hyperedge_members.entity_id carries no foreign key, so a dangling
+// member is invisible until a Hyperedge read returns it.
+//
+// It runs inside Reconcile's transaction, after p.Entities have been inserted
+// and after this push's per-file deletes, so it sees exactly the entity set the
+// push is committing: a member created by the same push resolves, and a member
+// naming an entity this push just deleted does not. Members present in
+// p.Entities are resolved in Go, so the query is issued only for the remainder
+// and only once.
+func checkHyperedgeMembers(ctx context.Context, tx *sql.Tx, p GraphPush) error {
+	if len(p.Hyperedges) == 0 {
+		return nil
+	}
+	pushed := make(map[string]struct{}, len(p.Entities))
+	for _, e := range p.Entities {
+		pushed[e.ID] = struct{}{}
+	}
+	var lookup []string
+	for _, h := range p.Hyperedges {
+		for _, m := range h.Members {
+			if _, ok := pushed[m]; ok {
+				continue
+			}
+			pushed[m] = struct{}{} // also deduplicates the lookup list
+			lookup = append(lookup, m)
+		}
+	}
+	if len(lookup) == 0 {
+		return nil
+	}
+	var missing string
+	err := tx.QueryRowContext(ctx, `
+		SELECT u.id FROM unnest($2::text[]) AS u(id)
+		WHERE NOT EXISTS (SELECT 1 FROM code_entities WHERE repo=$1 AND id=u.id)
+		ORDER BY u.id
+		LIMIT 1`, p.Repo, lookup).Scan(&missing)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("%w: hyperedge member %q names no entity in repo %s", ErrInvalidScope, missing, p.Repo)
 }
 
 // CountEntities returns the number of entities stored for a repo.
