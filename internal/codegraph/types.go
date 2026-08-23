@@ -15,10 +15,6 @@ var ErrEntityNotFound = errors.New("codegraph: entity not found")
 // owning file is not in the push's declared file set.
 var ErrInvalidScope = errors.New("codegraph: invalid push scope")
 
-// minHyperedgeMembers is the arity floor from the Hyperedge contract: a
-// hyperedge is a genuinely n-ary relationship, and anything narrower is an edge.
-const minHyperedgeMembers = 3
-
 // Relation constants used by the named-traversal endpoints. The producer
 // (sub-project B) emits the full relation vocabulary; this service only needs
 // the relations it groups into traversal sets.
@@ -152,6 +148,11 @@ type CrossRepoLinks struct {
 	Consumers []CrossRef `json:"consumers"` // others requiring what this entity provides
 	Providers []CrossRef `json:"providers"` // others providing what this entity requires
 }
+
+// minHyperedgeMembers is the arity floor from the Hyperedge contract below:
+// anything narrower than a genuinely n-ary relationship is an edge. Push
+// enforces it; only the ingester's semantic path did before.
+const minHyperedgeMembers = 3
 
 // Hyperedge is a genuinely n-ary relationship over 3+ entities, owned by SrcFile
 // and reconciled per-file like edges. Empty until Phase 2.
