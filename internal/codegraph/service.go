@@ -70,8 +70,15 @@ func (s *Service) Push(ctx context.Context, p GraphPush) (PushResult, error) {
 		if _, ok := files[h.SrcFile]; !ok {
 			return PushResult{}, fmt.Errorf("%w: hyperedge %s src_file %q not in files", ErrInvalidScope, h.ID, h.SrcFile)
 		}
-		if len(h.Members) < minHyperedgeMembers {
-			return PushResult{}, fmt.Errorf("%w: hyperedge %s has %d members, need %d+", ErrInvalidScope, h.ID, len(h.Members), minHyperedgeMembers)
+		// Distinct, not len: code_hyperedge_members is keyed (repo, hyperedge_id,
+		// entity_id) and inserted ON CONFLICT DO NOTHING, so ["a","a","a"] would
+		// satisfy a len check and still store a one-member hyperedge.
+		distinct := make(map[string]struct{}, len(h.Members))
+		for _, m := range h.Members {
+			distinct[m] = struct{}{}
+		}
+		if len(distinct) < minHyperedgeMembers {
+			return PushResult{}, fmt.Errorf("%w: hyperedge %s has %d distinct members, need %d+", ErrInvalidScope, h.ID, len(distinct), minHyperedgeMembers)
 		}
 	}
 	res, err := s.store.Reconcile(ctx, p)

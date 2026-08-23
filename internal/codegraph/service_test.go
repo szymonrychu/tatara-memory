@@ -182,7 +182,10 @@ func TestPushRejectsHyperedgeWithEmptySrcFile(t *testing.T) {
 // Hyperedge doc declares. Only the ingester's semantic path enforced it, and only
 // client-side.
 func TestPushRejectsHyperedgeBelowArity(t *testing.T) {
-	for _, members := range [][]string{nil, {"e1"}, {"e1", "e2"}} {
+	// The last two count DISTINCT members: len() alone would accept them, and
+	// code_hyperedge_members' ON CONFLICT DO NOTHING then stores a "hyperedge"
+	// with one member row - exactly the state the floor exists to prevent.
+	for _, members := range [][]string{nil, {"e1"}, {"e1", "e2"}, {"e1", "e1", "e1"}, {"e1", "e2", "e2"}} {
 		svc, _ := newSvc()
 		_, err := svc.Push(context.Background(), codegraph.GraphPush{
 			Repo:  "r",

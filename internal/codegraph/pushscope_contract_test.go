@@ -4,6 +4,7 @@ import (
 	"context"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -30,27 +31,46 @@ import (
 // rule on a kind that already has a row is invisible to it: Entity's fileless
 // carve-out, Hyperedge's empty-SrcFile rejection, Hyperedge's arity floor and
 // Symbol's role check are all separately tested in service_test.go and none of
-// them would be missed here. It shortens the list of ways this class can land;
-// it does not close it.
+// them would be missed here. It also says nothing about whether a row's OTHER
+// references resolve - hyperedge members and edge endpoints may both name an
+// entity that does not exist, deliberately (see MEMORY.md, 2026-08-23). It
+// shortens the list of ways this class can land; it does not close it.
+//
+// Totality was verified by construction, not assumed: adding a fifth GraphPush
+// slice field in each of []T-with-SrcFile, []T-with-Path and []*T-with-SrcFile
+// shape makes TestPushScopeContract_CoversEveryFileOwningKind fail.
 
-// owningFileFields are the struct field names that make a row kind file-owning.
-// A GraphPush slice whose element type carries one of these owns a file and must
-// therefore be scope-checked.
-var owningFileFields = []string{"SrcFile", "FilePath"}
+// namesAFile reports whether a struct field name reads as an owning-file field.
+// Deliberately a substring match rather than a fixed list of "SrcFile"/"FilePath":
+// FileSHA.Path already shows this package naming such a field "Path", so a fixed
+// list would let a fifth kind called Path, SourceFile or OwnerFile through as a
+// false green. Over-matching costs an unnecessary table row; under-matching costs
+// an unguarded row kind, which is the bug this file exists to prevent.
+func namesAFile(field string) bool {
+	return strings.Contains(field, "File") || strings.Contains(field, "Path")
+}
 
 // fileOwningKinds returns the GraphPush field names of every slice whose element
 // struct carries an owning-file field. This is derived, never hand-listed: that
-// is the whole point of the table.
+// is the whole point of the table. Pointer element types are unwrapped, so
+// []*Hyperedge is treated exactly like []Hyperedge.
 func fileOwningKinds() []string {
 	var out []string
 	rt := reflect.TypeOf(codegraph.GraphPush{})
 	for i := range rt.NumField() {
 		f := rt.Field(i)
-		if f.Type.Kind() != reflect.Slice || f.Type.Elem().Kind() != reflect.Struct {
+		if f.Type.Kind() != reflect.Slice {
 			continue
 		}
-		for _, name := range owningFileFields {
-			if _, ok := f.Type.Elem().FieldByName(name); ok {
+		el := f.Type.Elem()
+		for el.Kind() == reflect.Pointer {
+			el = el.Elem()
+		}
+		if el.Kind() != reflect.Struct {
+			continue
+		}
+		for j := range el.NumField() {
+			if namesAFile(el.Field(j).Name) {
 				out = append(out, f.Name)
 				break
 			}
